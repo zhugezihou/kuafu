@@ -1,0 +1,27 @@
+# 质量标准定义
+
+quality:
+  # 代码质量
+  code:
+    - rule: "PEP 8 兼容"
+      severity: "warning"
+    - rule: "有类型注解"
+      severity: "warning"
+    - rule: "有单元测试"
+      severity: "optional"
+  
+  # 研究质量
+  research:
+    - rule: "来源可追溯"
+      severity: "required"
+    - rule: "数据有日期标注"
+      severity: "warning"
+    - rule: "区分事实与推断"
+      severity: "required"
+  
+  # 文件操作质量
+  file_op:
+    - rule: "有备份策略"
+      severity: "optional"
+    - rule: "不覆盖未确认文件"
+      severity: "required"

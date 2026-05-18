@@ -1,0 +1,37 @@
+# 任务策略定义
+
+# 通用策略
+generic:
+  max_retries: 2
+  reflection_depth: "detailed"
+  evolution_level_cap: 2
+
+# 编程任务
+coding:
+  max_retries: 3
+  reflection_depth: "detailed"
+  evolution_level_cap: 3
+  requirements:
+    - "先跑测试"
+    - "检查类型标注"
+    - "确保没有未处理异常"
+
+# 研究调研
+research:
+  max_retries: 2
+  reflection_depth: "moderate"
+  evolution_level_cap: 2
+  requirements:
+    - "至少 3 个独立来源"
+    - "标注不确定的信息"
+    - "总结客观不偏颇"
+
+# 文件操作
+file_operation:
+  max_retries: 1
+  reflection_depth: "minimal"
+  evolution_level_cap: 1
+  requirements:
+    - "检查路径有效性"
+    - "不要覆盖用户未指定的文件"
+    - "大文件分批处理"

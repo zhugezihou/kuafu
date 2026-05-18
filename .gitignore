@@ -1,0 +1,39 @@
+# 夸父 — Git ignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+*.egg
+dist/
+build/
+*.so
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 环境变量
+.env
+*.env.local
+
+# 记忆数据（用户数据，不提交）
+memory/*.json
+!memory/.gitkeep
+
+# 日志
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 测试临时文件
+/tmp/
