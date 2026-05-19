@@ -163,6 +163,7 @@ class FileMemoryBackend:
             if q in text:
                 results.append({
                     "id": mem_id,
+                    "key": entry.get("source", ""),
                     "content": entry.get("content", ""),
                     "context": entry.get("context", ""),
                     "source": entry.get("source", ""),
@@ -403,9 +404,12 @@ class MemoryAPI:
     # ── 兼容别名（旧接口 remember/recall，供测试和 agent_loop 使用） ─
 
     def remember(self, key: str, content: str, tags: list = None) -> str:
-        """兼容旧接口：remember(key, content, tags) -> store"""
+        """兼容旧接口：remember(key, content, tags) -> store
+        
+        key 参数通过 source 传递给底层存储，以便后续检索能匹配到。
+        """
         context = f"tags:{','.join(tags)}" if tags else ""
-        return self.store(content, context=context)
+        return self.store(content, context=context, source=key)
 
     def recall(self, query: str, limit: int = 10) -> list[dict]:
         """兼容旧接口：recall(query) -> search"""

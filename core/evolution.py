@@ -54,6 +54,9 @@ class EvolutionEngine:
         self._task_history = task_history or []
         self._log_path = EVOLUTION_LOG
         self._ensure_log()
+        # 进化频率控制：同一级别每次进化后需等待最小间隔
+        self._last_level_time: dict[int, float] = {}
+        self._min_interval = 60.0  # 同一级别至少间隔 60 秒
 
     def _ensure_log(self):
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -99,16 +102,22 @@ class EvolutionEngine:
     def _evaluate_failure(self, result: dict) -> Optional[EvolutionEvent]:
         errors = result.get("errors", [])
 
-        # L2: 策略进化 — 连续失败 3 次（优先于L1，策略级修正优先级更高）
-        recent_n = self._task_history[-5:]
-        failures = [t for t in recent_n if not t.get("success")]
-        if len(failures) >= 3 and len(self._task_history) >= 3:
-            return self._evolve(
-                level=2,
-                trigger=f"连续 {len(failures)} 次失败",
-                action="更新策略模板以适应此类任务",
-                target="strategy/prompts.yaml",
-            )
+        # L2: 策略进化 — 同类型任务连续失败 3 次（不跨类型计数）
+        task_type = result.get("task_type", "generic")
+        recent = self._task_history[-10:]
+        same_type_failures = [t for t in recent
+                              if not t.get("success")
+                              and t.get("task_type") == task_type]
+        if len(same_type_failures) >= 3:
+            # 检查 3 次失败是否在 5 分钟内
+            times = [t.get("timestamp", 0) for t in same_type_failures[-3:]]
+            if max(times) - min(times) <= 300:
+                return self._evolve(
+                    level=2,
+                    trigger=f"「{task_type}」连续 {len(same_type_failures)} 次失败",
+                    action="更新策略模板以适应此类任务",
+                    target="strategy/prompts.yaml",
+                )
 
         # L1: 即时优化 — 重复出现相同错误
         if errors and len(self._task_history) > 1:
@@ -128,18 +137,20 @@ class EvolutionEngine:
         recent_n = self._task_history[-5:]
         successes = [t for t in recent_n if t.get("success")]
 
-        # L2: 策略进化 — 同类型任务成功 5 次
+        # L2: 策略进化 — 同类型任务成功 5 次且时间跨度 ≥ 10 分钟（防止短循环刷进化）
         same_type = [
             t for t in successes
             if t.get("task_type") == result.get("task_type")
         ]
         if len(same_type) >= 5:
-            return self._evolve(
-                level=2,
-                trigger=f"「{result.get('task_type')}」类型任务成功 {len(same_type)} 次",
-                action="固化此类任务的成功策略模板",
-                target="strategy/prompts.yaml",
-            )
+            times = [t.get("timestamp", 0) for t in same_type[-5:]]
+            if max(times) - min(times) >= 600:
+                return self._evolve(
+                    level=2,
+                    trigger=f"「{result.get('task_type')}」类型任务成功 {len(same_type)} 次",
+                    action="固化此类任务的成功策略模板",
+                    target="strategy/prompts.yaml",
+                )
 
         # L3: 技能提取 — 同类型任务成功 ≥3 次且用户有纠正
         if len(same_type) >= 3 and result.get("user_correction"):
@@ -154,7 +165,14 @@ class EvolutionEngine:
 
     # ---- 进化执行 ----
 
-    def _evolve(self, level: int, trigger: str, action: str, target: str) -> EvolutionEvent:
+    def _evolve(self, level: int, trigger: str, action: str, target: str) -> Optional[EvolutionEvent]:
+        # 频率控制：同一级别在 min_interval 内不重复触发
+        last = self._last_level_time.get(level, 0.0)
+        now = time.time()
+        if now - last < self._min_interval:
+            return None
+        self._last_level_time[level] = now
+        
         event = EvolutionEvent(
             level=level,
             trigger=trigger,

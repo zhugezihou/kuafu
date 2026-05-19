@@ -361,6 +361,19 @@ class AgentLoop:
                 parts.append(f"- {m.get('key', '?')}: {m.get('content', '')[:100]}")
             parts.append("")
 
+        # 6. 用户偏好（从 memory/user_prefs.json 加载）
+        prefs_path = Path(__file__).resolve().parent.parent / "memory" / "user_prefs.json"
+        if prefs_path.exists():
+            try:
+                prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
+                if prefs:
+                    parts.append("## 用户偏好")
+                    for k, v in prefs.items():
+                        parts.append(f"- {k}: {v}")
+                    parts.append("")
+            except (json.JSONDecodeError, OSError):
+                pass
+
         return "\n".join(parts)
 
     def _execute_tool(self, tool_call: dict) -> dict:
@@ -722,14 +735,16 @@ class AgentLoop:
             messages.append(assistant_msg)
 
             # 检查是否调用了 finish
+            finish_called = False
             if response.get("tool_calls"):
                 for tc in response["tool_calls"]:
                     if tc["function"]["name"] == "finish":
                         args = tc["function"]["arguments"]
                         final_result = args.get("result", "")
                         final_summary = args.get("summary", "")
+                        finish_called = True
                         break
-                if final_result:
+                if finish_called:
                     break
 
             # 执行工具调用
@@ -789,7 +804,7 @@ class AgentLoop:
 
         # 反思：记录任务到记忆
         self.memory.remember(
-            key=f"task:{task[:40]}",
+            key=f"task:{time.strftime('%Y%m%d_%H%M%S')}",
             content=task_result["result"][:200],
             tags=["task", task_result["task_type"]],
         )
