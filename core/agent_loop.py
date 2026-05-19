@@ -15,9 +15,10 @@
 """
 
 import json
+import sys
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from core.identity import load_identity_statement
 from core.llm import LLMClient
@@ -307,11 +308,13 @@ class AgentLoop:
         memory: Optional[MemoryAPI] = None,
         evolution: Optional[EvolutionEngine] = None,
         max_turns: int = 20,
+        on_step: Optional[Callable[[str], None]] = None,
     ):
         self.llm = llm or LLMClient()
         self.memory = memory or MemoryAPI()
         self.evolution = evolution or EvolutionEngine()
         self.max_turns = max_turns
+        self.on_step = on_step  # 实时回调：on_step("状态描述")
 
     def build_system_prompt(self) -> str:
         """组装完整的系统 prompt。"""
@@ -715,6 +718,10 @@ class AgentLoop:
         for turn in range(self.max_turns):
             turn_count = turn + 1
 
+            # 通知：LLM 思考中
+            if self.on_step:
+                self.on_step(f"🤔 第 {turn_count}/{self.max_turns} 轮 — LLM 思考中...")
+
             # 调用 LLM
             response = self.llm.chat(messages, tools=TOOLS_DEFINITIONS)
 
@@ -762,6 +769,15 @@ class AgentLoop:
             # 执行工具调用
             if response.get("tool_calls"):
                 for tc in response["tool_calls"]:
+                    fn_name = tc["function"]["name"]
+                    args = tc["function"]["arguments"]
+                    # 跳过 finish（核心系统工具）
+                    if fn_name != "finish":
+                        # 通知：正在执行工具
+                        arg_preview = json.dumps(args, ensure_ascii=False)[:60]
+                        if self.on_step:
+                            self.on_step(f"🔧 执行 {fn_name}({arg_preview}...)")
+
                     tool_result = self._execute_tool(tc)
                     messages.append({
                         "role": "tool",

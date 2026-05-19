@@ -133,9 +133,19 @@ class FileMemoryBackend:
             "timestamp": time.time(),
             "created": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
-        # 写入单个文件
+        # 写入单个文件（清理可能存在的 surrogate 字符）
         file_path = self.memory_dir / f"{mem_id}.json"
-        file_path.write_text(json.dumps(entry, ensure_ascii=False, indent=2))
+        # 递归清理字符串中的 surrogate 字符
+        def _clean_surrogates(obj):
+            if isinstance(obj, str):
+                return obj.encode('utf-8', errors='replace').decode('utf-8')
+            if isinstance(obj, dict):
+                return {k: _clean_surrogates(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_clean_surrogates(i) for i in obj]
+            return obj
+        clean_entry = _clean_surrogates(entry)
+        file_path.write_text(json.dumps(clean_entry, ensure_ascii=False, indent=2))
         # 更新索引
         self._index["memories"].append({
             "id": mem_id,

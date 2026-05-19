@@ -188,6 +188,7 @@ class KuafuAgent:
             llm=self.llm,
             memory=self.memory,
             evolution=self.evolution,
+            on_step=lambda msg: print(f"  {msg}", flush=True),
         )
         result = loop.run(task)
 
