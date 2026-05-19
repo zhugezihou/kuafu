@@ -1,5 +1,5 @@
 """
-夸父 (Kuafu) — 自我进化的 AI Agent。
+夸父 (Kuafu) — 自我进化的 AI Agent.
 
 项目结构：
     kuafu/
@@ -23,3 +23,7 @@
     python -m kuafu --status
     python -m kuafu "写一个 Python 函数计算 Fibonacci"
 """
+
+from core.main import KuafuAgent
+
+__all__ = ["KuafuAgent"]

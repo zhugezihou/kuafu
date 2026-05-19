@@ -7,6 +7,11 @@
     
     agent = KuafuAgent()
     result = agent.run("帮我写一个 Python 脚本读取 CSV")
+    print(result["result"])
+
+    # CLI 调用
+    python -m kuafu "你的任务"
+    python -m kuafu --status
 """
 
 import os
@@ -21,6 +26,8 @@ from core.identity import load_identity_statement, detect_identity_impersonation
 from core.sandbox import is_path_allowed_for_write, validate_command
 from core.memory_api import MemoryAPI
 from core.evolution import EvolutionEngine, EvolutionEvent
+from core.llm import LLMClient
+from core.agent_loop import AgentLoop
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
@@ -33,27 +40,41 @@ class KuafuAgent:
     - 沙盒 → 安全执行
     - 记忆 → 长期记忆
     - 进化 → 自我改进
+    - LLM → AI 执行引擎
     """
 
-    def __init__(self):
+    def __init__(self, llm_client: Optional[LLMClient] = None):
         self.name = "夸父"
-        self.version = "0.1.0"
+        self.version = "0.2.0"
         self.memory = MemoryAPI()
         self.evolution = EvolutionEngine()
+        self.llm = llm_client or LLMClient()
         self._task_count = 0
         self._setup()
 
     def _setup(self):
         """首次启动设置。"""
-        # 确保目录存在
         for d in ["strategy", "skills", "memory", "logs", "tests"]:
             (ROOT_DIR / d).mkdir(parents=True, exist_ok=True)
-        # 记录启动
         self.memory.remember(
             key="system:startup",
-            content=f"夸父 v{self.version} 启动",
+            content=f"夸父 v{self.version} 启动，LLM: {self.llm.model}",
             tags=["system", "startup"],
         )
+
+    @property
+    def identity(self) -> str:
+        """获取身份声明。"""
+        return load_identity_statement()
+
+    @property
+    def sandbox(self) -> dict:
+        """获取沙盒安全信息。"""
+        from core.sandbox import PROTECTED_DIRS, ALLOWED_WRITE_DIRS
+        return {
+            "protected_dirs": [str(d) for d in PROTECTED_DIRS],
+            "allowed_write_dirs": [str(d) for d in ALLOWED_WRITE_DIRS],
+        }
 
     # ---- 核心循环 ----
 
@@ -78,9 +99,10 @@ class KuafuAgent:
         parts.append("- 每次任务完成后，必须反思：我学到了什么？")
         parts.append("- 如果用户纠正了你，记住这个教训")
         parts.append("- 发现可以改进的地方，记录下来")
+        parts.append("- 绝对不可以修改 core/ 目录下的任何文件")
         parts.append("")
 
-        # 3. 可用工具
+        # 3. 可用能力
         parts.append("## 可用能力")
         parts.append("- 执行终端命令（sandbox 检查路径安全）")
         parts.append("- 读写文件（core/ 目录禁止写入）")
@@ -99,26 +121,39 @@ class KuafuAgent:
         parts.append("")
 
         # 5. 相关信息
-        parts.append("## 关于用户")
-        user_profile = json.loads(
-            (ROOT_DIR / "memory" / "user_profile.json").read_text(encoding="utf-8")
-        )
-        pref = user_profile.get("preferences", {})
-        if pref:
-            parts.append(f"用户偏好: {json.dumps(pref, ensure_ascii=False)}")
+        user_profile_path = ROOT_DIR / "memory" / "user_profile.json"
+        if user_profile_path.exists():
+            parts.append("## 关于用户")
+            try:
+                user_profile = json.loads(user_profile_path.read_text(encoding="utf-8"))
+                pref = user_profile.get("preferences", {})
+                if pref:
+                    parts.append(f"用户偏好: {json.dumps(pref, ensure_ascii=False)}")
+            except (json.JSONDecodeError, Exception):
+                pass
+
+        # 6. 相关记忆
+        recent = self.memory.recall("", limit=10)
+        if recent:
+            parts.append("## 相关记忆")
+            for m in recent[-5:]:
+                parts.append(f"- {m.get('key', '?')}: {m.get('content', '')[:100]}")
+            parts.append("")
 
         return "\n".join(parts)
 
     def run(self, task: str, task_type: str = "generic") -> dict:
         """执行一次任务。
 
+        使用 AgentLoop 驱动完整的 LLM + 工具执行循环。
+
         Returns:
             {
                 "success": bool,
                 "result": str,
-                "task_type": str,
-                "errors": list[str],
+                "turns": int,
                 "evolution": EvolutionEvent or None,
+                "errors": list[str],
                 "duration": float,
             }
         """
@@ -132,49 +167,27 @@ class KuafuAgent:
             tags=["task", task_type],
         )
 
-        result = {
-            "success": True,
-            "result": "",
-            "task_type": task_type,
-            "errors": [],
-            "user_correction": None,
-            "tool_calls": 0,
-            "duration": 0.0,
-            "evolution": None,
-        }
+        # 创建 AgentLoop 执行
+        loop = AgentLoop(
+            llm=self.llm,
+            memory=self.memory,
+            evolution=self.evolution,
+        )
+        result = loop.run(task)
 
-        try:
-            # 安全检查
-            safe, risk, reason = validate_command(task)
-            if not safe:
-                result["errors"].append(reason)
-                result["success"] = False
-                result["result"] = f"安全拦截: {reason}"
-                return result
+        # 补充元信息
+        result["task_type"] = task_type
+        result["duration"] = round(time.time() - start, 3)
 
-            # TODO: 实际执行任务逻辑
-            # 这里由外部 LLM 循环驱动
-            result["result"] = f"任务「{task}」已接收，等待执行..."
-
-        except Exception as e:
-            result["errors"].append(str(e))
-            result["success"] = False
-            result["result"] = f"执行异常: {e}"
-
-        finally:
-            result["duration"] = round(time.time() - start, 3)
-
-        # 重要: 每次任务完成后触发进化评估
-        evolution_event = self.evolution.evaluate_and_evolve(result)
+        # 回调：通知 evolution 已完成
+        evolution_event = result.get("evolution")
         if evolution_event:
-            result["evolution"] = evolution_event
             self.memory.remember(
                 key=f"evolution:L{evolution_event.level}:{self._task_count}",
                 content=f"L{evolution_event.level} 进化: {evolution_event.action}",
                 tags=["evolution", f"L{evolution_event.level}"],
             )
 
-        # evolution.evaluate_and_evolve 内部已记录任务历史
         return result
 
     def reflect_on_task(self, task_result: dict) -> Optional[str]:
@@ -190,13 +203,14 @@ class KuafuAgent:
             "name": self.name,
             "version": self.version,
             "task_count": self._task_count,
+            "llm_model": self.llm.model,
             "memory": self.memory.get_status(),
             "evolution": self.evolution.get_evolution_stats(),
             "task_stats": self.evolution.get_task_stats(),
         }
 
     def __repr__(self) -> str:
-        return f"<KuafuAgent v{self.version} | {self._task_count} tasks>"
+        return f"<KuafuAgent v{self.version} | {self._task_count} tasks | LLM: {self.llm.model}>"
 
 
 # ---- CLI 入口 ----
@@ -205,6 +219,7 @@ def main():
     """命令行入口。python -m kuafu"""
     agent = KuafuAgent()
     print(f"⚡ {agent.name} v{agent.version} — 自我进化的 AI Agent")
+    print(f"   LLM: {agent.llm.model}")
     print("=" * 50)
     print()
 
@@ -221,12 +236,15 @@ def main():
         return
 
     if args.task:
+        print(f"📋 任务: {args.task}")
         result = agent.run(args.task)
-        print(f"\n结果: {'✅' if result['success'] else '❌'}")
-        print(result["result"])
+        status = "✅" if result["success"] else "❌"
+        print(f"\n{status} 结果:")
+        print(result.get("result", "(无结果)"))
         if result.get("evolution"):
             evo = result["evolution"]
             print(f"\n🧬 进化: L{evo.level} — {evo.action}")
+        print(f"\n⏱ {result['duration']}s | 轮次: {result.get('turns', 0)} | 错误: {len(result.get('errors', []))}")
         return
 
     # 交互模式
@@ -240,10 +258,11 @@ def main():
                 continue
             result = agent.run(task)
             status_icon = "✅" if result["success"] else "❌"
-            print(f"\n{status_icon} {result['result']}")
+            print(f"\n{status_icon} {result.get('result', '(无结果)')[:500]}")
             if result.get("evolution"):
                 evo = result["evolution"]
-                print(f"🧬 进化: L{evo.level} — {evo.action}")
+                print(f"   🧬 进化: L{evo.level} — {evo.action}")
+            print(f"   ⏱ {result['duration']}s | {result.get('turns', 0)} turns")
         except KeyboardInterrupt:
             print("\n再见！")
             break

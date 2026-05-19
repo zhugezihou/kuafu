@@ -24,7 +24,7 @@ venv/
 *.env.local
 
 # 记忆数据（用户数据，不提交）
-memory/*.json
+memory/**/*.json
 !memory/.gitkeep
 
 # 日志

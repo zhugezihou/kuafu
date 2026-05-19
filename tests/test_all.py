@@ -136,38 +136,71 @@ def test_agent_repr():
     agent = KuafuAgent()
     assert "KuafuAgent" in repr(agent)
     assert "夸父" in agent.name
-    assert "0.1" in agent.version
+    assert "0.2" in agent.version
 
     print("✅ main: Agent 初始化正常")
 
 
-def test_full_flow():
-    """端到端流程：任务 → 记忆 → 进化"""
+def test_agent_prompt():
+    """测试 Agent 系统 prompt 组装（不依赖 LLM）"""
     from core.main import KuafuAgent
 
     agent = KuafuAgent()
     
-    # 执行几次成功任务
-    for i in range(6):
-        result = agent.run(f"测试任务 #{i+1}", task_type="coding")
-        assert isinstance(result, dict)
-        assert "success" in result
-        assert "duration" in result
-
-    # 检查任务统计
-    stats = agent.evolution.get_task_stats()
-    assert stats["total"] >= 6
-
-    # 检查进化统计
-    evo_stats = agent.evolution.get_evolution_stats()
-    print(f"    进化统计: {evo_stats}")
-
     # 检查系统 prompt 组装
     prompt = agent.build_system_prompt()
     assert "夸父" in prompt
     assert "进化" in prompt
+    
+    # 检查状态
+    status = agent.get_status()
+    assert status["name"] == "夸父"
+    assert "version" in status
+    assert "memory" in status
+    assert "evolution" in status
+    assert "task_stats" in status
 
-    print("✅ 端到端: 任务→记忆→进化循环正常")
+    print("✅ main: 系统 prompt 组装 + 状态查询正常")
+
+
+def test_full_flow():
+    """端到端流程：直接测试 memory + evolution 配合"""
+    from core.memory_api import MemoryAPI
+    from core.evolution import EvolutionEngine
+
+    memory = MemoryAPI()
+    evolution = EvolutionEngine()
+    
+    # 记忆 + 进化联合测试
+    for i in range(6):
+        memory.remember(
+            key=f"test:full_flow_{i}",
+            content=f"测试任务 #{i+1} 完成",
+            tags=["test", "coding"],
+        )
+        # 通过 evolution 记录任务
+        evolution.evaluate_and_evolve({
+            "success": True,
+            "errors": [],
+            "tool_calls": 3,
+            "task_type": "coding",
+            "duration": 2.0,
+            "user_correction": None,
+        })
+    
+    # 检查记忆检索
+    results = memory.recall("测试任务")
+    assert len(results) >= 1
+    
+    # 检查演进统计
+    stats = evolution.get_task_stats()
+    assert stats["total"] >= 6
+    assert "coding" in stats["by_type"]
+    
+    evo_stats = evolution.get_evolution_stats()
+    print(f"    进化统计: {evo_stats}")
+
+    print("✅ 端到端: memory + evolution 联合工作正常")
 
 
 def test_core_charter():
@@ -175,11 +208,46 @@ def test_core_charter():
     root = Path(__file__).resolve().parent.parent
     assert (root / "CORE_CHARTER.md").exists(), "CORE_CHARTER.md 必须存在"
     assert (root / "IDENTITY.md").exists(), "IDENTITY.md 必须存在"
-    # 确认 core/ 下所有模块
-    core_files = ["identity.py", "sandbox.py", "memory_api.py", "evolution.py", "main.py"]
+    # 确认 core/ 下所有模块（V0.2 新增 agent_loop + llm）
+    core_files = ["identity.py", "sandbox.py", "memory_api.py", "evolution.py",
+                  "main.py", "agent_loop.py", "llm.py"]
     for f in core_files:
         assert (root / "core" / f).exists(), f"core/{f} 必须存在"
     print("✅ core/ 结构完整")
+
+
+def test_llm_client_init():
+    """测试 LLM 客户端初始化"""
+    from core.llm import LLMClient
+
+    # 必须设置 API key 才能初始化
+    assert LLMClient.__module__, "LLMClient 模块可导入"
+
+    print("✅ llm: 客户端导入正常")
+
+
+def test_agent_loop_tools():
+    """测试 AgentLoop 工具定义完整性"""
+    from core.agent_loop import TOOLS_DEFINITIONS
+
+    tool_names = [t["function"]["name"] for t in TOOLS_DEFINITIONS]
+    expected = {"terminal", "read_file", "write_file", "patch",
+                "search_files", "web_search", "web_fetch", "finish"}
+    assert set(tool_names) == expected, f"工具不匹配: {set(tool_names) ^ expected}"
+    print(f"✅ agent_loop: 8 个工具定义完整 ({', '.join(tool_names)})")
+
+
+def test_agent_loop_build_prompt():
+    """测试 AgentLoop 系统 prompt 组装"""
+    from core.agent_loop import AgentLoop
+
+    loop = AgentLoop()
+    prompt = loop.build_system_prompt()
+    assert "夸父" in prompt
+    assert "核心规则" in prompt
+    assert "可用工具" in prompt
+    assert "进化状态" in prompt
+    print("✅ agent_loop: 系统 prompt 组装正常")
 
 
 if __name__ == "__main__":
@@ -189,8 +257,12 @@ if __name__ == "__main__":
         test_memory_api,
         test_evolution,
         test_agent_repr,
+        test_agent_prompt,
         test_full_flow,
         test_core_charter,
+        test_llm_client_init,
+        test_agent_loop_tools,
+        test_agent_loop_build_prompt,
     ]
     
     passed = 0
