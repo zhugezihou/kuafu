@@ -119,7 +119,16 @@ class FileMemoryBackend:
         return {"memories": [], "last_id": 0}
 
     def _save_index(self):
-        self._index_path.write_text(json.dumps(self._index, ensure_ascii=False, indent=2))
+        # 清理索引中的 surrogate 字符
+        def _clean_surrogates(obj):
+            if isinstance(obj, str):
+                return obj.encode('utf-8', errors='replace').decode('utf-8')
+            if isinstance(obj, dict):
+                return {k: _clean_surrogates(v) for k, v in obj.items()}
+            if isinstance(obj, list):
+                return [_clean_surrogates(i) for i in obj]
+            return obj
+        self._index_path.write_text(json.dumps(_clean_surrogates(self._index), ensure_ascii=False, indent=2))
 
     def store(self, content: str, context: str = "", source: str = "") -> str:
         """存储一条记忆，返回记忆 ID"""
@@ -150,7 +159,7 @@ class FileMemoryBackend:
         self._index["memories"].append({
             "id": mem_id,
             "timestamp": entry["timestamp"],
-            "summary": content[:80],
+            "summary": content[:80].encode('utf-8', errors='replace').decode('utf-8'),
         })
         self._save_index()
         return mem_id
