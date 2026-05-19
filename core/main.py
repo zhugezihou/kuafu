@@ -18,6 +18,7 @@ import os
 import sys
 import json
 import time
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -144,7 +145,9 @@ class KuafuAgent:
 
     def run(self, task: str, task_type: str = "generic") -> dict:
         """执行一次任务。
-
+        
+        如果用户输入的是问候/寒暄，直接回复，不进入 agent 循环。
+        
         使用 AgentLoop 驱动完整的 LLM + 工具执行循环。
 
         Returns:
@@ -166,6 +169,19 @@ class KuafuAgent:
             content=f"任务 #{self._task_count}: {task[:200]}",
             tags=["task", task_type],
         )
+
+        # 问候/寒暄检测 — 不进 agent 循环
+        greeting_reply = self._detect_greeting(task)
+        if greeting_reply:
+            return {
+                "success": True,
+                "result": greeting_reply,
+                "summary": greeting_reply,
+                "turns": 0,
+                "errors": [],
+                "duration": 0.0,
+                "task_type": "greeting",
+            }
 
         # 创建 AgentLoop 执行
         loop = AgentLoop(
@@ -208,6 +224,29 @@ class KuafuAgent:
             "evolution": self.evolution.get_evolution_stats(),
             "task_stats": self.evolution.get_task_stats(),
         }
+
+    @staticmethod
+    def _detect_greeting(text: str) -> str:
+        """检测问候/寒暄，匹配则返回回复，否则返回空字符串。"""
+        text = text.strip()
+
+        # 纯问候/自我介绍/闲聊 — 不进 agent 循环
+        greeting_patterns = [
+            # 单纯问候你好
+            r"^(你好|您好|hi|hello|hey|hi~|嗨|早|早上好|下午好|晚上好)[!！。.，,]*$",
+            r"^你[叫是]谁$",
+            r"^(你是谁|你叫什么|你叫什么名字)[?？]*$",
+            r"^(你好吗|你怎么样|还好吗|怎么样)[?？]*$",
+            r"^(夸父|你好夸父|夸父你好)[!！。.，,]*$",
+            r"^(在吗|在不在|在不)[?？]*$",
+            r"^(再见|bye|拜拜|88)[!！。.，,]*$",
+            r"^(谢谢|多谢|感谢)[!！。.，,]*$",
+        ]
+        for pattern in greeting_patterns:
+            if re.match(pattern, text, re.IGNORECASE):
+                return "你好！我是夸父，一个自我进化的 AI agent。有问题尽管说，我来帮你搞定 💪"
+
+        return ""
 
     def __repr__(self) -> str:
         return f"<KuafuAgent v{self.version} | {self._task_count} tasks | LLM: {self.llm.model}>"
