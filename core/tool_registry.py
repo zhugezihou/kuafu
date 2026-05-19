@@ -366,7 +366,6 @@ class ToolRegistry:
 
     # ---- read_file ----
 
-    @staticmethod
     def _handle_read_file(self, args: dict) -> dict:
         path = args.get("path", "")
         offset = args.get("offset", 1)
@@ -403,7 +402,6 @@ class ToolRegistry:
 
     # ---- write_file ----
 
-    @staticmethod
     def _handle_write_file(self, args: dict) -> dict:
         path = args.get("path", "")
         content = args.get("content", "")
@@ -433,7 +431,6 @@ class ToolRegistry:
 
     # ---- patch ----
 
-    @staticmethod
     def _handle_patch(self, args: dict) -> dict:
         path = args.get("path", "")
         old_str = args.get("old_string", "")
@@ -461,7 +458,6 @@ class ToolRegistry:
 
     # ---- search_files ----
 
-    @staticmethod
     def _handle_search_files(self, args: dict) -> dict:
         pattern = args.get("pattern", "")
         target = args.get("target", "content")
