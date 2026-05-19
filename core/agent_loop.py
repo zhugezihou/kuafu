@@ -26,6 +26,80 @@ from core.evolution import EvolutionEngine
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
+# ── Bing 搜索 fallback（当 DuckDuckGo 不可用时） ─────────────────
+
+
+class _BingSearch:
+    """Bing 搜索 fallback（urllib 实现，零依赖）"""
+
+    @staticmethod
+    def _search(query: str, max_results: int = 5) -> dict:
+        import re
+        import urllib.request
+        import urllib.parse
+
+        url = f"https://www.bing.com/search?q={urllib.parse.quote(query)}"
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "Accept": "text/html",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            },
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                html = resp.read().decode("utf-8", errors="replace")
+        except Exception as e:
+            return {"success": False, "output": f"所有搜索后端均不可用: {e}"}
+
+        results = []
+        # Bing 搜索结果: <li class="b_algo"> ... <h2><a href="..." target="_blank">title</a></h2> ... <p>snippet</p>
+        # 按 <li class="b_algo"> 分割
+        blocks = re.split(r'<li[^>]*class="b_algo"[^>]*>', html)
+        for block in blocks[1:]:  # 跳过第一个（匹配前的内容）
+            if len(results) >= max_results:
+                break
+            # 提取链接
+            link_m = re.search(r'<a[^>]*href="(https?://[^"]+)"[^>]*>', block)
+            # 提取标题
+            title_m = re.search(r'<h2[^>]*>(.*?)</h2>', block, re.DOTALL)
+            # 提取摘要
+            snippet_m = re.search(
+                r'<p[^>]*class="b_lineclamp[^"]*"[^>]*>(.*?)</p>', block, re.DOTALL
+            )
+
+            href = link_m.group(1) if link_m else ""
+            title_raw = title_m.group(1) if title_m else ""
+            title = re.sub(r'<[^>]+>', ' ', title_raw).strip()[:100] if title_raw else "(无标题)"
+            snippet_raw = snippet_m.group(1) if snippet_m else ""
+            snippet = re.sub(r'<[^>]+>', ' ', snippet_raw).strip()[:200] if snippet_raw else ""
+
+            if href:
+                results.append({
+                    "title": title,
+                    "url": href,
+                    "snippet": snippet,
+                })
+
+        if not results:
+            return {"success": True, "output": f"搜索「{query}」未找到结果。"}
+
+        lines = [f"搜索结果: 「{query}」", ""]
+        for i, r in enumerate(results, 1):
+            lines.append(f"{i}. {r['title']}")
+            lines.append(f"   {r['url']}")
+            if r['snippet']:
+                lines.append(f"   {r['snippet']}")
+            lines.append("")
+        return {"success": True, "output": "\n".join(lines).strip()}
+
+
 # ---- 工具定义（OpenAI Function Call 格式） ----
 
 TOOLS_DEFINITIONS = [
@@ -306,9 +380,9 @@ class AgentLoop:
             elif fn_name == "search_files":
                 return self._tool_search_files(args)
             elif fn_name == "web_search":
-                return {"success": True, "output": "使用 web_search 需要互联网连接。请确认网络可用。"}
+                return self._tool_web_search(args)
             elif fn_name == "web_fetch":
-                return {"success": True, "output": "使用 web_fetch 需要互联网连接。请确认网络可用。"}
+                return self._tool_web_fetch(args)
             elif fn_name == "finish":
                 return {"success": True, "output": json.dumps(args, ensure_ascii=False)}
             else:
@@ -443,6 +517,155 @@ class AgentLoop:
             return {"success": True, "output": output}
         except Exception as e:
             return {"success": False, "output": str(e)}
+
+    # ── 网络工具 ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def _clean_html(html: str, max_length: int = 3000) -> str:
+        """从 HTML 中提取纯文本（简单实现，零依赖）"""
+        import re
+        # 提取 title
+        title_match = re.search(r'<title[^>]*>([^<]+)</title>', html, re.IGNORECASE)
+        title = title_match.group(1).strip() if title_match else ""
+
+        # 去除 style/script
+        text = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.DOTALL | re.IGNORECASE)
+
+        # 去除 HTML 标签
+        text = re.sub(r'<[^>]+>', ' ', text)
+        # 压缩空白
+        text = re.sub(r'\s+', ' ', text).strip()
+        # 解码 HTML 实体
+        text = text.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
+        text = text.replace('&quot;', '"').replace('&#39;', "'").replace('&nbsp;', ' ')
+
+        if title:
+            text = f"标题: {title}\n\n{text}"
+
+        if len(text) > max_length:
+            text = text[:max_length] + "\n\n...(内容已截断)"
+
+        return text
+
+    @staticmethod
+    def _ddg_search(query: str, max_results: int = 5) -> dict:
+        """通过 DuckDuckGo Lite 接口搜索（免费，无需 API key）"""
+        import re
+        import urllib.request
+        import urllib.parse
+
+        url = f"https://lite.duckduckgo.com/lite/?q={urllib.parse.quote(query)}"
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; KuafuSearch/1.0)",
+                "Accept": "text/html",
+            },
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                html = resp.read().decode("utf-8", errors="replace")
+        except Exception as e:
+            # DDG 不可用时 fallback 到 Bing
+            return _BingSearch._search(query, max_results)
+
+        # 解析结果表格...
+        results = []
+        # 匹配所有链接行（结果在 class="result-link" 的表格行中）
+        link_pattern = re.compile(
+            r'<a[^>]*class="result-link"[^>]*href="([^"]*)"[^>]*>([^<]*)</a>',
+            re.IGNORECASE,
+        )
+        snippet_pattern = re.compile(
+            r'<td[^>]*class="result-snippet"[^>]*>([^<]*)</td>',
+            re.IGNORECASE,
+        )
+
+        links = link_pattern.findall(html)
+        snippets = snippet_pattern.findall(html)
+
+        for i, (href, title) in enumerate(links):
+            if i >= max_results:
+                break
+            title = title.strip() or "(无标题)"
+            snippet = snippets[i].strip() if i < len(snippets) else ""
+            # 清理 snippet 中的 HTML
+            snippet = re.sub(r'<[^>]+>', ' ', snippet).strip()
+            results.append({
+                "title": title,
+                "url": href,
+                "snippet": snippet[:200],
+            })
+
+        if not results:
+            # fallback: 尝试通用链接提取
+            all_links = re.findall(
+                r'<a[^>]*href="(https?://[^"]+)"[^>]*>([^<]*)</a>', html
+            )
+            seen = set()
+            for href, title in all_links:
+                if href not in seen and len(results) < max_results:
+                    seen.add(href)
+                    results.append({
+                        "title": title.strip()[:100] or href[:60],
+                        "url": href,
+                        "snippet": "",
+                    })
+
+        if not results:
+            return {"success": True, "output": f"搜索「{query}」未找到结果。"}
+
+        lines = [f"搜索结果: 「{query}」", ""]
+        for i, r in enumerate(results, 1):
+            lines.append(f"{i}. {r['title']}")
+            lines.append(f"   {r['url']}")
+            if r['snippet']:
+                lines.append(f"   {r['snippet']}")
+            lines.append("")
+        return {"success": True, "output": "\n".join(lines).strip()}
+
+    def _tool_web_search(self, args: dict) -> dict:
+        """搜索互联网（DuckDuckGo Lite，免费无需 API key）"""
+        query = args.get("query", "")
+        max_results = args.get("max_results", 5)
+        if not query:
+            return {"success": False, "output": "搜索词不能为空"}
+        return self._ddg_search(query, max_results)
+
+    def _tool_web_fetch(self, args: dict) -> dict:
+        """抓取网页内容并提取文本"""
+        url = args.get("url", "")
+        if not url:
+            return {"success": False, "output": "URL 不能为空"}
+        if not url.startswith(("http://", "https://")):
+            return {"success": False, "output": "URL 必须以 http:// 或 https:// 开头"}
+
+        import urllib.request
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                              "AppleWebKit/537.36 (KHTML, like Gecko) "
+                              "Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                raw = resp.read()
+                # 尝试检测编码
+                content_type = resp.headers.get("Content-Type", "")
+                charset = "utf-8"
+                if "charset=" in content_type:
+                    charset = content_type.split("charset=")[-1].split(";")[0].strip()
+                html = raw.decode(charset, errors="replace")
+        except Exception as e:
+            return {"success": False, "output": f"抓取失败: {e}"}
+
+        text = self._clean_html(html)
+        return {"success": True, "output": text}
 
     def run(self, task: str) -> dict:
         """执行一次完整任务。
