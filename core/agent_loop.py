@@ -762,34 +762,46 @@ class AgentLoop:
                         )
             else:
                 # 没有 tool_calls 也没 finish，LLM 直接回复了文本
-                # 这是最终的文本回复，自动调用 finish
-                finish_payload = {
-                    "result": response["content"][:200],
-                    "summary": response["content"][:1000],
-                }
-                messages.append({
-                    "role": "user",
-                    "content": f"你的回复我已收到。请调用 finish() 提交最终结果。\n结果摘要: {response['content'][:200]}"
-                })
-                # 再给 LLM 一次机会调用 finish
-                finish_response = self.llm.chat(messages, tools=TOOLS_DEFINITIONS)
-                if finish_response["success"] and finish_response.get("tool_calls"):
-                    for tc in finish_response["tool_calls"]:
-                        if tc["function"]["name"] == "finish":
-                            args = tc["function"]["arguments"]
-                            final_result = args.get("result", "")
-                            final_summary = args.get("summary", response["content"][:1000])
-                            break
-                if not final_result:
-                    # LLM 仍然没调用 finish，强制完成
-                    final_result = response["content"][:200]
-                    final_summary = response["content"][:1000]
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": "auto-finish",
-                    "content": json.dumps({"result": final_result, "summary": final_summary}, ensure_ascii=False),
-                })
-                break
+                # 检查 LLM 是否做了实质工作（至少调用了一次工具）
+                tool_calls_in_history = any(
+                    msg.get("role") == "tool" or msg.get("role") == "assistant" and msg.get("tool_calls")
+                    for msg in messages[:-1]  # 不包括刚加的这条 assistant
+                )
+                if tool_calls_in_history:
+                    # 之前做过实质工作，LLM 最后写总结，视为完成
+                    finish_payload = {
+                        "result": response["content"][:200],
+                        "summary": response["content"][:1000],
+                    }
+                    messages.append({
+                        "role": "user",
+                        "content": f"你的回复我已收到。请调用 finish() 提交最终结果。\n结果摘要: {response['content'][:200]}"
+                    })
+                    finish_response = self.llm.chat(messages, tools=TOOLS_DEFINITIONS)
+                    if finish_response["success"] and finish_response.get("tool_calls"):
+                        for tc in finish_response["tool_calls"]:
+                            if tc["function"]["name"] == "finish":
+                                args = tc["function"]["arguments"]
+                                final_result = args.get("result", "")
+                                final_summary = args.get("summary", response["content"][:1000])
+                                break
+                    if not final_result:
+                        final_result = response["content"][:200]
+                        final_summary = response["content"][:1000]
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": "auto-finish",
+                        "content": json.dumps({"result": final_result, "summary": final_summary}, ensure_ascii=False),
+                    })
+                    break
+                else:
+                    # LLM 还没有调用任何工具 — 退回，要求用工具干活
+                    errors.append("LLM 直接回复文本而没有使用任何工具")
+                    messages.append({
+                        "role": "user",
+                        "content": "你没有使用任何工具。你的任务需要用工具来执行（terminal/write_file/web_search 等），"
+                                   "不能只回复文字。请先使用合适的工具来完成真正的任务。"
+                    })
 
         # 准备任务结果
         task_result = {
