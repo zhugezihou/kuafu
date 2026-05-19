@@ -290,7 +290,7 @@ class KuafuLauncher:
         self._clear()
         print(f"\n  {Color.ti(' 环境检查 ')}\n")
         print(f"  Python: {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
-        for mod in ['core.main','core.identity','core.sandbox','core.memory_api','core.evolution','core.llm','core.agent_loop','core.feishu_bot','core.cron_scheduler','core.skill_resolver']:
+        for mod in ['core.main','core.identity','core.sandbox','core.memory_api','core.evolution','core.llm','core.agent_loop','core.feishu_bot','core.cron_scheduler','core.skill_resolver','core.tool_registry','core.session_store','core.context_compress','core.safety']:
             try: __import__(mod);print(f"  {mod}: {Color.ok('OK')}")
             except Exception as e: print(f"  {mod}: {Color.er(str(e))}")
         env_path=ROOT_DIR/'.env'
