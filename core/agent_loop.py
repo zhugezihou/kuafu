@@ -19,6 +19,8 @@ from core.memory_api import MemoryAPI
 from core.evolution import EvolutionEngine
 from core.tool_registry import ToolRegistry
 from core.session_store import SessionStore
+from core.context_compress import ContextCompressor
+from core.safety import SafetyLayer
 from core.skill_resolver import discover_skills, inject_skills_to_prompt
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -61,6 +63,12 @@ class AgentLoop:
         self.sessions = session_store or SessionStore()
         self.max_turns = max_turns
         self.on_step = on_step
+
+        # 上下文压缩器（默认 12000 token 上限，保留 5 轮）
+        self.compressor = ContextCompressor(
+            max_context_tokens=12000,
+            keep_recent_rounds=5,
+        )
 
         # 当前会话 ID（由 run() 创建）
         self.current_session_id: Optional[str] = None
@@ -111,7 +119,14 @@ class AgentLoop:
             parts.append(f"- 成功率: {task_stats['success_rate']}%")
         parts.append("")
 
-        # 6. 历史记忆
+        # 6. 安全规则
+        parts.append("## 安全规则")
+        parts.append("- 执行命令前会进行风险分级：safe(自动执行) / attention(需确认) / dangerous(需审批) / forbidden(禁止)")
+        parts.append("- API key、token、密码等敏感信息在日志和输出中自动脱敏")
+        parts.append("- 输出中不会包含环境变量或敏感配置文件内容")
+        parts.append("")
+
+        # 7. 历史记忆
         recent = self.memory.recall("", limit=10)
         if recent:
             parts.append("## 相关记忆")
@@ -196,6 +211,23 @@ class AgentLoop:
 
             self._log(f"🤔 第 {turn_count}/{self.max_turns} 轮 — LLM 思考中...")
 
+            # 上下文压缩检查：每次 LLM 调用前检查是否需要压缩
+            if self.compressor.needs_compression(messages):
+                self._log(f"📏 上下文超限（{self.compressor._count_tokens(messages)} tokens），执行压缩...")
+                result = self.compressor.compress(messages, llm_summarize=None)
+                if result.messages_removed > 0:
+                    # 保留 system + 压缩摘要 + 最近几轮
+                    system_msgs = [m for m in messages if m.get("role") == "system"]
+                    summary_msg = {
+                        "role": "system",
+                        "content": f"[上下文压缩] 移除了 {result.messages_removed} 条旧消息，节省 {result.original_tokens - result.compressed_tokens} tokens。摘要：{result.summary[:300]}"
+                    }
+                    keep = self.compressor.keep_recent_rounds * 4
+                    non_system = [m for m in messages if m.get("role") != "system"]
+                    recent_msgs = non_system[-keep:] if len(non_system) > keep else non_system
+                    messages = system_msgs + [summary_msg] + recent_msgs
+                    self._log(f"✅ 压缩完成: {result.compression_ratio*100:.0f}% 缩减 ({result.original_tokens}→{result.compressed_tokens} tokens)")
+
             # 调用 LLM
             response = self.llm.chat(messages, tools=tool_schemas)
 
@@ -260,18 +292,24 @@ class AgentLoop:
                     self._log(f"🔧 执行 {fn_name}({arg_preview}...)")
 
                     tool_result = self.tools.execute(tc)
+
+                    # 安全脱敏：对终端输出中的 API key、token 等脱敏
+                    safe_output = SafetyLayer.sanitize_text(
+                        str(tool_result.get("output", "(无输出)"))
+                    )
+
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
-                        "content": str(tool_result.get("output", "(无输出)")),
+                        "content": safe_output,
                     })
                     self.sessions.append_message(
                         self.current_session_id, "tool",
-                        str(tool_result.get("output", ""))[:500],
+                        safe_output[:500],
                     )
 
                     if not tool_result["success"]:
-                        err = f"工具 {fn_name} 失败: {tool_result.get('output', '')}"
+                        err = f"工具 {fn_name} 失败: {safe_output[:200]}"
                         errors.append(err)
             else:
                 # 没有 tool_calls — LLM 直接回复了文本

@@ -185,6 +185,162 @@ class FeishuBot:
             print(f"[FeishuBot] 发送异常: {e}")
             return False
 
+    def send_image(self, image_path: str, chat_id: str = "") -> bool:
+        """发送图片消息到群聊。
+
+        需要先上传图片获取 image_key，再发消息。
+        飞书支持: JPEG, PNG, WEBP, GIF（最大 10MB）。
+
+        Args:
+            image_path: 本地图片路径
+            chat_id: 目标群聊 ID
+
+        Returns:
+            bool 是否发送成功
+        """
+        target_chat = chat_id or self.chat_id
+        token = self._get_tenant_token()
+        if not token:
+            return False
+
+        img_path = Path(image_path)
+        if not img_path.exists():
+            print(f"[FeishuBot] 图片不存在: {image_path}")
+            return False
+
+        # 步骤 1: 上传图片获取 image_key
+        import mimetypes
+        boundary = "----KuafuFeishuBot" + str(int(time.time()))
+        img_data = img_path.read_bytes()
+        mime_type = mimetypes.guess_type(str(img_path))[0] or "image/png"
+        filename = img_path.name
+
+        body = bytearray()
+        body.extend(f"--{boundary}\r\n".encode())
+        body.extend(f'Content-Disposition: form-data; name="image_type"\r\n\r\nmessage\r\n'.encode())
+        body.extend(f"--{boundary}\r\n".encode())
+        body.extend(f'Content-Disposition: form-data; name="image"; filename="{filename}"\r\n'.encode())
+        body.extend(f"Content-Type: {mime_type}\r\n\r\n".encode())
+        body.extend(img_data)
+        body.extend(f"\r\n--{boundary}--\r\n".encode())
+
+        upload_url = f"{BASE_URL}/im/v1/images"
+        upload_req = urllib.request.Request(upload_url, data=bytes(body), headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        }, method="POST")
+
+        try:
+            with urllib.request.urlopen(upload_req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                if data.get("code") != 0:
+                    print(f"[FeishuBot] 图片上传失败: {data}")
+                    return False
+                image_key = data.get("data", {}).get("image_key", "")
+        except Exception as e:
+            print(f"[FeishuBot] 图片上传异常: {e}")
+            return False
+
+        # 步骤 2: 发送图片消息
+        msg_url = f"{BASE_URL}/im/v1/messages?receive_id_type=chat_id"
+        msg_body = json.dumps({
+            "receive_id": target_chat,
+            "msg_type": "image",
+            "content": json.dumps({"image_key": image_key}, ensure_ascii=False),
+        }, ensure_ascii=False).encode("utf-8")
+
+        msg_req = urllib.request.Request(msg_url, data=msg_body, headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json; charset=utf-8",
+        }, method="POST")
+
+        try:
+            with urllib.request.urlopen(msg_req, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                return data.get("code") == 0
+        except Exception as e:
+            print(f"[FeishuBot] 图片消息发送异常: {e}")
+            return False
+
+    def send_file(self, file_path: str, chat_id: str = "") -> bool:
+        """发送文件到群聊。
+
+        需要先上传文件获取 file_key，再发消息。
+        支持任意文件类型（最大 20MB）。
+
+        Args:
+            file_path: 本地文件路径
+            chat_id: 目标群聊 ID
+
+        Returns:
+            bool 是否发送成功
+        """
+        target_chat = chat_id or self.chat_id
+        token = self._get_tenant_token()
+        if not token:
+            return False
+
+        fpath = Path(file_path)
+        if not fpath.exists():
+            print(f"[FeishuBot] 文件不存在: {file_path}")
+            return False
+
+        # 步骤 1: 上传文件
+        import mimetypes
+        boundary = "----KuafuFeishuBot" + str(int(time.time()))
+        file_data = fpath.read_bytes()
+        mime_type = mimetypes.guess_type(str(fpath))[0] or "application/octet-stream"
+        filename = fpath.name
+
+        body = bytearray()
+        body.extend(f"--{boundary}\r\n".encode())
+        body.extend(f'Content-Disposition: form-data; name="file_type"\r\n\r\nstream\r\n'.encode())
+        body.extend(f"--{boundary}\r\n".encode())
+        body.extend(f'Content-Disposition: form-data; name="file_name"\r\n\r\n{filename}\r\n'.encode())
+        body.extend(f"--{boundary}\r\n".encode())
+        body.extend(f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'.encode())
+        body.extend(f"Content-Type: {mime_type}\r\n\r\n".encode())
+        body.extend(file_data)
+        body.extend(f"\r\n--{boundary}--\r\n".encode())
+
+        upload_url = f"{BASE_URL}/im/v1/files"
+        upload_req = urllib.request.Request(upload_url, data=bytes(body), headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        }, method="POST")
+
+        try:
+            with urllib.request.urlopen(upload_req, timeout=60) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                if data.get("code") != 0:
+                    print(f"[FeishuBot] 文件上传失败: {data}")
+                    return False
+                file_key = data.get("data", {}).get("file_key", "")
+        except Exception as e:
+            print(f"[FeishuBot] 文件上传异常: {e}")
+            return False
+
+        # 步骤 2: 发送文件消息
+        msg_url = f"{BASE_URL}/im/v1/messages?receive_id_type=chat_id"
+        msg_body = json.dumps({
+            "receive_id": target_chat,
+            "msg_type": "file",
+            "content": json.dumps({"file_key": file_key}, ensure_ascii=False),
+        }, ensure_ascii=False).encode("utf-8")
+
+        msg_req = urllib.request.Request(msg_url, data=msg_body, headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json; charset=utf-8",
+        }, method="POST")
+
+        try:
+            with urllib.request.urlopen(msg_req, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                return data.get("code") == 0
+        except Exception as e:
+            print(f"[FeishuBot] 文件消息发送异常: {e}")
+            return False
+
     def reply_text(self, msg_id: str, text: str) -> bool:
         """回复特定消息（带引用）。"""
         if not text.strip():

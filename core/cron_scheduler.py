@@ -372,9 +372,16 @@ class CronScheduler:
         else:
             task.last_result = "(无回调)"
 
-        # 输出模式: file
+        # 输出模式: file / feishu
         if task.output_mode == "file":
             self._save_to_file(task)
+        elif task.output_mode == "feishu" and hasattr(self, '_feishu_bot'):
+            self._feishu_bot.send_text(
+                f"⏰ Cron 任务: {task.name}\n"
+                f"时间: {task.last_run}\n\n"
+                f"{task.last_result[:19000] if task.last_result else '(无输出)'}"
+            )
+            self._save_to_file(task)  # 也保存文件
 
     def _save_to_file(self, task: CronTask):
         """将任务结果保存到文件。"""
@@ -388,6 +395,13 @@ class CronScheduler:
             f"结果:\n{task.last_result}\n"
         )
         out_path.write_text(content, encoding="utf-8")
+
+    # ── 飞书集成 ────────────────────────────────────────────────
+
+    def set_feishu_bot(self, bot) -> None:
+        """注入飞书 Bot 实例，使 feishu output_mode 生效。"""
+        self._feishu_bot = bot
+        print(f"[CronScheduler] 📱 已接入飞书 Bot")
 
     # ── 启动 / 停止 ─────────────────────────────────────────────
 

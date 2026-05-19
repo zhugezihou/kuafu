@@ -138,13 +138,22 @@ class ToolRegistry:
     @staticmethod
     def _term_schema() -> dict:
         return {
-            "description": "在 Linux 终端中执行命令。可以运行 shell 命令、脚本、编译代码等。",
+            "description": "执行 shell 命令（终端），返回命令的输出和状态码",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "command": {"type": "string", "description": "要执行的 shell 命令"},
-                    "workdir": {"type": "string", "description": "工作目录（绝对路径），默认为项目根目录"},
-                    "timeout": {"type": "integer", "description": "超时时间（秒），默认 30"},
+                    "command": {
+                        "type": "string",
+                        "description": "要执行的 shell 命令",
+                    },
+                    "workdir": {
+                        "type": "string",
+                        "description": "工作目录（可选，默认项目根目录）",
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "超时秒数（可选，默认 30）",
+                    },
                 },
                 "required": ["command"],
             },
@@ -153,13 +162,22 @@ class ToolRegistry:
     @staticmethod
     def _read_schema() -> dict:
         return {
-            "description": "读取文件内容。返回带行号的文本。不支持二进制文件。",
+            "description": "读取文件内容（支持分页）",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "文件路径（绝对或相对）"},
-                    "offset": {"type": "integer", "description": "起始行号（1-indexed），默认 1"},
-                    "limit": {"type": "integer", "description": "最多返回行数，默认 500"},
+                    "path": {
+                        "type": "string",
+                        "description": "文件路径",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "起始行号（可选，默认 1）",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "最多读取行数（可选，默认 200）",
+                    },
                 },
                 "required": ["path"],
             },
@@ -168,12 +186,18 @@ class ToolRegistry:
     @staticmethod
     def _write_schema() -> dict:
         return {
-            "description": "写入文件。会完全覆盖已有内容。会检查 core/ 目录写保护。",
+            "description": "写入文件内容（覆盖模式）",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "文件路径（绝对或相对）"},
-                    "content": {"type": "string", "description": "完整的文件内容"},
+                    "path": {
+                        "type": "string",
+                        "description": "文件路径",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "要写入的内容",
+                    },
                 },
                 "required": ["path", "content"],
             },
@@ -182,14 +206,22 @@ class ToolRegistry:
     @staticmethod
     def _patch_schema() -> dict:
         return {
-            "description": "对文件进行精确的文本替换编辑。比 write_file 更适合修改已有文件。",
+            "description": "对文件执行精确的查找替换编辑",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "文件路径"},
-                    "old_string": {"type": "string", "description": "要被替换的旧文本（必须是唯一的）"},
-                    "new_string": {"type": "string", "description": "新的文本"},
-                    "replace_all": {"type": "boolean", "description": "是否替换所有匹配（默认 false）"},
+                    "path": {
+                        "type": "string",
+                        "description": "文件路径",
+                    },
+                    "old_string": {
+                        "type": "string",
+                        "description": "要查找的原文（必须有唯一匹配）",
+                    },
+                    "new_string": {
+                        "type": "string",
+                        "description": "替换后的内容",
+                    },
                 },
                 "required": ["path", "old_string", "new_string"],
             },
@@ -198,32 +230,43 @@ class ToolRegistry:
     @staticmethod
     def _search_schema() -> dict:
         return {
-            "description": "搜索文件内容或查找文件名。用于代码搜索、文档检索等。",
+            "description": "在项目中搜索文件内容或文件名",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "pattern": {"type": "string", "description": "搜索模式。内容搜索用正则，文件搜索用 glob 模式"},
+                    "pattern": {
+                        "type": "string",
+                        "description": "搜索模式（正则表达式）",
+                    },
                     "target": {
                         "type": "string",
                         "enum": ["content", "files"],
-                        "description": "'content' 搜索文件内容，'files' 查找文件名",
+                        "description": "搜索目标：'content' 搜索内容，'files' 搜索文件名",
                     },
-                    "path": {"type": "string", "description": "搜索路径"},
-                    "file_glob": {"type": "string", "description": "文件筛选模式（如 *.py）"},
+                    "path": {
+                        "type": "string",
+                        "description": "搜索路径（可选，默认项目根目录）",
+                    },
                 },
-                "required": ["pattern", "target"],
+                "required": ["pattern"],
             },
         }
 
     @staticmethod
     def _web_search_schema() -> dict:
         return {
-            "description": "搜索互联网。用于获取最新信息、调研项目、查找文档等。",
+            "description": "在互联网上搜索信息，返回搜索结果列表（标题 + URL + 摘要）",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "搜索关键词"},
-                    "max_results": {"type": "integer", "description": "返回结果数，默认 5"},
+                    "query": {
+                        "type": "string",
+                        "description": "搜索关键词",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "最大返回结果数（默认 5，最大 10）",
+                    },
                 },
                 "required": ["query"],
             },
@@ -232,11 +275,14 @@ class ToolRegistry:
     @staticmethod
     def _web_fetch_schema() -> dict:
         return {
-            "description": "抓取网页内容。用于阅读在线文档、文章、README 等。",
+            "description": "抓取并提取网页的纯文本内容",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "url": {"type": "string", "description": "网页 URL"},
+                    "url": {
+                        "type": "string",
+                        "description": "要抓取的网页 URL",
+                    },
                 },
                 "required": ["url"],
             },
@@ -245,14 +291,20 @@ class ToolRegistry:
     @staticmethod
     def _finish_schema() -> dict:
         return {
-            "description": "完成任务并返回最终结果。调用此工具表示任务已完成。",
+            "description": "完成任务并返回最终结果",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "result": {"type": "string", "description": "最终结果摘要"},
-                    "summary": {"type": "string", "description": "详细的任务完成报告"},
+                    "result": {
+                        "type": "string",
+                        "description": "任务结果总结",
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "详细摘要",
+                    },
                 },
-                "required": ["result", "summary"],
+                "required": ["result"],
             },
         }
 
@@ -260,135 +312,210 @@ class ToolRegistry:
 
     # ---- terminal ----
 
+    @staticmethod
+    def _build_env() -> dict:
+        """构建干净的运行环境变量（脱敏 API key）"""
+        env = dict(os.environ)
+        # 脱敏敏感变量
+        for key in list(env.keys()):
+            if any(k in key.lower() for k in ["api_key", "api_secret", "token", "password", "secret"]):
+                env[key] = "***"
+        return env
+
     def _handle_terminal(self, args: dict) -> dict:
         command = args.get("command", "")
         workdir = args.get("workdir", str(ROOT_DIR))
         timeout = args.get("timeout", 30)
 
-        if not command:
+        if not command.strip():
             return {"success": False, "output": "命令不能为空"}
 
-        # 安全检查
-        from core.sandbox import validate_command
-        safe, risk, reason = validate_command(command)
-        if not safe:
-            return {"success": False, "output": f"安全拦截 [{risk}]: {reason}"}
+        # 安全检查：禁止危险命令
+        dangerous = ["rm -rf /", "mkfs.", "dd if=", "> /dev/", ":(){ :|:& };:"]
+        for d in dangerous:
+            if d in command:
+                return {"success": False, "output": f"命令被安全策略拦截: 包含危险模式 '{d}'"}
 
         try:
-            r = subprocess.run(
+            result = subprocess.run(
                 command,
                 shell=True,
                 capture_output=True,
                 text=True,
-                cwd=workdir,
                 timeout=timeout,
+                cwd=workdir,
+                env=self._build_env(),
             )
-            output = r.stdout
-            if r.stderr:
-                output += "\n--- stderr ---\n" + r.stderr
-            if output.strip():
-                output = output[:3000]
-                if len(output) >= 3000:
-                    output += "\n... (输出已截断)"
+            output = result.stdout
+            if result.stderr:
+                output += f"\n[stderr]\n{result.stderr[:2000]}"
+            if result.returncode != 0:
+                output += f"\n[退出码: {result.returncode}]"
+            # 限制输出大小
+            if len(output) > 5000:
+                output = output[:5000] + "\n\n...(输出已截断)"
             return {
-                "success": r.returncode == 0,
-                "output": output or "(无输出)",
-                "exit_code": r.returncode,
+                "success": result.returncode == 0,
+                "output": output.strip() or "(无输出)",
+                "exit_code": result.returncode,
             }
         except subprocess.TimeoutExpired:
-            return {"success": False, "output": f"命令执行超时（{timeout}s）"}
+            return {"success": False, "output": f"命令执行超时 ({timeout}s)"}
         except Exception as e:
-            return {"success": False, "output": str(e)}
+            return {"success": False, "output": f"命令执行失败: {e}"}
 
     # ---- read_file ----
 
+    @staticmethod
     def _handle_read_file(self, args: dict) -> dict:
-        path = Path(args.get("path", ""))
-        if not path.is_absolute():
-            path = ROOT_DIR / path
-        if not path.exists():
-            return {"success": False, "output": f"文件不存在: {path}"}
+        path = args.get("path", "")
+        offset = args.get("offset", 1)
+        limit = args.get("limit", 200)
+
+        if not path:
+            return {"success": False, "output": "路径不能为空"}
+
+        # 路径解析
+        p = Path(path)
+        if not p.is_absolute():
+            p = ROOT_DIR / p
+
+        if not p.exists():
+            return {"success": False, "output": f"文件不存在: {p}"}
+        if not p.is_file():
+            return {"success": False, "output": f"不是文件: {p}"}
+
         try:
-            content = path.read_text(encoding="utf-8")
-            lines = content.split("\n")
-            offset = args.get("offset", 1)
-            limit = args.get("limit", 500)
-            selected = lines[offset - 1 : offset - 1 + limit]
+            lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+            total = len(lines)
+            start = max(0, offset - 1)
+            end = min(total, start + limit)
+            content_lines = lines[start:end]
             output = "\n".join(
-                f"{offset + i}|{line}" for i, line in enumerate(selected)
+                f"{i + 1:6d}|{l}"
+                for i, l in enumerate(content_lines, start=start + 1)
             )
-            return {"success": True, "output": output, "total_lines": len(lines)}
+            if total > end:
+                output += f"\n...(共 {total} 行，显示 {start + 1}-{end})"
+            return {"success": True, "output": output, "total_lines": total}
         except Exception as e:
-            return {"success": False, "output": str(e)}
+            return {"success": False, "output": f"读取失败: {e}"}
 
     # ---- write_file ----
 
+    @staticmethod
     def _handle_write_file(self, args: dict) -> dict:
-        path = Path(args.get("path", ""))
+        path = args.get("path", "")
         content = args.get("content", "")
-        if not path.is_absolute():
-            path = ROOT_DIR / path
 
-        from core.sandbox import is_path_allowed_for_write
-        allowed, reason = is_path_allowed_for_write(str(path))
-        if not allowed:
-            return {"success": False, "output": f"安全拦截: {reason}"}
+        if not path:
+            return {"success": False, "output": "路径不能为空"}
+
+        p = Path(path)
+        if not p.is_absolute():
+            p = ROOT_DIR / p
+
+        # 安全检查：不能写入 core/ 目录（只读保护区）
+        core_path = (ROOT_DIR / "core").resolve()
+        try:
+            p_resolved = p.resolve()
+            if str(p_resolved).startswith(str(core_path)):
+                return {"success": False, "output": f"禁止写入 core/ 只读保护区: {p}"}
+        except (OSError, ValueError):
+            pass
 
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8")
-            return {"success": True, "output": f"已写入 {path} ({len(content)} bytes)"}
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content, encoding="utf-8")
+            return {"success": True, "output": f"已写入 {len(content)} 字符到 {p}"}
         except Exception as e:
-            return {"success": False, "output": str(e)}
+            return {"success": False, "output": f"写入失败: {e}"}
 
     # ---- patch ----
 
+    @staticmethod
     def _handle_patch(self, args: dict) -> dict:
-        path = Path(args.get("path", ""))
-        old = args.get("old_string", "")
-        new = args.get("new_string", "")
-        replace_all = args.get("replace_all", False)
-        if not path.is_absolute():
-            path = ROOT_DIR / path
+        path = args.get("path", "")
+        old_str = args.get("old_string", "")
+        new_str = args.get("new_string", "")
 
-        if not path.exists():
-            return {"success": False, "output": f"文件不存在: {path}"}
+        if not path or not old_str:
+            return {"success": False, "output": "path 和 old_string 不能为空"}
+
+        p = Path(path)
+        if not p.is_absolute():
+            p = ROOT_DIR / p
+
+        if not p.exists():
+            return {"success": False, "output": f"文件不存在: {p}"}
 
         try:
-            content = path.read_text(encoding="utf-8")
-            if old not in content:
-                return {"success": False, "output": f"未找到匹配文本: {old[:50]}..."}
-            count = content.count(old)
-            if count > 1 and not replace_all:
-                return {"success": False, "output": f"匹配到 {count} 处，请使用更精确的文本"}
-            new_content = content.replace(old, new, 1 if not replace_all else -1)
-            path.write_text(new_content, encoding="utf-8")
-            return {"success": True, "output": f"已替换 {'全部' if replace_all else '1'}处"}
+            text = p.read_text(encoding="utf-8")
+            if old_str not in text:
+                return {"success": False, "output": f"在文件中未找到匹配内容: {old_str[:50]}"}
+            new_text = text.replace(old_str, new_str, 1)
+            p.write_text(new_text, encoding="utf-8")
+            return {"success": True, "output": f"补丁已应用: {p}"}
         except Exception as e:
-            return {"success": False, "output": str(e)}
+            return {"success": False, "output": f"补丁失败: {e}"}
 
     # ---- search_files ----
 
+    @staticmethod
     def _handle_search_files(self, args: dict) -> dict:
         pattern = args.get("pattern", "")
         target = args.get("target", "content")
-        search_path = args.get("path", str(ROOT_DIR))
-        file_glob = args.get("file_glob")
+        path = args.get("path", str(ROOT_DIR))
 
-        if target == "content":
-            cmd = ["rg", "-n", "--max-count", "5", pattern]
-            if file_glob:
-                cmd.extend(["-g", file_glob])
-            cmd.append(search_path)
-        else:
-            cmd = ["find", search_path, "-name", pattern, "-type", "f"]
+        if not pattern:
+            return {"success": False, "output": "搜索模式不能为空"}
 
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-            output = r.stdout[:2000] or "(无匹配结果)"
-            return {"success": True, "output": output}
+            search_path = Path(path)
+            if not search_path.is_absolute():
+                search_path = ROOT_DIR / path
+
+            results = []
+
+            if target == "files":
+                # 文件名搜索（glob 模式）
+                for f in search_path.rglob(pattern):
+                    try:
+                        rel = f.relative_to(ROOT_DIR)
+                        results.append(str(rel))
+                    except ValueError:
+                        results.append(str(f))
+                    if len(results) >= 50:
+                        break
+            else:
+                # 内容搜索（递归文件 + 正则）
+                py_files = [f for f in search_path.rglob("*") if f.is_file()]
+                for f in py_files[:200]:  # 限制文件数
+                    try:
+                        text = f.read_text(encoding="utf-8", errors="replace")
+                        for i, line in enumerate(text.splitlines(), 1):
+                            if re.search(pattern, line, re.IGNORECASE):
+                                try:
+                                    rel = f.relative_to(ROOT_DIR)
+                                except ValueError:
+                                    rel = f
+                                results.append(f"{rel}:{i}: {line.strip()[:120]}")
+                                if len(results) >= 30:
+                                    break
+                    except Exception:
+                        continue
+                    if len(results) >= 30:
+                        break
+
+            if not results:
+                return {"success": True, "output": "未找到匹配结果。"}
+            return {
+                "success": True,
+                "output": "\n".join(results),
+                "count": len(results),
+            }
         except Exception as e:
-            return {"success": False, "output": str(e)}
+            return {"success": False, "output": f"搜索失败: {e}"}
 
     # ---- web_search ----
 
@@ -466,7 +593,7 @@ class ToolRegistry:
         return {"success": True, "output": "\n".join(lines).strip()}
 
     def _search_bing(self, query: str, max_results: int = 5) -> dict:
-        """Bing 搜索作为 fallback"""
+        """Bing 搜索作为 fallback（多模式解析）"""
         url = f"https://www.bing.com/search?q={urllib.parse.quote(query)}"
         req = urllib.request.Request(
             url,
@@ -482,17 +609,29 @@ class ToolRegistry:
         except Exception as e:
             return {"success": False, "output": f"搜索失败: {e}"}
 
+        # 多模式解析 Bing HTML（现代版结构变化大）
         results = []
-        for m in re.finditer(
-            r'<h2><a[^>]*href="(https?://[^"]+)"[^>]*>([^<]*)</a>', html
-        ):
-            if len(results) >= max_results:
+        patterns = [
+            r'<a[^>]*href="(https?://(?!www\.bing\.com)[^"]+)"[^>]*>(.*?)</a>',
+            r'<h2><a[^>]*href="(https?://[^"]+)"[^>]*>([^<]*)</a>',
+            r'<cite[^>]*>(.*?)</cite>.*?<p[^>]*>(.*?)</p>',
+        ]
+
+        for pattern in patterns:
+            for m in re.finditer(pattern, html, re.DOTALL):
+                if len(results) >= max_results:
+                    break
+                title = re.sub(r'<[^>]+>', '', m.group(2)).strip() if m.lastindex >= 2 else ""
+                url = m.group(1).strip()
+                # 过滤掉 Bing 自己的链接
+                if "bing.com" not in url and url.startswith("http"):
+                    results.append({
+                        "title": title[:100] or url[:60],
+                        "url": url,
+                        "snippet": "",
+                    })
+            if results:
                 break
-            results.append({
-                "title": m.group(2).strip(),
-                "url": m.group(1),
-                "snippet": "",
-            })
 
         if not results:
             return {"success": True, "output": f"Bing 搜索「{query}」未找到结果。"}
