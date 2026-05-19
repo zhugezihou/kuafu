@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/asus/kuafu/venv/bin/python3
 """夸父 CLI — python3 run.py '你的任务'"""
 
 import sys

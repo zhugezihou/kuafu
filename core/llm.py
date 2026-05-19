@@ -21,12 +21,8 @@ from typing import Optional
 import urllib.request
 import urllib.error
 
-# 尝试加载 .env — 先找项目根目录，再找 ~/.hermes/.env
+# 加载 .env — 只查项目根目录
 ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
-if not ENV_PATH.exists():
-    ENV_PATH = Path.home() / ".hermes" / ".env"
-    if not ENV_PATH.exists():
-        print("Warning: no .env file found")
 if ENV_PATH.exists():
     for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
         line = line.strip()
@@ -34,9 +30,15 @@ if ENV_PATH.exists():
             k, v = line.split("=", 1)
             os.environ.setdefault(k.strip(), v.strip())
 
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
-DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+DEEPSEEK_API_KEY = os.environ.get("KUAFFU_API_KEY") or os.environ.get("DEEPSEEK_API_KEY", "")
+DEEPSEEK_BASE_URL = os.environ.get("KUAFFU_BASE_URL") or os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+KUAFFU_BACKEND = os.environ.get("KUAFFU_BACKEND", "cloud").strip().lower()
 DEFAULT_MODEL = "deepseek-chat"
+
+# 本地模型配置
+LOCAL_BASE_URL = "http://localhost:8080"
+LOCAL_MODEL = "Qwen3.5-9B-Q4_K_M.gguf"
+LOCAL_MAX_TOKENS = 4096
 
 
 class LLMClient:
@@ -44,24 +46,35 @@ class LLMClient:
 
     def __init__(
         self,
+        backend: str = "",
         api_key: str = "",
         base_url: str = "",
-        model: str = DEFAULT_MODEL,
+        model: str = "",
         max_tokens: int = 4096,
         temperature: float = 0.7,
         timeout: int = 60,
     ):
-        self.api_key = api_key or DEEPSEEK_API_KEY
-        self.base_url = (base_url or DEEPSEEK_BASE_URL).rstrip("/")
-        self.model = model
-        self.max_tokens = max_tokens
-        self.temperature = temperature
-        self.timeout = timeout
+        # 后端选择：参数 > 环境变量 > 默认 cloud
+        backend = (backend or KUAFFU_BACKEND).strip().lower()
 
-        if not self.api_key:
-            raise ValueError(
-                "DEEPSEEK_API_KEY 未设置。请设置环境变量或传入 api_key。"
-            )
+        if backend == "local":
+            self.api_key = api_key or "ignored"
+            self.base_url = (base_url or LOCAL_BASE_URL).rstrip("/")
+            self.model = model or LOCAL_MODEL
+            self.max_tokens = max_tokens or LOCAL_MAX_TOKENS
+            self.temperature = temperature
+            self.timeout = timeout
+        else:
+            self.api_key = api_key or DEEPSEEK_API_KEY
+            self.base_url = (base_url or DEEPSEEK_BASE_URL).rstrip("/")
+            self.model = model or DEFAULT_MODEL
+            self.max_tokens = max_tokens
+            self.temperature = temperature
+            self.timeout = timeout
+            if not self.api_key:
+                raise ValueError(
+                    "API Key 未设置。请在项目 .env 中设置 KUAFFU_API_KEY，或传入 api_key。"
+                )
 
     def _api_url(self) -> str:
         """构建 Chat Completions API URL。"""
