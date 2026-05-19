@@ -818,6 +818,9 @@ class AgentLoop:
             tags=["task", task_result["task_type"]],
         )
 
+        # 自检：让 LLM 审视自己的输出，判断是否有问题
+        self._self_check(task_result, messages, start)
+
         # 进化评估
         evolution_event = self.evolution.evaluate_and_evolve(task_result)
         if evolution_event:
@@ -826,3 +829,53 @@ class AgentLoop:
         task_result["turns"] = turn_count
         task_result["messages_count"] = len(messages)
         return task_result
+
+    def _self_check(self, task_result: dict, messages: list, start: float) -> None:
+        """任务完成后自检：让 LLM 审视自己的输出是否犯错了。
+
+        如果发现明显错误，追加 self_correction 到 result 中。
+        不额外消耗太多 token，只做快速检查。
+        """
+        result_text = task_result.get("result", "")
+        if not result_text:
+            return
+
+        # 只对写了代码/文件的任务做自检（纯回答不浪费 token）
+        tool_names = [m.get("tool_calls", [{}])[0].get("function", {}).get("name", "")
+                      if m.get("tool_calls") else "" for m in messages]
+        has_code_work = any("write_file" in str(t) or "patch" in str(t) or "terminal" in str(t) for t in tool_names)
+        if not has_code_work:
+            return
+
+        if self.on_step:
+            self.on_step("🔍 自检中 — 审视输出是否有问题...")
+
+        check_prompt = (
+            "你刚才完成了一个任务。请快速检查你的最终输出，指出是否有以下问题：\n\n"
+            "1. 代码有语法错误或明显逻辑错误？\n"
+            "2. 生成的文件路径/位置有问题？\n"
+            "3. 输出中的代码无法直接运行？\n"
+            "4. 运行产生了错误——你修复了还是只报告了？如果只报告没修复，算有问题。\n\n"
+            f"你的最终输出:\n```\n{result_text[:1500]}\n```\n\n"
+            "如果存在明显问题，先描述问题，再给出修正方案。\n"
+            "如果完全没有问题（代码正确、错误已修复），只回复「无问题」三个字。"
+        )
+        check_msg = [
+            {"role": "system", "content": "你是夸父自检器。只检查输出的正确性，不要做无关分析。"},
+            {"role": "user", "content": check_prompt},
+        ]
+        try:
+            check_resp = self.llm.chat(check_msg, tools=None)
+            if check_resp["success"]:
+                feedback = check_resp["content"].strip()
+                if feedback != "无问题" and len(feedback) > 10:
+                    task_result["self_check"] = feedback
+                    task_result["result"] += f"\n\n---\n🔍 自检反馈:\n{feedback}"
+                    if self.on_step:
+                        self.on_step(f"⚠️ 自检发现问题: {feedback[:120]}...")
+                else:
+                    if self.on_step:
+                        self.on_step("✅ 自检无问题")
+        except Exception as e:
+            if self.on_step:
+                self.on_step(f"⚠️ 自检异常: {e}")
