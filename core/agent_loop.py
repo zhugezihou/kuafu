@@ -742,11 +742,18 @@ class AgentLoop:
             # 检查是否调用了 finish
             finish_called = False
             if response.get("tool_calls"):
+                # 如果 LLM 在回复文本的同时还调用了 finish，取文本内容作为最终结果
+                llm_content = response.get("content", "").strip()
                 for tc in response["tool_calls"]:
                     if tc["function"]["name"] == "finish":
                         args = tc["function"]["arguments"]
-                        final_result = args.get("result", "")
-                        final_summary = args.get("summary", "")
+                        # 优先用 LLM 的回复文本（如果写了具体内容）
+                        if llm_content and llm_content != "":
+                            final_result = llm_content
+                            final_summary = args.get("summary", llm_content[:200])
+                        else:
+                            final_result = args.get("result", "")
+                            final_summary = args.get("summary", "")
                         finish_called = True
                         break
                 if finish_called:
