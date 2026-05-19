@@ -1,0 +1,9 @@
+# 夸父定时任务配置
+# schedule 支持: "30m" / "2h" / "0 8 * * *" (每日8点) / ISO时间
+
+tasks:
+  - name: "每日早晨问好"
+    schedule: "0 8 * * *"
+    task: "早安问候"
+    enabled: true
+    output_mode: file

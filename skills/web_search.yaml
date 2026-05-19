@@ -1,0 +1,26 @@
+name: "web_search"
+description: "从互联网搜索信息。使用 DuckDuckGo Lite（免费无需 API key）搜索"
+keywords:
+  - "搜索"
+  - "查询"
+  - "查找"
+  - "调研"
+  - "research"
+  - "调查"
+  - "找资料"
+  - "查一查"
+steps:
+  - "用 web_search 工具搜索关键词，最多返回 5 条结果"
+  - "如果搜索结果不够，尝试用不同关键词重新搜索"
+  - "需要详细阅读时，用 web_fetch 抓取具体网页"
+examples:
+  - "任务：帮我查一下 Python 3.13 的新特性"
+  - "1. web_search('Python 3.13 新特性 2025')"
+  - "2. 阅读结果，选择最相关的链接用 web_fetch 获取详情"
+  - "3. 总结给用户"
+  - ""
+pitfalls:
+  - "不要一次搜太多无关词，每次聚焦一个方向"
+  - "中文搜索用中文关键词（如 '夸父 AI agent 框架'）"
+  - "英文/技术搜索用英文关键词（如 'Python 3.13 what is new'）"
+usage_count: 0

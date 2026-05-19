@@ -22,9 +22,9 @@ from typing import Any, Callable, Optional
 
 from core.identity import load_identity_statement
 from core.llm import LLMClient
-from core.memory_api import MemoryAPI
+from core.memory import MemoryAPI
 from core.evolution import EvolutionEngine
-
+from core.skill_resolver import discover_skills, inject_skills_to_prompt, match_skills
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
 # ── Bing 搜索 fallback（当 DuckDuckGo 不可用时） ─────────────────
@@ -382,6 +382,18 @@ class AgentLoop:
             except (json.JSONDecodeError, OSError):
                 pass
 
+        # 7. 可用技能列表（从 skills/*.yaml 加载）
+        all_skills = discover_skills()
+        if all_skills:
+            parts.append("## 可用技能参考")
+            parts.append("以下技能可供参考（根据你的任务自动匹配）：")
+            parts.append("")
+            for s in all_skills:
+                parts.append(f"- {s['name']}: {s['description']}")
+            parts.append("")
+            parts.append("技能已经融入你的知识体系，不必显式调用。根据任务需求选择性地使用。")
+            parts.append("")
+
         return "\n".join(parts)
 
     def _execute_tool(self, tool_call: dict) -> dict:
@@ -712,6 +724,12 @@ class AgentLoop:
         # System prompt
         system_prompt = self.build_system_prompt()
         messages.append({"role": "system", "content": system_prompt})
+
+        # 注入匹配的技能 prompt（根据任务精确匹配）
+        skill_injected = inject_skills_to_prompt(task, "")
+        if skill_injected:
+            messages.append({"role": "system", "content": skill_injected})
+
         messages.append({"role": "user", "content": task})
 
         # 执行循环

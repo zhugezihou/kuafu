@@ -298,7 +298,15 @@ def main():
                 continue
             result = agent.run(task)
             status_icon = "✅" if result["success"] else "❌"
-            print(f"\n{status_icon} {result.get('result', '(无结果)')[:500]}")
+            if result["success"]:
+                print(f"\n{status_icon} {result.get('result', '(无结果)')[:500]}")
+            else:
+                errs = result.get("errors", [])
+                err_detail = f" — {'; '.join(errs[:3])}" if errs else ""
+                print(f"\n{status_icon} 执行失败{err_detail}")
+                # 如果 errors 为空但 success=False，打印结果字段
+                if not errs:
+                    print(f"   结果: {result.get('result', '(空)')[:200]}")
             if result.get("evolution"):
                 evo = result["evolution"]
                 print(f"   🧬 进化: L{evo.level} — {evo.action}")
