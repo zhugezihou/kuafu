@@ -42,15 +42,22 @@ class KuafuAgent:
     - 记忆 → 长期记忆
     - 进化 → 自我改进
     - LLM → AI 执行引擎
+
+    支持两种模式：
+    - run(): 单次任务执行（隔离上下文）
+    - converse(): 多轮对话（延续上下文，支持追问/修正）
     """
 
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.name = "夸父"
         self.version = "0.2.0"
         self.memory = MemoryAPI()
-        self.evolution = EvolutionEngine()
+        self.evolution = EvolutionEngine(memory=self.memory)
         self.llm = llm_client or LLMClient()
         self._task_count = 0
+        # 多轮对话上下文
+        self._conversation: Optional[dict] = None
+        self._conversation_messages: list = []
         self._setup()
 
     def _setup(self):
@@ -207,11 +214,129 @@ class KuafuAgent:
 
         return result
 
+    def converse(self, input_text: str, task_type: str = "generic") -> dict:
+        """多轮对话 — 延续上下文。
+
+        与 run() 的区别：
+        - 保存 conversation messages 跨轮次传递
+        - 用户可追问"再试一次"、"换个方式"、"修改刚才的代码"
+        - 前 N 轮 conversation 消息作为上下文注入 AgentLoop
+        - 首次调用 _tasks=1，后续调用是连续会话
+
+        Args:
+            input_text: 用户本轮输入
+            task_type: 任务类型（默认 generic）
+
+        Returns:
+            同 run() 的返回结构
+        """
+        start = time.time()
+        self._task_count += 1
+
+        # 问候检测
+        greeting_reply = self._detect_greeting(input_text)
+        if greeting_reply:
+            return {
+                "success": True,
+                "result": greeting_reply,
+                "summary": greeting_reply,
+                "turns": 0,
+                "errors": [],
+                "duration": 0.0,
+                "task_type": "greeting",
+            }
+
+        # 是否为后续轮次
+        is_followup = self._conversation is not None
+
+        # 记录任务到记忆
+        context_note = f"对话 #{self._task_count} ('{input_text[:80]}')"
+        if is_followup:
+            context_note = f"对话 #{self._task_count} (追问) '{input_text[:80]}'"
+        self.memory.remember(
+            key=f"converse:{self._task_count}",
+            content=context_note,
+            tags=["conversation", task_type],
+        )
+
+        # 构建 AgentLoop
+        loop = AgentLoop(
+            llm=self.llm,
+            memory=self.memory,
+            evolution=self.evolution,
+            on_step=lambda msg: print(f"  {msg}", flush=True),
+        )
+
+        # 传递历史上下文（最近的 5 轮）
+        if is_followup:
+            history_context = self._format_conversation_history()
+            enriched_input = f"{history_context}\n\n[当前输入]\n{input_text}"
+        else:
+            enriched_input = input_text
+
+        result = loop.run(enriched_input)
+
+        # 补充元信息
+        result["task_type"] = task_type
+        result["duration"] = round(time.time() - start, 3)
+        result["is_followup"] = is_followup
+
+        # 保存本轮对话上下文
+        self._conversation = {
+            "turn": self._task_count,
+            "input": input_text,
+            "result": result.get("result", "")[:300],
+            "success": result["success"],
+            "turns": result.get("turns", 0),
+            "time": time.time(),
+        }
+
+        # 保留 messages 引用（前 2 轮 user + assistant）
+        self._conversation_messages.append({
+            "role": "user",
+            "content": input_text,
+        })
+        if result.get("result"):
+            self._conversation_messages.append({
+                "role": "assistant",
+                "content": result["result"][:500],
+            })
+        # 对话上下文压缩：只保留最近 6 轮（12 条消息）
+        if len(self._conversation_messages) > 12:
+            self._conversation_messages = self._conversation_messages[-12:]
+
+        # 进化回调
+        evolution_event = result.get("evolution")
+        if evolution_event:
+            self.memory.remember(
+                key=f"evolution:L{evolution_event.level}:conv:{self._task_count}",
+                content=f"L{evolution_event.level} 进化: {evolution_event.action}",
+                tags=["evolution", f"L{evolution_event.level}"],
+            )
+
+        return result
+
+    def _format_conversation_history(self) -> str:
+        """将最近的对话历史格式化为 LLM 上下文。"""
+        if not self._conversation_messages:
+            return ""
+        lines = ["[对话历史]"]
+        for msg in self._conversation_messages[-6:]:  # 最近 3 轮
+            role = "用户" if msg["role"] == "user" else "夸父"
+            content = msg["content"][:200]
+            lines.append(f"{role}: {content}")
+        return "\n".join(lines)
+
     def reflect_on_task(self, task_result: dict) -> Optional[str]:
         """任务结束后反思。"""
         if task_result.get("errors"):
             return self.memory.reflect(f"如何避免 {task_result['errors'][0]}")
         return None
+
+    def reset_conversation(self):
+        """重置对话上下文，开始新会话。"""
+        self._conversation = None
+        self._conversation_messages = []
 
     # ---- 状态查询 ----
 
@@ -284,19 +409,27 @@ def main():
         if result.get("evolution"):
             evo = result["evolution"]
             print(f"\n🧬 进化: L{evo.level} — {evo.action}")
+        quality = result.get("quality")
+        if quality:
+            bar = "🟩" * int(quality["score"]) + "⬜" * (10 - int(quality["score"]))
+            print(f"📊 质量: {quality['score']}/10 {bar}")
         print(f"\n⏱ {result['duration']}s | 轮次: {result.get('turns', 0)} | 错误: {len(result.get('errors', []))}")
         return
 
-    # 交互模式
-    print("夸父交互模式 (输入 'exit' 退出)")
+    # 交互模式（多轮对话）
+    print("夸父交互模式 (输入 'exit' 退出，'new' 重置对话)")
     while True:
         try:
             task = input("\n> ").strip()
             if task.lower() in ("exit", "quit", "q"):
                 break
+            if task.lower() in ("new", "reset", "r"):
+                agent.reset_conversation()
+                print("🔄 对话已重置")
+                continue
             if not task:
                 continue
-            result = agent.run(task)
+            result = agent.converse(task)
             status_icon = "✅" if result["success"] else "❌"
             if result["success"]:
                 print(f"\n{status_icon} {result.get('result', '(无结果)')[:500]}")
@@ -304,13 +437,21 @@ def main():
                 errs = result.get("errors", [])
                 err_detail = f" — {'; '.join(errs[:3])}" if errs else ""
                 print(f"\n{status_icon} 执行失败{err_detail}")
-                # 如果 errors 为空但 success=False，打印结果字段
                 if not errs:
                     print(f"   结果: {result.get('result', '(空)')[:200]}")
             if result.get("evolution"):
                 evo = result["evolution"]
                 print(f"   🧬 进化: L{evo.level} — {evo.action}")
-            print(f"   ⏱ {result['duration']}s | {result.get('turns', 0)} turns")
+            turn_label = "多轮" if result.get("is_followup") else "单次"
+            print(f"   ⏱ {result['duration']}s | {turn_label} | {result.get('turns', 0)} turns")
+            # 质量评分
+            quality = result.get("quality")
+            if quality:
+                bar = "🟩" * int(quality["score"]) + "⬜" * (10 - int(quality["score"]))
+                print(f"   📊 质量: {quality['score']}/10 {bar}")
+                if quality.get("suggestions") and not result.get("success"):
+                    for s in quality["suggestions"][:2]:
+                        print(f"   💡 {s}")
         except KeyboardInterrupt:
             print("\n再见！")
             break

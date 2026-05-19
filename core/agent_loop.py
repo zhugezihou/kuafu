@@ -21,7 +21,7 @@ from core.tool_registry import ToolRegistry
 from core.session_store import SessionStore
 from core.context_compress import ContextCompressor
 from core.safety import SafetyLayer
-from core.skill_resolver import discover_skills, inject_skills_to_prompt
+from core.skill_resolver import discover_skills, match_skills, inject_skills_to_prompt
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
@@ -58,7 +58,7 @@ class AgentLoop:
     ):
         self.llm = llm or LLMClient()
         self.memory = memory or MemoryAPI()
-        self.evolution = evolution or EvolutionEngine()
+        self.evolution = evolution or EvolutionEngine(memory=memory)
         self.tools = tool_registry or ToolRegistry()
         self.sessions = session_store or SessionStore()
         self.max_turns = max_turns
@@ -147,17 +147,40 @@ class AgentLoop:
             except (json.JSONDecodeError, OSError):
                 pass
 
-        # 8. 可用技能
-        all_skills = discover_skills()
-        if all_skills:
-            parts.append("## 可用技能参考")
-            parts.append("以下技能可供参考（根据你的任务自动匹配）：")
-            parts.append("")
-            for s in all_skills:
-                parts.append(f"- {s['name']}: {s['description']}")
-            parts.append("")
-            parts.append("技能已经融入你的知识体系，不必显式调用。根据任务需求选择性地使用。")
-            parts.append("")
+        # 8. 可用技能 — 根据任务自动匹配最相关的技能
+        if task:
+            matched = match_skills(task)
+            if matched:
+                parts.append("## 相关技能参考")
+                parts.append("以下技能与你当前任务匹配，供参考使用：")
+                parts.append("")
+                for skill in matched[:3]:
+                    parts.append(f"---")
+                    parts.append(f"### {skill['name']}")
+                    if skill.get("description"):
+                        parts.append(f"{skill['description']}")
+                    parts.append("")
+                    if skill.get("steps"):
+                        parts.append("**步骤：**")
+                        for i, step in enumerate(skill["steps"], 1):
+                            parts.append(f"  {i}. {step}")
+                        parts.append("")
+                    if skill.get("pitfalls"):
+                        parts.append("**注意事项：**")
+                        for p in skill["pitfalls"]:
+                            parts.append(f"  ⚠️ {p}")
+                        parts.append("")
+                parts.append("---")
+                parts.append("技能仅供参考，根据实际情况灵活执行。")
+                parts.append("")
+        else:
+            # 无具体任务时，简略列出所有可用技能
+            all_skills = discover_skills()
+            if all_skills:
+                parts.append("## 可用技能参考")
+                for s in all_skills:
+                    parts.append(f"- {s['name']}: {s['description']}")
+                parts.append("")
 
         return "\n".join(parts)
 
@@ -190,14 +213,9 @@ class AgentLoop:
         # 创建新会话
         self.current_session_id = self.sessions.create_session(title=task[:50])
 
-        # System prompt
+        # System prompt（含技能注入）
         system_prompt = self.build_system_prompt(task)
         messages.append({"role": "system", "content": system_prompt})
-
-        # 注入匹配的技能 prompt
-        skill_injected = inject_skills_to_prompt(task, "")
-        if skill_injected:
-            messages.append({"role": "system", "content": skill_injected})
 
         messages.append({"role": "user", "content": task})
         self.sessions.append_message(self.current_session_id, "user", task)
@@ -349,13 +367,27 @@ class AgentLoop:
             tags=["task", task_result["task_type"]],
         )
 
+        # 深层反思：调用 LLM 分析任务经验，提取可供未来参考的教训
+        self._deep_reflect(task_result, messages)
+
         # 自检
         self._self_check(task_result, messages, start)
+
+        # 用户偏好学习
+        self._learn_user_preferences(task_result, task)
 
         # 进化评估
         evolution_event = self.evolution.evaluate_and_evolve(task_result)
         if evolution_event:
             task_result["evolution"] = evolution_event
+
+        # 质量评分
+        quality = self._quality_score(task_result, messages)
+        task_result["quality"] = quality
+
+        # 任务报告：复杂任务（多轮交互）生成结构化报告
+        if turn_count >= 3:
+            task_result["report"] = self._generate_report(task, task_result, messages)
 
         task_result["turns"] = turn_count
         task_result["messages_count"] = len(messages)
@@ -408,3 +440,281 @@ class AgentLoop:
                     self._log("✅ 自检无问题")
         except Exception as e:
             self._log(f"⚠️ 自检异常: {e}")
+
+    # ── 质量评分 ───────────────────────────────────────────────
+
+    def _quality_score(self, task_result: dict, messages: list) -> dict:
+        """对任务输出进行质量评分。
+
+        纯静态分析（零 LLM 消耗）：
+        - 错误率：errors 数量 / 总工具调用数
+        - 完整性：结果文本长度是否达标
+        - 代码质量：代码块是否包含错误
+        - 自检反馈：如有自检发现问题则减分
+
+        Returns:
+            {"score": 0-10, "detail": str, "suggestions": list[str]}
+        """
+        score = 7  # 基准 7 分
+        suggestions = []
+        detail_parts = []
+
+        # 1. 错误率
+        errors = task_result.get("errors", [])
+        if errors:
+            penalty = min(len(errors) * 1.5, 4)
+            score -= penalty
+            detail_parts.append(f"❌ 错误 {len(errors)} 处 (-{penalty})")
+            for e in errors[:2]:
+                suggestions.append(f"修复错误: {e[:80]}")
+        else:
+            detail_parts.append("✅ 零错误")
+
+        # 2. 结果完整性
+        result_text = task_result.get("result", "")
+        if result_text and len(result_text) > 10:
+            if len(result_text) < 50:
+                detail_parts.append("⚠️ 结果偏短 (-0.5)")
+                score -= 0.5
+            else:
+                detail_parts.append(f"✅ 结果完整 ({len(result_text)} 字符)")
+        else:
+            detail_parts.append("❌ 结果为空 (-2)")
+            score -= 2
+            suggestions.append("输出不应为空，至少给出总结")
+
+        # 3. 工具调用成功率
+        tool_count = 0
+        for m in messages:
+            if m.get("tool_calls"):
+                tool_count += len(m["tool_calls"])
+
+        if tool_count == 0 and len(result_text or "") < 100:
+            # 无工具调用且短回复 — 可能只回答了问题
+            pass  # 不减分
+        elif tool_count > 0 and errors:
+            tool_error_ratio = len(errors) / tool_count
+            if tool_error_ratio > 0.5:
+                score -= 1
+                detail_parts.append(f"⚠️ 工具错误率 {tool_error_ratio:.0%} (-1)")
+
+        # 4. 自检反馈
+        self_check = task_result.get("self_check")
+        if self_check:
+            score -= 1
+            detail_parts.append("⚠️ 自检发现可改进项 (-1)")
+            suggestions.append("参考自检反馈改进输出")
+
+        # 5. 是否成功
+        if not task_result.get("success", True):
+            score = min(score, 4)
+            detail_parts.append("❌ 任务未成功 (-3)")
+            suggestions.append("任务执行失败，需排查错误原因")
+
+        # 约束到 0-10
+        score = max(0, min(10, round(score, 1)))
+
+        return {
+            "score": score,
+            "detail": " | ".join(detail_parts),
+            "suggestions": suggestions,
+        }
+
+    # ── 任务报告生成 ──────────────────────────────────────────────
+
+    def _generate_report(self, task: str, task_result: dict, messages: list) -> str:
+        """为复杂任务生成结构化报告。
+
+        包含：任务摘要、决策过程、关键结果、学到的教训。
+        不调用 LLM（纯结构化组装），轻量无消耗。
+        """
+        success = task_result.get("success", False)
+        result_text = task_result.get("result", "")
+        error_list = task_result.get("errors", [])
+        task_type = task_result.get("task_type", "generic")
+        duration = task_result.get("duration", 0)
+        turns = task_result.get("turns", 0)
+
+        # 提取关键决策点（工具调用名称）
+        tool_calls_in_messages = []
+        for m in messages:
+            tcs = m.get("tool_calls")
+            if tcs:
+                for tc in tcs:
+                    fn = tc.get("function", {}).get("name", "?")
+                    tool_calls_in_messages.append(fn)
+
+        # 去重并计数
+        tool_counts = {}
+        for t in tool_calls_in_messages:
+            tool_counts[t] = tool_counts.get(t, 0) + 1
+
+        # 提取用户的前几个消息作为任务摘要（从 messages 中提取 user 角色）
+        user_inputs = []
+        for m in messages:
+            if m.get("role") == "user":
+                content = m.get("content", "")
+                if content and len(content) > 10:
+                    user_inputs.append(content[:120])
+
+        # 构建报告
+        parts = [
+            f"## 任务报告: {task_type}",
+            "",
+            f"**是否成功**: {'✅' if success else '❌'}",
+            f"**耗时**: {duration:.1f}s",
+            f"**交互轮次**: {turns}",
+            f"**工具调用分布**:",
+        ]
+        if tool_counts:
+            for t_name, count in sorted(tool_counts.items(), key=lambda x: -x[1]):
+                parts.append(f"  - {t_name}: {count} 次")
+        else:
+            parts.append("  - (无工具调用)")
+
+        if user_inputs:
+            parts.append("")
+            parts.append("**任务目标**:")
+            parts.append(f"  {user_inputs[0][:160]}")
+            if len(user_inputs) > 1:
+                parts.append(f"  ...（共 {len(user_inputs)} 次用户输入）")
+
+        if error_list:
+            parts.append("")
+            parts.append("**错误**:")
+            for e in error_list:
+                parts.append(f"  - ⚠️ {e[:100]}")
+
+        parts.append("")
+        parts.append("**结果摘要**:")
+        parts.append(f"  {result_text[:200]}")
+
+        parts.append("")
+        parts.append("---")
+        parts.append(f"报告自动生成 | {time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+        return "\n".join(parts)
+
+    # ── 深层反思 ────────────────────────────────────────────────────
+
+    def _deep_reflect(self, task_result: dict, messages: list) -> None:
+        """任务完成后的深层反思——分析经验，提炼教训，注入记忆。"""
+        success = task_result.get("success", False)
+        turns = len(messages)
+        task_type = task_result.get("task_type", "generic")
+        if success and turns < 8:
+            return
+        self._log("💭 反思中 — 分析任务经验...")
+        result_snippet = task_result.get("result", "")[:800]
+        error_list = task_result.get("errors", [])
+        error_text = "; ".join(error_list) if error_list else "无错误"
+        reflect_prompt = (
+            "你刚完成了一个任务。请做一次简短反思，总结可供未来任务参考的经验。\n\n"
+            f"任务类型: {task_type}\n"
+            f"是否成功: {'是' if success else '否'}\n"
+            f"错误: {error_text}\n"
+            f"交互轮数: {turns}\n\n"
+            f"最终输出摘要:\n{result_snippet}\n\n"
+            "请按以下格式输出（不要多余文字）：\n"
+            "TITLE: <一句话总结这次任务的关键教训，25字内>\n"
+            "TAG: experience\n"
+            "CONTENT: <1-3句话，具体可操作的经验，下次遇到类似任务时能有帮助>\n"
+        )
+        reflect_msg = [
+            {"role": "system", "content": "你是夸父反思模块。输出格式固定：TITLE:/TAG:/CONTENT: 三行。"},
+            {"role": "user", "content": reflect_prompt},
+        ]
+        try:
+            resp = self.llm.chat(reflect_msg, tools=None)
+            if not resp["success"]:
+                return
+            output = resp["content"].strip()
+            title = ""
+            tag = "experience"
+            content = ""
+            for line in output.split("\n"):
+                line = line.strip()
+                if line.startswith("TITLE:"):
+                    title = line[6:].strip()
+                elif line.startswith("TAG:"):
+                    tag = line[4:].strip()
+                elif line.startswith("CONTENT:"):
+                    content = line[8:].strip()
+            if content:
+                self.memory.remember(
+                    key=f"reflect:{time.strftime('%Y%m%d_%H%M%S')}",
+                    content=f"[{tag}] {title} — {content}",
+                    tags=["reflection", tag, task_type],
+                )
+                self._log(f"💡 学到经验: {title} — {content[:80]}...")
+        except Exception as e:
+            self._log(f"⚠️ 反思异常: {e}")
+
+    # ── 用户偏好学习 ────────────────────────────────────────────────
+
+    def _learn_user_preferences(self, task_result: dict, task: str) -> None:
+        """从当前任务中学习用户偏好，动态更新 user_prefs.json。
+
+        触发条件：
+        - 任务成功
+        - 用户输入中有明显偏好指示（如「下次」「更喜欢」「用 XX 工具」「别用」等）
+        """
+        success = task_result.get("success", False)
+        if not success:
+            return
+
+        # 只在用户输入包含偏好信号时学习
+        pref_signals = ["下次", "更喜欢", "别用", "不要用", "应该用", "请用", "用中文", "用英文"]
+        has_signal = any(s in task for s in pref_signals)
+        if not has_signal:
+            return
+
+        prefs_path = ROOT_DIR / "memory" / "user_prefs.json"
+        prefs = {}
+        if prefs_path.exists():
+            try:
+                prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                prefs = {}
+            if not isinstance(prefs, dict):
+                prefs = {}
+
+        # 从用户输入中提取偏好
+        self._log("🎯 检测到偏好信号，正在学习...")
+        learn_prompt = (
+            "分析以下用户输入，提取明确的偏好/要求（如语言、工具、风格、格式等）。\n\n"
+            f"用户输入:\n{task}\n\n"
+            f"现有偏好:\n{json.dumps(prefs, ensure_ascii=False, indent=2)}\n\n"
+            "请输出 JSON 格式（不要多余文字）：\n"
+            "{\n"
+            '  "add": {"key": "新偏好对名称", "value": "新偏好值"},\n'
+            '  "remove": []  // 要删除的偏好键列表（如果有冲突）\n'
+            "}\n"
+            '如果没有提取到新的有效偏好，输出 {"add": null, "remove": []}'
+        )
+        learn_msg = [
+            {"role": "system", "content": "你是夸父偏好学习模块。输出严格 JSON。"},
+            {"role": "user", "content": learn_prompt},
+        ]
+        try:
+            resp = self.llm.chat(learn_msg, tools=None)
+            if not resp["success"]:
+                return
+            result = json.loads(resp["content"].strip())
+            add_item = result.get("add")
+            if add_item and add_item.get("key") and add_item.get("value"):
+                key = add_item["key"].strip()
+                value = add_item["value"].strip()
+                if key and value:
+                    prefs[key] = value
+                    # 删除冲突项
+                    for k in result.get("remove", []):
+                        prefs.pop(k, None)
+                    # 写入
+                    prefs_path.parent.mkdir(parents=True, exist_ok=True)
+                    prefs_path.write_text(
+                        json.dumps(prefs, ensure_ascii=False, indent=2)
+                    )
+                    self._log(f"📝 学到用户偏好: {key} = {value}")
+        except Exception as e:
+            self._log(f"⚠️ 偏好学习异常: {e}")

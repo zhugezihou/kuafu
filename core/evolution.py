@@ -19,6 +19,7 @@
 """
 
 import json
+import re
 import time
 import hashlib
 from pathlib import Path
@@ -50,12 +51,14 @@ class EvolutionEngine:
     评估是否触发进化、执行进化动作、记录进化历史。
     """
 
-    def __init__(self, task_history: Optional[list] = None):
+    def __init__(self, task_history: Optional[list] = None, memory=None):
         self._task_history = task_history or []
         self._log_path = EVOLUTION_LOG
         self._ensure_log()
         # 进化频率控制：同一级别每次进化后需等待最小间隔
         self._last_level_time: dict[int, float] = {}
+        # 记忆联动：注入 MemoryAPI 实例，使进化事件持久化为记忆
+        self._memory = memory
         self._min_interval = 60.0  # 同一级别至少间隔 60 秒
 
     def _ensure_log(self):
@@ -172,7 +175,7 @@ class EvolutionEngine:
         if now - last < self._min_interval:
             return None
         self._last_level_time[level] = now
-        
+
         event = EvolutionEvent(
             level=level,
             trigger=trigger,
@@ -180,7 +183,95 @@ class EvolutionEngine:
             target=target,
         )
         self._log_event(event)
+
+        # L3: 实际写入技能文件，不仅是记录事件
+        if level >= 3 and target.startswith("skills/"):
+            self._extract_skill(target, trigger)
+
+        # 记忆联动：将进化事件持久化为记忆，供后续任务参考
+        if self._memory is not None:
+            level_label = {1: "即时优化", 2: "策略进化", 3: "技能提取"}.get(level, f"L{level}")
+            try:
+                self._memory.remember(
+                    key=f"evolve:{int(time.time())}",
+                    content=f"【{level_label}】触发器: {trigger} → 动作: {action} → 目标: {target}",
+                    tags=["evolution", f"level_{level}"],
+                )
+            except Exception:
+                pass  # 记忆失败不影响进化核心流程
+
         return event
+
+    # ---- L3 技能提取 ----
+
+    def _extract_skill(self, target: str, trigger: str) -> Optional[str]:
+        """真正将进化事件转化为 skills/ 下的 YAML 技能文件。
+
+        Args:
+            target: 目标路径，如 "skills/research.yaml"
+            path: 目标文件路径
+            task_type: 触发进化的任务类型
+        """
+        path = ROOT_DIR / target
+        task_type = path.stem  # e.g. "research" from "skills/research.yaml"
+
+        # 从任务历史中找到这个类型的成功案例
+        relevant_tasks = [
+            t for t in self._task_history
+            if t.get("task_type") == task_type and t.get("success")
+        ]
+
+        # 构建描述和关键词
+        desc = f"夸父自动提取的技能包。触发: {trigger[:80]}"
+        keywords = [task_type.replace("_", ""), "自动生成"]
+
+        # 如果有具体任务内容，从结果中提取关键词
+        if relevant_tasks:
+            last_result = relevant_tasks[-1].get("result", "")
+            desc = f"从「{task_type}」类型任务中自动提取的最佳实践（基于 {len(relevant_tasks)} 次成功经验）"
+            # 从结果中提取可能的关键词
+            result_words = re.findall(r'[\u4e00-\u9fff\w]+', last_result[:500])
+            extra_kw = [w for w in result_words if 2 <= len(w) <= 8]
+            keywords = list(set(keywords + extra_kw[:6]))
+
+        # 构建 steps 和 pitfalls
+        steps = [
+            f"这是从 {len(relevant_tasks)} 次成功「{task_type}」任务中自动提取的经验",
+            "请根据当前任务的具体需求，灵活应用之前的成功模式",
+            "完成主要工作后，报告最终结果",
+        ]
+        pitfalls = ["自动提取的技能包，请确认步骤适用于当前任务"]
+
+        # 如果任务历史中有搜索结果或用户纠正，补充为提示
+        if relevant_tasks:
+            last = relevant_tasks[-1]
+            if last.get("user_correction"):
+                pitfalls.append(f"历史教训: {last['user_correction'][:100]}")
+
+        # 构造 YAML 内容
+        lines = [
+            f'name: "{task_type}"',
+            f'description: "{desc}"',
+            "keywords:",
+        ]
+        for kw in keywords:
+            lines.append(f'  - "{kw}"')
+        lines.append("steps:")
+        for s in steps:
+            lines.append(f'  - "{s}"')
+        lines.append("examples:")
+        lines.append("  - \"无\"")
+        lines.append("pitfalls:")
+        for p in pitfalls:
+            lines.append(f'  - "{p}"')
+        lines.append(f"usage_count: 0")
+        lines.append(f"created_at: {int(time.time())}")
+        lines.append(f"source: auto_extracted_from_L3")
+
+        content = "\n".join(lines) + "\n"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return str(path)
 
     def _log_event(self, event: EvolutionEvent):
         logs = json.loads(self._log_path.read_text(encoding="utf-8"))
