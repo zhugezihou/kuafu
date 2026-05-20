@@ -29,6 +29,7 @@ from core.memory_api import MemoryAPI
 from core.evolution import EvolutionEngine, EvolutionEvent
 from core.llm import LLMClient
 from core.agent_loop import AgentLoop
+from autonomous.reviewer import ReviewerThread
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
@@ -59,6 +60,14 @@ class KuafuAgent:
         self._conversation: Optional[dict] = None
         self._conversation_messages: list = []
         self._setup()
+        # P0: 启动后台复盘线程（daemon=True，自动随主进程退出）
+        self._reviewer_thread = ReviewerThread(
+            llm_chat_fn=self.llm.chat,
+            memory_remember_fn=lambda key, content, tags: self.memory.remember(
+                key=key, content=content, tags=tags
+            ),
+        )
+        self._reviewer_thread.start()
 
     def _setup(self):
         """首次启动设置。"""
