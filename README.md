@@ -216,6 +216,10 @@ print('所有核心模块加载成功')
 
 夸父原本是 Hermes Agent 的一个扩展项目，后来独立发展为一个通用 self-improving agent 框架。项目最初受 Memento-Skills、EvoSkill、Reflexion 等研究成果启发。
 
+## 反馈
+
+夸父在不同环境下会有不同的进化和 bug。发现有趣的进化或遇到问题，欢迎来 **[kuafu-feedback](https://github.com/zhugezihou/kuafu-feedback)** 提 issue，帮助我们一起改进。
+
 ## License
 
 Apache 2.0
