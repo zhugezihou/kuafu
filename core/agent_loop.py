@@ -435,6 +435,23 @@ class AgentLoop:
         # 用户偏好学习
         self._learn_user_preferences(task_result, task)
 
+        # P1 主动学习信号检测
+        try:
+            from autonomous.learner import Learner
+            if not hasattr(self, '_learner'):
+                self._learner = Learner(
+                    llm_chat_fn=self.llm.chat,
+                    memory_remember_fn=self.memory.remember,
+                    memory_recall_fn=self.memory.recall if hasattr(self.memory, 'recall') else None,
+                )
+            learning_signals = self._learner.detect(task_result, task, messages)
+            if learning_signals:
+                self._log(f"📡 检测到 {len(learning_signals)} 个学习信号")
+        except ImportError:
+            pass  # learner.py 不存在时不阻塞
+        except Exception as e:
+            self._log(f"⚠️ 学习信号检测异常: {e}")
+
         # 进化评估
         evolution_event = self.evolution.evaluate_and_evolve(task_result)
         if evolution_event:
