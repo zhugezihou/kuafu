@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "kuafu"
+version = "0.2.0"
+description = "夸父 (Kuafu) — 一个自我进化的 AI Agent 框架"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+keywords = ["ai", "agent", "self-evolving", "framework"]
+
+authors = [
+    {name = "zhugezihou", email = "zhugezihou@users.noreply.github.com"},
+]
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+web = ["jinja2>=3.0"]
+ui = ["rich>=13.0"]
+all = ["jinja2>=3.0", "rich>=13.0"]
+
+[project.urls]
+Homepage = "https://github.com/zhugezihou/kuafu"
+Repository = "https://github.com/zhugezihou/kuafu"
+Feedback = "https://github.com/zhugezihou/kuafu-feedback"
+
+[project.scripts]
+kuafu = "core.main:cli"
+kuafu-wizard = "setup_wizard:main"
+
+[tool.setuptools.packages.find]
+include = ["kuafu*", "core*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.yaml", "*.md", "*.txt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

@@ -1,7 +1,15 @@
+# 夸父 .gitignore
 .env
 *.env.local
 venv/
-memory/**/*.json
 __pycache__/
 *.pyc
 .pytest_cache/
+*.egg-info/
+dist/
+build/
+.hermes/
+memory/**/*.json
+models/*.gguf
+kuafu.log
+kuafu.pid

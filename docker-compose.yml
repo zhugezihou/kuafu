@@ -1,0 +1,77 @@
+# ============================================================================
+# 夸父 (Kuafu) — Docker Compose 配置
+#
+# 快速启动:
+#   docker compose up -d
+#
+# 查看日志:
+#   docker compose logs -f
+#
+# 停止:
+#   docker compose down
+# ============================================================================
+
+services:
+  kuafu:
+    build: .
+    container_name: kuafu
+    image: kuafu:latest
+    restart: unless-stopped
+    
+    # 交互模式（默认）
+    command: python -m core.main
+
+    volumes:
+      # 挂载配置文件（必须）
+      - ./.env:/app/.env
+      # 挂载记忆数据（持久化）
+      - ./memory:/app/memory
+      # 挂载模型文件（本地模式）
+      - ./models:/app/models
+      # 挂载技能包
+      - ./skills:/app/skills
+
+    # 环境变量（优先级低于 .env 文件）
+    environment:
+      - KUAFFU_BACKEND=${KUAFFU_BACKEND:-cloud}
+      - PYTHONUNBUFFERED=1
+
+    # 本地模式需要 GPU 直通
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+    # 网络
+    networks:
+      - kuafu_net
+
+  # 本地模式下的 llama-server（可选）
+  # llama-server:
+  #   image: ghcr.io/ggml-ai/llama.cpp:full
+  #   container_name: kuafu-llama
+  #   restart: unless-stopped
+  #   volumes:
+  #     - ./models:/models:ro
+  #   command: >
+  #     --model /models/Qwen3.5-9B-UD-Q4_K_XL.gguf
+  #     --host 0.0.0.0 --port 8080
+  #     -c 8192 --cache-type-k q8_0 --cache-type-v q8_0
+  #   ports:
+  #     - "8080:8080"
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: all
+  #             capabilities: [gpu]
+  #   networks:
+  #     - kuafu_net
+
+networks:
+  kuafu_net:
+    driver: bridge

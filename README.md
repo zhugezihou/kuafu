@@ -111,46 +111,144 @@ HINDSIGHT_BANK_ID=default
 
 在国内 WSL 环境中自动适配。无需额外配置。
 
-## 快速开始
+## 安装
+
+### 一键安装（推荐）
 
 ```bash
-# 克隆
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/zhugezihou/kuafu/main/install.sh | bash
+
+# 或克隆后本地安装
+git clone https://github.com/zhugezihou/kuafu.git
+cd kuafu
+bash install.sh
+```
+
+`install.sh` 会自动完成：
+1. ✅ 检测 Python 3.10+、pip、git
+2. ✅ 创建虚拟环境并安装依赖
+3. ✅ 启动交互式配置向导（选择云端/本地后端）
+4. ✅ 测试 LLM 连接
+5. ✅ 运行基本测试
+6. ✅ 给出下一步指引
+
+### 手动安装
+
+```bash
+# 1. 克隆
 git clone https://github.com/zhugezihou/kuafu.git
 cd kuafu
 
-# 安装（仅 pyyaml）
+# 2. 创建虚拟环境（推荐）
+python3 -m venv venv
+source venv/bin/activate
+
+# 3. 安装依赖（仅 pyyaml）
 pip install -r requirements.txt
 
-# 配置 API key
-echo 'DEEPSEEK_API_KEY=sk-your-key-here' >> .env
+# 4. 运行配置向导
+python setup_wizard.py
 
-# 跑测试
-python tests/test_all.py
-
-# 交互使用
-python -m core.main
+# 5. 验证安装
+python -m pytest tests/test_all.py -v
 ```
 
-### CLI 模式
+### pip 安装
 
 ```bash
-# 单次任务
-python -c "
-from kuafu import KuafuAgent
-agent = KuafuAgent()
-result = agent.run('帮我搜索最新的 Python 发布信息')
-print(result['result'])
-"
+pip install kuafu
+```
+
+### Docker 部署
+
+```bash
+# 构建镜像
+docker build -t kuafu .
+
+# 运行（挂载配置和记忆）
+docker run -it --rm \
+  -v $(pwd)/.env:/app/.env \
+  -v $(pwd)/memory:/app/memory \
+  kuafu
+```
+
+---
+
+### 选择后端
+
+| 模式 | 优点 | 要求 |
+|------|------|------|
+| **云端** (DeepSeek) | 免 GPU，开箱即用 | DeepSeek API Key |
+| **本地** (Qwen3.5-9B) | 免费，隐私，低延迟 | NVIDIA GPU 8GB+，llama.cpp |
+
+#### 云端模式（推荐新手）
+
+```bash
+# 运行配置向导
+python setup_wizard.py
+# → 选择 cloud → 输入 API Key → 自动测试
+```
+
+#### 本地模式（需 GPU）
+
+```bash
+# 1. 编译 llama-server（或下载 Release）
+git clone https://github.com/ggml-ai/llama.cpp
+cd llama.cpp && cmake -B build && cmake --build build --config Release
+# 或: pip install llama-cpp-python
+
+# 2. 下载模型（约 5.8GB）
+bash scripts/download_model.sh
+# 自动下载 Qwen3.5-9B-UD-Q4_K_XL.gguf
+
+# 3. 启动推理服务器
+build/bin/llama-server \
+  -m models/Qwen3.5-9B-UD-Q4_K_XL.gguf \
+  -c 8192 --port 8080
+
+# 4. 夸父配置
+echo 'KUAFFU_BACKEND=local' >> .env
+
+# 5. 启动夸父
+bash kuafu.sh
+```
+
+---
+
+### 快速启动
+
+```bash
+# 交互模式
+bash kuafu.sh
+
+# 单次命令
+bash kuafu.sh '帮我搜索最新的 Python 发布信息'
 
 # 查看状态
-python -c "
+bash scripts/status.sh
+
+# 后台运行
+bash scripts/start.sh --daemon
+# → 停止: bash scripts/stop.sh
+```
+
+### Python API
+
+```python
 from kuafu import KuafuAgent
+
 agent = KuafuAgent()
+
+# 单次任务
+result = agent.run('帮我搜索最新的 Python 发布信息')
+print(result['result'])
+
+# 查看状态
 status = agent.get_status()
-print(f\"版本: {status['version']}\")
-print(f\"记忆条数: {status['memory']['total']}\")
-print(f\"进化次数: {status['evolution']['total_evolutions']}\")
-"
+print(f"版本: {status['version']}")
+print(f"记忆条数: {status['memory']['total']}")
+print(f"进化次数: {status['evolution']['total_evolutions']}")
 ```
 
 ## 开发
