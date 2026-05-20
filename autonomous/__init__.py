@@ -1,6 +1,20 @@
-"""autonomous/ — 夸父主动进化模块"""
+"""autonomous — 夸父主动进化模块包。"""
 
-from .reviewer import Reviewer, ReviewerThread
-from .learner import Learner
+from autonomous.reviewer import Reviewer, ReviewerThread
+from autonomous.learner import Learner
 
-__all__ = ["Reviewer", "ReviewerThread", "Learner"]
+try:
+    from autonomous.prioritizer import (
+        IdlePrioritizer,
+        TaskPrioritizer,
+        EvolutionScheduler,
+        ActionItem,
+        DecisionRecord,
+    )
+except ImportError:
+    # 降级：允许依赖缺失时继续运行
+    IdlePrioritizer = None  # type: ignore
+    TaskPrioritizer = None  # type: ignore
+    EvolutionScheduler = None  # type: ignore
+    ActionItem = None  # type: ignore
+    DecisionRecord = None  # type: ignore

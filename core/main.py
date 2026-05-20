@@ -31,6 +31,13 @@ from core.llm import LLMClient
 from core.agent_loop import AgentLoop
 from autonomous.reviewer import ReviewerThread
 
+# P2: 自主决策模块（可选加载）
+try:
+    from autonomous.prioritizer import IdlePrioritizer, EvolutionScheduler
+    _HAS_PRIORITIZER = True
+except ImportError:
+    _HAS_PRIORITIZER = False
+
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
 
@@ -69,6 +76,10 @@ class KuafuAgent:
         )
         self._reviewer_thread.start()
 
+        # P2: 启动自主决策线程（daemon=True，周期性检查空闲状态）
+        self._prioritizer_thread: Optional[threading.Thread] = None
+        self._init_prioritizer()
+
     def _setup(self):
         """首次启动设置。"""
         for d in ["strategy", "skills", "memory", "logs", "tests"]:
@@ -78,6 +89,50 @@ class KuafuAgent:
             content=f"夸父 v{self.version} 启动，LLM: {self.llm.model}",
             tags=["system", "startup"],
         )
+
+    # ---- P2: 自主决策初始化 ----
+
+    def _init_prioritizer(self):
+        """初始化自主决策系统（可选）。"""
+        if not _HAS_PRIORITIZER:
+            return
+        try:
+            import threading
+
+            # 创建 IdlePrioritizer，注入记忆和进化状态查询
+            self._idle_prioritizer = IdlePrioritizer(
+                memory_recall_fn=lambda query, limit=5: self.memory.recall(query, limit=limit),
+                evolution_stats_fn=self.evolution.get_evolution_stats,
+            )
+            # 创建进化调度器（包装 IdlePrioritizer 的进化时机决策）
+            self._evolution_scheduler = EvolutionScheduler(self._idle_prioritizer)
+
+            # 后台线程：每 5 分钟检查一次空闲决策
+            def _prioritizer_loop():
+                import time as _time
+                while True:
+                    _time.sleep(300)  # 5 分钟间隔
+                    try:
+                        decision = self._idle_prioritizer.decide()
+                        if decision:
+                            self.memory.remember(
+                                key=f"priority:{int(_time.time())}",
+                                content=f"【空闲决策】{decision.title} ({decision.priority_score:.0f}分)",
+                                tags=["decision", "prioritizer", decision.category],
+                            )
+                    except Exception:
+                        pass
+
+            self._prioritizer_thread = threading.Thread(
+                target=_prioritizer_loop,
+                daemon=True,
+                name="kuafu-prioritizer",
+            )
+            self._prioritizer_thread.start()
+        except Exception as e:
+            self._prioritizer_thread = None
+            import logging
+            logging.warning(f"P2 Prioritizer 启动失败: {e}")
 
     @property
     def identity(self) -> str:
@@ -372,7 +427,7 @@ class KuafuAgent:
     # ---- 状态查询 ----
 
     def get_status(self) -> dict:
-        return {
+        status = {
             "name": self.name,
             "version": self.version,
             "task_count": self._task_count,
@@ -381,6 +436,12 @@ class KuafuAgent:
             "evolution": self.evolution.get_evolution_stats(),
             "task_stats": self.evolution.get_task_stats(),
         }
+        # P2 状态
+        if _HAS_PRIORITIZER and hasattr(self, '_prioritizer_thread'):
+            status["prioritizer"] = {
+                "alive": self._prioritizer_thread is not None and self._prioritizer_thread.is_alive(),
+            }
+        return status
 
     @staticmethod
     def _detect_greeting(text: str) -> str:
