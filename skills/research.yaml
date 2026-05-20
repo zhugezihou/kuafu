@@ -1,0 +1,18 @@
+name: "research"
+description: "从「research」类型任务中自动提取的最佳实践（基于 3 次成功经验）"
+keywords:
+  - "research"
+  - "自动生成"
+  - "完成调研"
+steps:
+  - "这是从 3 次成功「research」任务中自动提取的经验"
+  - "请根据当前任务的具体需求，灵活应用之前的成功模式"
+  - "完成主要工作后，报告最终结果"
+examples:
+  - "无"
+pitfalls:
+  - "自动提取的技能包，请确认步骤适用于当前任务"
+  - "历史教训: 应该用英文搜索，结果更准确"
+usage_count: 0
+created_at: 1779178176
+source: auto_extracted_from_L3

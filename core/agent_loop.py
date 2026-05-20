@@ -19,7 +19,7 @@ from core.memory_api import MemoryAPI
 from core.evolution import EvolutionEngine
 from core.tool_registry import ToolRegistry
 from core.session_store import SessionStore
-from core.context_compress import ContextCompressor
+from core.context_compress import ContextCompressor, LocalSummarizer
 from core.safety import SafetyLayer
 from core.skill_resolver import discover_skills, match_skills, inject_skills_to_prompt
 
@@ -58,16 +58,21 @@ class AgentLoop:
     ):
         self.llm = llm or LLMClient()
         self.memory = memory or MemoryAPI()
-        self.evolution = evolution or EvolutionEngine(memory=memory)
+        self.evolution = evolution or EvolutionEngine(memory=memory, llm=self.llm)
         self.tools = tool_registry or ToolRegistry()
         self.sessions = session_store or SessionStore()
         self.max_turns = max_turns
         self.on_step = on_step
 
-        # 上下文压缩器（默认 12000 token 上限，保留 5 轮）
+        # 上下文压缩器 — 阈值根据后端动态设置
+        # 本地 Qwen3.5-9B: -c 8192，threshold=6500（留充足冗余给摘要调用和实时输出）
+        # 云端 DeepSeek: 64K+ context，threshold=12000
+        local_backend = getattr(self.llm, 'backend', 'cloud') == 'local'
+        ctx_threshold = 6500 if local_backend else 12000
         self.compressor = ContextCompressor(
-            max_context_tokens=12000,
+            max_context_tokens=ctx_threshold,
             keep_recent_rounds=5,
+            summarizer=LocalSummarizer(),
         )
 
         # 当前会话 ID（由 run() 创建）
@@ -232,27 +237,81 @@ class AgentLoop:
             # 上下文压缩检查：每次 LLM 调用前检查是否需要压缩
             if self.compressor.needs_compression(messages):
                 self._log(f"📏 上下文超限（{self.compressor._count_tokens(messages)} tokens），执行压缩...")
-                result = self.compressor.compress(messages, llm_summarize=None)
+                # 使用本地 LLM 智能摘要压缩（方案二）
+                result = self.compressor.compress_with_local_llm(messages)
                 if result.messages_removed > 0:
-                    # 保留 system + 压缩摘要 + 最近几轮
+                    # 保留 system + 摘要 + 最近完整轮次（至少保留最后一轮user+assistant+tools）
                     system_msgs = [m for m in messages if m.get("role") == "system"]
-                    summary_msg = {
+                    recent_non_system = [m for m in messages if m.get("role") != "system"]
+                    keep_count = min(self.compressor.keep_recent_rounds * 4, len(recent_non_system))
+                    recent_msgs = recent_non_system[-keep_count:] if keep_count > 0 else []
+                    messages = system_msgs + [{
                         "role": "system",
-                        "content": f"[上下文压缩] 移除了 {result.messages_removed} 条旧消息，节省 {result.original_tokens - result.compressed_tokens} tokens。摘要：{result.summary[:300]}"
-                    }
-                    keep = self.compressor.keep_recent_rounds * 4
-                    non_system = [m for m in messages if m.get("role") != "system"]
-                    recent_msgs = non_system[-keep:] if len(non_system) > keep else non_system
-                    messages = system_msgs + [summary_msg] + recent_msgs
+                        "content": f"【上下文压缩】以下是对旧对话的摘要，请基于此继续当前任务，不要重新自我介绍：\n{result.summary}",
+                    }] + recent_msgs
                     self._log(f"✅ 压缩完成: {result.compression_ratio*100:.0f}% 缩减 ({result.original_tokens}→{result.compressed_tokens} tokens)")
+                    if result.summary:
+                        self._log(f"📝 摘要: {result.summary[:150]}...")
 
             # 调用 LLM
             response = self.llm.chat(messages, tools=tool_schemas)
 
+            # ── LLM 调用失败处理 ─────────────────────────────────
             if not response["success"]:
                 error_msg = response.get("error", "LLM 调用失败")
-                errors.append(error_msg)
-                break
+                # 上下文超限：尝试压缩后再试一次
+                if "exceed" in error_msg.lower() or "context" in error_msg.lower() or "400" in error_msg:
+                    self._log(f"📏 LLM 返回上下文超限错误，尝试强制压缩...")
+                    # 强制压缩（already_compressed=True 跳过 needs_compression 检查）
+                    original_tokens = self.compressor._count_tokens(messages)
+                    # 切掉最后几轮，只保留 system + 最近2轮
+                    system_msgs = [m for m in messages if m.get("role") == "system"]
+                    recent_msgs = [m for m in messages if m.get("role") != "system"][-8:]  # 只保留最近2轮
+                    old_msgs = [m for m in messages if m.get("role") != "system"][:-8]
+                    if old_msgs:
+                        # 用本地 LLM 做智能摘要
+                        summary = self.compressor.compress_with_local_llm(messages)
+                        if summary.messages_removed > 0:
+                            messages = system_msgs + [{
+                                "role": "system",
+                                "content": f"【紧急上下文压缩】以下是对旧对话的摘要，请基于此继续当前任务，不要重新自我介绍：\n{summary.summary}",
+                            }] + recent_msgs
+                            self._log(f"✅ 紧急压缩完成: {summary.original_tokens}→{summary.compressed_tokens} tokens")
+                            # 重新调用 LLM
+                            response = self.llm.chat(messages, tools=tool_schemas)
+                            if response["success"]:
+                                # 压缩后调用成功，继续正常流程
+                                pass
+                            else:
+                                # 压缩后还是失败，放弃
+                                error_msg = response.get("error", "压缩后 LLM 仍然失败")
+                                errors.append(error_msg)
+                                break
+                        else:
+                            # 压缩失败（本地LLM也可能超限），用暴力截断
+                            self._log(f"⚠️ 本地摘要失败，暴力截断至最近2轮")
+                            # 只保留 system + 最新一轮 user + assistant
+                            keep = system_msgs + recent_msgs[-4:]
+                            keep_tokens = self.compressor._count_tokens(keep)
+                            self._log(f"   {original_tokens} → {keep_tokens} tokens")
+                            messages = keep
+                            response = self.llm.chat(messages, tools=tool_schemas)
+                            if not response["success"]:
+                                errors.append(response.get("error", "截断后 LLM 仍然失败"))
+                                break
+                    else:
+                        # 已经很少轮次了还超限，可能是 system prompt 太大
+                        # 尝试去掉记忆和技能相关消息
+                        if len(system_msgs) > 1:
+                            messages = [system_msgs[0]] + recent_msgs  # 只保留第一条 system
+                            response = self.llm.chat(messages, tools=tool_schemas)
+                        if not response["success"]:
+                            errors.append(error_msg)
+                            break
+                else:
+                    # 非上下文超限错误，直接放弃
+                    errors.append(error_msg)
+                    break
 
             # 添加 assistant 消息
             assistant_msg = {"role": "assistant", "content": response["content"]}

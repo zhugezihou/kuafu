@@ -11,6 +11,7 @@
 每次任务完成后自然触发反思 → 进化决策。
 
 进化等级：
+- L0: 基础进化（首次任务 / 每 3 次成功任务触发，让用户感知进化系统）
 - L1: 即时优化（修复/改进当前任务的 tool usage / 参数 / 流程）
 - L2: 策略进化（更新 strategy/ 下的 prompt 模板或默认策略）
 - L3: 技能提取（从重复经验中抽象出可复用 skill，写入 skills/）
@@ -51,7 +52,7 @@ class EvolutionEngine:
     评估是否触发进化、执行进化动作、记录进化历史。
     """
 
-    def __init__(self, task_history: Optional[list] = None, memory=None):
+    def __init__(self, task_history: Optional[list] = None, memory=None, llm=None):
         self._task_history = task_history or []
         self._log_path = EVOLUTION_LOG
         self._ensure_log()
@@ -59,6 +60,8 @@ class EvolutionEngine:
         self._last_level_time: dict[int, float] = {}
         # 记忆联动：注入 MemoryAPI 实例，使进化事件持久化为记忆
         self._memory = memory
+        # LLM 客户端：用于 L0 经验笔记生成
+        self._llm = llm
         self._min_interval = 60.0  # 同一级别至少间隔 60 秒
 
     def _ensure_log(self):
@@ -139,12 +142,25 @@ class EvolutionEngine:
     def _evaluate_success(self, result: dict) -> Optional[EvolutionEvent]:
         recent_n = self._task_history[-5:]
         successes = [t for t in recent_n if t.get("success")]
-
-        # L2: 策略进化 — 同类型任务成功 5 次且时间跨度 ≥ 10 分钟（防止短循环刷进化）
         same_type = [
             t for t in successes
             if t.get("task_type") == result.get("task_type")
         ]
+
+        total_success_count = sum(1 for t in self._task_history if t.get("success"))
+
+        # L0: 经验沉淀 — 每完成 3 次成功任务，调用 LLM 从任务历史中提取经验笔记
+        # 「进化」的意义在于让夸父变得更好，L0 就是最简单的方式：
+        # 每次把完成的任务沉淀为可检索的记忆，让下一次同类任务做得更好
+        if total_success_count > 0 and total_success_count % 3 == 0:
+            return self._evolve(
+                level=0,
+                trigger=f"已完成 {total_success_count} 次成功任务",
+                action="提取最近 3 次任务经验，生成经验笔记存入记忆",
+                target="memory/evolution_log.json",
+            )
+
+        # L2: 策略进化 — 同类型任务成功 5 次且时间跨度 ≥ 10 分钟（防止短循环刷进化）
         if len(same_type) >= 5:
             times = [t.get("timestamp", 0) for t in same_type[-5:]]
             if max(times) - min(times) >= 600:
@@ -184,6 +200,19 @@ class EvolutionEngine:
         )
         self._log_event(event)
 
+        # L0: 生成经验笔记并写入记忆（实际沉淀，不仅是记录事件）
+        if level == 0 and self._memory is not None:
+            try:
+                lesson = self._extract_lesson()
+                if lesson and lesson.strip():
+                    self._memory.remember(
+                        key=f"lesson:{int(time.time())}",
+                        content=lesson,
+                        tags=["evolution", "lesson", "L0"],
+                    )
+            except Exception:
+                pass  # 经验提取失败不影响进化核心流程
+
         # L3: 实际写入技能文件，不仅是记录事件
         if level >= 3 and target.startswith("skills/"):
             self._extract_skill(target, trigger)
@@ -201,6 +230,58 @@ class EvolutionEngine:
                 pass  # 记忆失败不影响进化核心流程
 
         return event
+
+    # ---- L0: LLM 任务经验提取 ----
+
+    def _extract_lesson(self, recent_count: int = 3) -> Optional[str]:
+        """从最近 successful 任务中提取经验笔记，供记忆沉淀。
+
+        调用 LLM 分析最近 N 次成功任务，生成结构化经验笔记。
+        这保证了即便最简单的任务，夸父也在持续积累可检索的知识。
+        """
+        if self._llm is None:
+            return None
+
+        successes = [t for t in self._task_history if t.get("success")][-recent_count:]
+        if not successes:
+            return None
+
+        # 构建任务摘要供 LLM 分析
+        task_summaries = []
+        for t in successes:
+            task_summaries.append(
+                f"- 任务类型: {t.get('task_type', '未知')}\n"
+                f"  用户请求: {t.get('result', '')[:200]}\n"
+                f"  耗时: {t.get('duration', 0):.1f}s\n"
+                f"  工具调用: {t.get('tool_calls', 0)} 次"
+            )
+        tasks_text = "\n".join(task_summaries)
+
+        prompt = (
+            f"你是一位经验丰富的 AI 助手，正在回顾最近完成的 {recent_count} 个任务。\n"
+            f"请从这些任务中提取有价值的经验笔记，供未来参考。\n\n"
+            f"## 最近完成的任务\n\n"
+            f"{tasks_text}\n\n"
+            f"## 要求\n"
+            f"用中文输出，格式如下（不要多余内容）：\n"
+            f"## 经验笔记\n"
+            f"- 核心模式: 这些任务共同体现了什么能力？\n"
+            f"- 可复用的方法: 每个任务具体是怎么完成的？\n"
+            f"- 适用场景: 这些经验以后在什么情况下可以复用？\n"
+        )
+
+        try:
+            response = self._llm.chat(messages=[
+                {"role": "system", "content": "你是一个善于总结的学习型 AI。"},
+                {"role": "user", "content": prompt},
+            ])
+            if isinstance(response, dict) and response.get("success"):
+                return response["content"].strip()
+            elif isinstance(response, str):
+                return response.strip()
+            return f"生成经验笔记失败: {response.get('error', '未知错误')}"
+        except Exception as e:
+            return f"生成经验笔记失败: {e}"
 
     # ---- L3 技能提取 ----
 

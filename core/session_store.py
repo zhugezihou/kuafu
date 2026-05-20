@@ -24,8 +24,8 @@ MEMORY_DIR = Path(__file__).resolve().parent.parent / "memory"
 SESSION_DB = MEMORY_DIR / "sessions.db"
 
 # token 估算：中文约 1.5 字符/token，英文约 4 字符/token
-# 保守估算：2 字符 ≈ 1 token
-CHARS_PER_TOKEN = 2.0
+# Qwen3.5-9B 实测中文约 1.69 chars/token，取安全值 1.6
+CHARS_PER_TOKEN = 1.6
 
 
 def estimate_tokens(text: str) -> int:
@@ -52,6 +52,13 @@ class SessionStore:
         self.db_path = db_path or SESSION_DB
         self._conn: Optional[sqlite3.Connection] = None
         self._init_db()
+
+    @staticmethod
+    def _clean_surrogates(text: str) -> str:
+        """清理 surrogate 字符，避免 SQLite 写入失败。"""
+        if not text:
+            return text
+        return text.encode("utf-8", errors="surrogatepass").decode("utf-8", errors="replace")
 
     # ── 数据库初始化 ──────────────────────────────────────────────
 
@@ -119,13 +126,15 @@ class SessionStore:
     def append_message(self, session_id: str, role: str, content: str):
         """追加一条消息到会话。"""
         cursor = self._get_cursor()
-        token_count = estimate_tokens(content)
+        # 清理 surrogate 字符，避免 SQLite 写入失败
+        clean_content = self._clean_surrogates(content)
+        token_count = estimate_tokens(clean_content)
         now = time.time()
 
         cursor.execute(
             "INSERT INTO messages (session_id, role, content, timestamp, token_count) "
             "VALUES (?, ?, ?, ?, ?)",
-            (session_id, role, content, now, token_count),
+            (session_id, role, clean_content, now, token_count),
         )
         cursor.execute(
             "UPDATE sessions SET message_count = message_count + 1, "

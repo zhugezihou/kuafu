@@ -5,8 +5,8 @@
 set -e
 
 KUAFFU_DIR="$(cd "$(dirname "$0")" && pwd)"
-LLAMA_SERVER="$HOME/llama.cpp/build/bin/llama-server"
-MODEL="$HOME/models/Qwen3.5-9B-Q4_K_M.gguf"
+LLAMA_SERVER="$HOME/llama.cpp/build2/bin/llama-server"
+MODEL="$HOME/models/Qwen3.5-9B-UD-Q4_K_XL.gguf"
 
 # 1. 检查本地模型服务是否在跑
 if ! curl -s http://localhost:8080/v1/models > /dev/null 2>&1; then
@@ -21,8 +21,10 @@ if ! curl -s http://localhost:8080/v1/models > /dev/null 2>&1; then
     fi
     nohup "$LLAMA_SERVER" \
         -m "$MODEL" \
-        -c 32768 -ngl 99 --host 127.0.0.1 --port 8080 \
+        -c 8192 -ngl 99 --host 127.0.0.1 --port 8080 \
         -t 10 --flash-attn on --reasoning off \
+        --cache-type-k q8_0 --cache-type-v q8_0 \
+        --spec-type draft-mtp \
         > /dev/null 2>&1 &
     # 等待服务就绪（最多 60s）
     echo -n "⌛ 加载中..."

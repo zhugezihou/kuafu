@@ -23,6 +23,7 @@ import urllib.error
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
 
@@ -131,6 +132,9 @@ class ToolRegistry:
         self.register("search_files", self._search_schema(), self._handle_search_files)
         self.register("web_search", self._web_search_schema(), self._handle_web_search)
         self.register("web_fetch", self._web_fetch_schema(), self._handle_web_fetch)
+        self.register("github_search", self._github_search_schema(), self._handle_github_search)
+        self.register("github_get_repo", self._github_get_repo_schema(), self._handle_github_get_repo)
+        self.register("tavily_search", self._tavily_search_schema(), self._handle_tavily_search)
         self.register("finish", self._finish_schema(), self._handle_finish)
 
     # ── Schema 定义 ────────────────────────────────────────────────
@@ -605,35 +609,57 @@ class ToolRegistry:
         except Exception as e:
             return {"success": False, "output": f"搜索失败: {e}"}
 
-        # 多模式解析 Bing HTML（现代版结构变化大）
+        # 多模式解析 Bing HTML（现代版：<li class="b_algo"><h2><a> + caption）
         results = []
-        patterns = [
-            r'<a[^>]*href="(https?://(?!www\.bing\.com)[^"]+)"[^>]*>(.*?)</a>',
-            r'<h2><a[^>]*href="(https?://[^"]+)"[^>]*>([^<]*)</a>',
-            r'<cite[^>]*>(.*?)</cite>.*?<p[^>]*>(.*?)</p>',
-        ]
 
-        for pattern in patterns:
-            for m in re.finditer(pattern, html, re.DOTALL):
-                if len(results) >= max_results:
-                    break
-                title = re.sub(r'<[^>]+>', '', m.group(2)).strip() if m.lastindex >= 2 else ""
-                url = m.group(1).strip()
-                # 过滤掉 Bing 自己的链接
-                if "bing.com" not in url and url.startswith("http"):
-                    results.append({
-                        "title": title[:100] or url[:60],
-                        "url": url,
-                        "snippet": "",
-                    })
-            if results:
+        # 主模式：Bing 现代搜索结果（b_algo 容器）
+        b_algo_blocks = re.findall(
+            r'<li[^>]*class="[^"]*\bb_algo\b[^"]*"[^>]*>(.*?)</li>',
+            html, re.DOTALL | re.IGNORECASE
+        )
+        for block in b_algo_blocks:
+            if len(results) >= max_results:
                 break
+            link_m = re.search(
+                r'<h2[^>]*>.*?<a[^>]*href="(https?://[^"]+)"[^>]*>(.*?)</a>',
+                block, re.DOTALL
+            )
+            if not link_m:
+                continue
+            url = link_m.group(1).strip()
+            title = re.sub(r'<[^>]+>', '', link_m.group(2)).strip()
+            snippet_m = re.search(r'<p[^>]*>(.*?)</p>', block, re.DOTALL)
+            snippet = re.sub(r'<[^>]+>', ' ', snippet_m.group(1)).strip() if snippet_m else ""
+            snippet = snippet[:200]
+            if "bing.com" not in url and url.startswith("http"):
+                results.append({"title": title[:100] or url[:60], "url": url, "snippet": snippet})
+
+        # 备用模式：旧版/特殊情况
+        if not results:
+            backup_patterns = [
+                r'<h2[^>]*>.*?<a[^>]*href="(https?://(?!.*bing\.com)[^"]+)"[^>]*>(.*?)</a>',
+                r'<a[^>]*href="(https?://(?!www\.bing\.com|r\.bing\.com)[^"]+)"[^>]*>(.*?)</a>',
+            ]
+            for pattern in backup_patterns:
+                for m in re.finditer(pattern, html, re.DOTALL):
+                    if len(results) >= max_results:
+                        break
+                    url = m.group(1).strip()
+                    title = re.sub(r'<[^>]+>', '', m.group(2)).strip()[:100]
+                    if "bing.com" not in url and url.startswith("http"):
+                        results.append({"title": title or url[:60], "url": url, "snippet": ""})
+                if results:
+                    break
 
         if not results:
             return {"success": True, "output": f"Bing 搜索「{query}」未找到结果。"}
         lines = [f"搜索结果 (Bing): 「{query}」", ""]
         for i, r in enumerate(results, 1):
-            lines.append(f"{i}. {r['title']}\n   {r['url']}")
+            lines.append(f"{i}. {r['title']}")
+            lines.append(f"   {r['url']}")
+            if r.get('snippet'):
+                lines.append(f"   {r['snippet']}")
+            lines.append("")
         return {"success": True, "output": "\n".join(lines).strip()}
 
     # ---- web_fetch ----
@@ -697,3 +723,255 @@ class ToolRegistry:
             "result": args.get("result", ""),
             "summary": args.get("summary", ""),
         }
+
+    # ---- github_search ----
+
+    @staticmethod
+    def _github_search_schema() -> dict:
+        return {
+            "description": "搜索 GitHub 上的仓库、代码或 issue。返回仓库名、描述、星数、URL。注意：GitHub API 有 60 次/小时的速率限制",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "GitHub 搜索关键词，如 'AI agent framework' 或 'langchain python'",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "最大返回结果数（默认 5，最大 10）",
+                    },
+                    "search_type": {
+                        "type": "string",
+                        "enum": ["repositories", "code"],
+                        "description": "搜索类型：repositories（仓库）或 code（代码）。默认 repositories",
+                    },
+                },
+                "required": ["query"],
+            },
+        }
+
+    def _handle_github_search(self, args: dict) -> dict:
+        query = args.get("query", "")
+        max_results = min(args.get("max_results", 5), 10)
+        search_type = args.get("search_type", "repositories")
+        if not query:
+            return {"success": False, "output": "搜索词不能为空"}
+
+        import urllib.parse
+        encoded_q = urllib.parse.quote(query)
+        url = f"https://api.github.com/search/{search_type}?q={encoded_q}&per_page={max_results}&sort=stars"
+
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Kuafu/1.0",
+                "Accept": "application/vnd.github.v3+json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            return {"success": False, "output": f"GitHub 搜索失败: {e}"}
+
+        items = data.get("items", [])
+        if not items:
+            return {"success": True, "output": f"GitHub 搜索「{query}」未找到结果。"}
+
+        lines = [f"GitHub 搜索结果 ({search_type}): 「{query}」", ""]
+        for i, item in enumerate(items[:max_results], 1):
+            if search_type == "repositories":
+                name = item.get("full_name", "?")
+                desc = item.get("description", "") or "(无描述)"
+                stars = item.get("stargazers_count", 0)
+                lang = item.get("language", "") or "?"
+                url_repo = item.get("html_url", "")
+                lines.append(f"{i}. {name}")
+                lines.append(f"   ⭐{stars}  |  {lang}")
+                lines.append(f"   {desc}")
+                lines.append(f"   {url_repo}")
+            else:
+                # code search
+                repo = item.get("repository", {}).get("full_name", "?")
+                path = item.get("path", "?")
+                html_url = item.get("html_url", "")
+                lines.append(f"{i}. {repo}: {path}")
+                lines.append(f"   {html_url}")
+            lines.append("")
+
+        lines.append("---")
+        total = data.get("total_count", 0)
+        lines.append(f"共 {total} 条结果，显示前 {len(items)} 条")
+        lines.append("提示：用 github_get_repo(tool) 查看某个仓库的详细信息和 README")
+        return {"success": True, "output": "\n".join(lines).strip()}
+
+    # ---- github_get_repo ----
+
+    @staticmethod
+    def _github_get_repo_schema() -> dict:
+        return {
+            "description": "获取 GitHub 仓库的详细信息，包括描述、星数、语言、许可协议和 README 内容",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repo": {
+                        "type": "string",
+                        "description": "仓库名，格式为 'owner/repo'，如 'nousresearch/hermes-agent'",
+                    },
+                    "get_readme": {
+                        "type": "boolean",
+                        "description": "是否获取 README 内容（默认 true）",
+                    },
+                },
+                "required": ["repo"],
+            },
+        }
+
+    def _handle_github_get_repo(self, args: dict) -> dict:
+        repo = args.get("repo", "")
+        get_readme = args.get("get_readme", True)
+        if not repo or "/" not in repo:
+            return {"success": False, "output": "仓库名格式错误，应为 'owner/repo'，如 'nousresearch/hermes-agent'"}
+
+        try:
+            # 获取仓库信息
+            url = f"https://api.github.com/repos/{repo}"
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "Kuafu/1.0",
+                    "Accept": "application/vnd.github.v3+json",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+
+            lines = [f"📦 {data.get('full_name', repo)}", ""]
+            desc = data.get("description") or "(无描述)"
+            lines.append(f"描述: {desc}")
+            lines.append(f"⭐ Stars: {data.get('stargazers_count', 0)}")
+            lines.append(f"🍴 Forks: {data.get('forks_count', 0)}")
+            lines.append(f"🐛 Issues: {data.get('open_issues_count', 0)}")
+            lines.append(f"📋 语言: {data.get('language', '?') or '?'}")
+            lines.append(f"📜 许可: {data.get('license', {}).get('spdx_id', '无') if data.get('license') else '无'}")
+            lines.append(f"🔗 {data.get('html_url', '')}")
+            if data.get("homepage"):
+                lines.append(f"🌐 主页: {data['homepage']}")
+            lines.append(f"📅 创建: {data.get('created_at', '?')[:10]}")
+            lines.append(f"🔄 更新: {data.get('updated_at', '?')[:10]}")
+            lines.append("")
+
+            # 获取 README
+            if get_readme:
+                readme_url = f"https://api.github.com/repos/{repo}/readme"
+                req2 = urllib.request.Request(
+                    readme_url,
+                    headers={
+                        "User-Agent": "Kuafu/1.0",
+                        "Accept": "application/vnd.github.v3.raw",
+                    },
+                )
+                try:
+                    with urllib.request.urlopen(req2, timeout=15) as resp2:
+                        readme_text = resp2.read().decode("utf-8", errors="replace")
+                    # 截取 README 关键部分
+                    if len(readme_text) > 2000:
+                        readme_text = readme_text[:2000] + "\n\n...(README 已截断)"
+                    lines.append("📖 README:")
+                    lines.append(readme_text)
+                except Exception:
+                    lines.append("(README 不可用)")
+
+            return {"success": True, "output": "\n".join(lines).strip()}
+
+        except urllib.error.HTTPError as e:
+            if e.code == 403:
+                return {"success": False, "output": "GitHub API 速率限制已满（60次/小时），请稍后再试。"}
+            elif e.code == 404:
+                return {"success": False, "output": f"仓库 '{repo}' 不存在。"}
+            return {"success": False, "output": f"GitHub API 错误 ({e.code}): {e.reason}"}
+        except Exception as e:
+            return {"success": False, "output": f"获取仓库信息失败: {e}"}
+
+    # ---- tavily_search ----
+
+    @staticmethod
+    def _tavily_search_schema() -> dict:
+        return {
+            "description": "使用 Tavily AI 搜索引擎搜索互联网。返回高质量的结果，包含标题、URL 和内容摘要。比 web_search 更稳定可靠，支持深度搜索",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "搜索关键词",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "最大返回结果数（默认 5，最大 10）",
+                    },
+                    "depth": {
+                        "type": "string",
+                        "enum": ["basic", "advanced"],
+                        "description": "搜索深度：basic（快速）或 advanced（深度，更耗时但更全面）",
+                    },
+                },
+                "required": ["query"],
+            },
+        }
+
+    def _handle_tavily_search(self, args: dict) -> dict:
+        query = args.get("query", "")
+        max_results = min(args.get("max_results", 5), 10)
+        depth = args.get("depth", "basic")
+        if not query:
+            return {"success": False, "output": "搜索词不能为空"}
+        if not TAVILY_API_KEY:
+            return {"success": False, "output": "Tavily API key 未配置。请在 .env 中添加 TAVILY_API_KEY，或使用 web_search 代替"}
+
+        payload = json.dumps({
+            "query": query,
+            "search_depth": depth,
+            "max_results": max_results,
+        }).encode("utf-8")
+
+        req = urllib.request.Request(
+            "https://api.tavily.com/search",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {TAVILY_API_KEY}",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")[:200]
+            return {"success": False, "output": f"Tavily 搜索失败 (HTTP {e.code}): {body}"}
+        except Exception as e:
+            return {"success": False, "output": f"Tavily 搜索失败: {e}"}
+
+        results = data.get("results", [])
+        if not results:
+            return {"success": True, "output": f"Tavily 搜索「{query}」未找到结果。"}
+
+        lines = [f"搜索结果 (Tavily): 「{query}」", ""]
+        for i, r in enumerate(results[:max_results], 1):
+            title = r.get("title", "(无标题)")
+            url = r.get("url", "")
+            content = r.get("content", "")[:300]
+            lines.append(f"{i}. {title}")
+            lines.append(f"   {url}")
+            if content:
+                lines.append(f"   {content}")
+            lines.append("")
+
+        if data.get("answer"):
+            lines.append(f"📋 总结: {data['answer']}")
+            lines.append("")
+
+        total = data.get("total_results", len(results))
+        lines.append(f"--- 共 {total} 条结果，显示前 {len(results)} 条 ---")
+        return {"success": True, "output": "\n".join(lines).strip()}

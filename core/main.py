@@ -214,6 +214,25 @@ class KuafuAgent:
 
         return result
 
+    @staticmethod
+    def _clean_input(text: str) -> str:
+        """清理 input() 接收的原始输入，处理退格符等控制字符。
+
+        Python 的 input() 函数原样保留终端控制字符（如退格符 \b），
+        但终端显示时这些字符已被正确解释。本函数模拟退格语义，
+        正确移除被退格删除的字符，只保留用户最终看到的输入内容。
+        """
+        result = []
+        for ch in text:
+            if ch == '\b':
+                if result:
+                    result.pop()
+            elif ord(ch) < 0x20 and ch not in ('\t', '\n', '\r'):
+                continue
+            else:
+                result.append(ch)
+        return ''.join(result).strip()
+
     def converse(self, input_text: str, task_type: str = "generic") -> dict:
         """多轮对话 — 延续上下文。
 
@@ -232,6 +251,9 @@ class KuafuAgent:
         """
         start = time.time()
         self._task_count += 1
+
+        # 清理输入中的退格符等控制字符
+        input_text = self._clean_input(input_text)
 
         # 问候检测
         greeting_reply = self._detect_greeting(input_text)
@@ -416,7 +438,8 @@ def main():
         print(f"\n⏱ {result['duration']}s | 轮次: {result.get('turns', 0)} | 错误: {len(result.get('errors', []))}")
         return
 
-    # 交互模式（多轮对话）
+    # 交互模式（多轮对话）— 使用 readline 支持行编辑
+    import readline
     print("夸父交互模式 (输入 'exit' 退出，'new' 重置对话)")
     while True:
         try:
@@ -432,7 +455,7 @@ def main():
             result = agent.converse(task)
             status_icon = "✅" if result["success"] else "❌"
             if result["success"]:
-                print(f"\n{status_icon} {result.get('result', '(无结果)')[:500]}")
+                print(f"\n{status_icon} {result.get('result', '(无结果)')}")
             else:
                 errs = result.get("errors", [])
                 err_detail = f" — {'; '.join(errs[:3])}" if errs else ""

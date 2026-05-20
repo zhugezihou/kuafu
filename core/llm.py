@@ -37,7 +37,7 @@ DEFAULT_MODEL = "deepseek-chat"
 
 # 本地模型配置
 LOCAL_BASE_URL = "http://localhost:8080"
-LOCAL_MODEL = "Qwen3.5-9B-Q4_K_M.gguf"
+LOCAL_MODEL = "Qwen3.5-9B-UD-Q4_K_XL.gguf"
 LOCAL_MAX_TOKENS = 4096
 
 
@@ -58,6 +58,7 @@ class LLMClient:
         backend = (backend or KUAFFU_BACKEND).strip().lower()
 
         if backend == "local":
+            self.backend = "local"
             self.api_key = api_key or "ignored"
             self.base_url = (base_url or LOCAL_BASE_URL).rstrip("/")
             self.model = model or LOCAL_MODEL
@@ -65,6 +66,7 @@ class LLMClient:
             self.temperature = temperature
             self.timeout = timeout
         else:
+            self.backend = "cloud"
             self.api_key = api_key or DEEPSEEK_API_KEY
             self.base_url = (base_url or DEEPSEEK_BASE_URL).rstrip("/")
             self.model = model or DEFAULT_MODEL
@@ -103,6 +105,17 @@ class LLMClient:
             payload["tools"] = tools
         return payload
 
+    @staticmethod
+    def _clean_surrogates(obj):
+        """递归清理 dict/list 中所有字符串的 surrogate 字符。"""
+        if isinstance(obj, str):
+            return obj.encode("utf-8", errors="surrogatepass").decode("utf-8", errors="replace")
+        elif isinstance(obj, dict):
+            return {k: LLMClient._clean_surrogates(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [LLMClient._clean_surrogates(item) for item in obj]
+        return obj
+
     def chat(
         self,
         messages: list[dict],
@@ -125,7 +138,9 @@ class LLMClient:
         for attempt in range(max_retries):
             try:
                 payload = self._build_payload(messages, stream=False, tools=tools)
-                data = json.dumps(payload).encode("utf-8")
+                # 清理 surrogate 字符，避免 API 服务端 JSON 解析失败
+                payload = self._clean_surrogates(payload)
+                data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
                 req = urllib.request.Request(
                     self._api_url(),
                     data=data,
@@ -134,11 +149,12 @@ class LLMClient:
                 )
 
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                    result = json.loads(resp.read().decode("utf-8"))
+                    raw = resp.read()
+                    result = json.loads(raw.decode("utf-8", errors="replace"))
 
                 choice = result.get("choices", [{}])[0]
                 message = choice.get("message", {})
-                content = message.get("content", "")
+                content = message.get("content", "") or message.get("reasoning_content", "")
                 tool_calls_raw = message.get("tool_calls")
 
                 # 格式化 tool_calls
@@ -174,6 +190,18 @@ class LLMClient:
                 last_error = f"HTTP {e.code}: {body[:200]}"
                 if e.code in (401, 403):
                     break  # 认证错误不重试
+                # 上下文超限：尝试截断旧消息再重试
+                if e.code == 400 and "exceed" in body.lower() and attempt < max_retries - 1:
+                    # 切掉最旧的一半非 system 消息
+                    non_system = [(i, m) for i, m in enumerate(messages) if m.get("role") != "system"]
+                    system_msgs = [m for m in messages if m.get("role") == "system"]
+                    if len(non_system) > 4:
+                        cut_count = len(non_system) // 3
+                        cut_indices = {i for i, _ in non_system[:cut_count]}
+                        messages = [m for idx, m in enumerate(messages) if idx not in cut_indices]
+                        last_error = f"HTTP 400 (ctx): 截断 {cut_count} 条旧消息后重试"
+                        time.sleep(0.5)
+                        continue
                 time.sleep(1 * (attempt + 1))
 
             except Exception as e:
