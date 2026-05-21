@@ -3,6 +3,13 @@
 from autonomous.reviewer import Reviewer, ReviewerThread
 from autonomous.learner import Learner
 from autonomous.skill_extractor import SkillExtractor
+from autonomous.web_learner import WebLearner
+
+try:
+    from autonomous.self_health import HealthChecker, HealthCheckerThread
+except ImportError:
+    HealthChecker = None  # type: ignore
+    HealthCheckerThread = None  # type: ignore
 
 try:
     from autonomous.prioritizer import (

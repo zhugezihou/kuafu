@@ -171,11 +171,11 @@ class EvolutionEngine:
                     target="strategy/prompts.yaml",
                 )
 
-        # L3: 技能提取 — 同类型任务成功 ≥3 次且用户有纠正
-        if len(same_type) >= 3 and result.get("user_correction"):
+        # L3: 技能提取 — 同类型任务成功 ≥3 次（无需用户纠正也自动提取）
+        if len(same_type) >= 3:
             return self._evolve(
                 level=3,
-                trigger=f"「{result.get('task_type')}」频繁执行 + 用户纠正",
+                trigger=f"「{result.get('task_type')}」类型任务成功 {len(same_type)} 次，自动提取技能",
                 action="提取为可复用的技能包",
                 target=f"skills/{result.get('task_type', 'generic')}.yaml",
             )
@@ -210,6 +210,27 @@ class EvolutionEngine:
                         content=lesson,
                         tags=["evolution", "lesson", "L0"],
                     )
+                    # 同时写入 strategy/task_strategies.yaml 的 notes
+                    try:
+                        strategy_dir = ROOT_DIR / "strategy"
+                        strategies_path = strategy_dir / "task_strategies.yaml"
+                        import yaml
+                        if strategies_path.exists():
+                            with open(strategies_path, "r", encoding="utf-8") as f:
+                                existing = yaml.safe_load(f) or {}
+                        else:
+                            existing = {"generic": {}}
+                        if "generic" not in existing:
+                            existing["generic"] = {}
+                        existing["generic"].setdefault("notes", [])
+                        # 从 lesson 中提取第一行作为简洁笔记
+                        lesson_first_line = lesson.strip().split("\n")[0][:80]
+                        if lesson_first_line not in existing["generic"]["notes"]:
+                            existing["generic"]["notes"].append(lesson_first_line)
+                        with open(strategies_path, "w", encoding="utf-8") as f:
+                            yaml.dump(existing, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+                    except Exception:
+                        pass  # 写入 notes 失败不影响主流程
             except Exception:
                 pass  # 经验提取失败不影响进化核心流程
 
@@ -365,8 +386,33 @@ class EvolutionEngine:
                 yaml.dump(existing, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
 
     def _sync_strategy_template(self, trigger: str, strategy_dir: Path):
-        """LLM 不可用时的降级同步：保守追加建议。"""
+        """LLM 不可用时的降级同步：根据触发原因生成有实质内容的教训。"""
         import yaml
+
+        # 根据 trigger 提炼有意义的具体教训文本
+        trigger_lower = trigger.lower()
+        if "失败" in trigger:
+            # 失败教训：提取领域并给出具体改进方向
+            lesson = trigger.replace("(自动) ", "").strip()
+            note = f"需要加强 {lesson} 类任务的预处理和边界检查"
+            quality_rule = {
+                "severity": "required",
+                "rule": f"执行 {lesson} 类任务前先检查前置条件和错误边界"
+            }
+        elif "成功" in trigger:
+            # 成功经验：提取可复用模式
+            lesson = trigger.replace("(自动) ", "").strip()
+            note = f"在 {lesson} 类任务中形成了有效的工作模式，可复用"
+            quality_rule = {
+                "severity": "optional",
+                "rule": f"遇到 {lesson} 类任务时参考以往成功的工作流"
+            }
+        else:
+            note = f"从实践中获得的经验: {trigger[:80]}"
+            quality_rule = {
+                "severity": "warning",
+                "rule": f"注意: {trigger[:80]}"
+            }
 
         # 更新 quality.yaml
         quality_path = strategy_dir / "quality.yaml"
@@ -375,15 +421,11 @@ class EvolutionEngine:
                 existing = yaml.safe_load(f) or []
         else:
             existing = []
-
-        # 添加一条保守规则
-        new_rule = {
-            "severity": "warning",
-            "rule": f"参考历史教训: {trigger[:60]}"
-        }
-        existing.append(new_rule)
-        with open(quality_path, "w", encoding="utf-8") as f:
-            yaml.dump(existing, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+        # 去重：避免同一条规则反复追加
+        if quality_rule["rule"] not in [r.get("rule", "") for r in existing]:
+            existing.append(quality_rule)
+            with open(quality_path, "w", encoding="utf-8") as f:
+                yaml.dump(existing, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
 
         # 更新 task_strategies.yaml — 在 generic 下追加 notes
         strategies_path = strategy_dir / "task_strategies.yaml"
@@ -395,7 +437,8 @@ class EvolutionEngine:
         if "generic" not in existing:
             existing["generic"] = {}
         existing["generic"].setdefault("notes", [])
-        existing["generic"]["notes"].append(f"(自动) {trigger[:50]}")
+        if note not in existing["generic"]["notes"]:
+            existing["generic"]["notes"].append(note)
         with open(strategies_path, "w", encoding="utf-8") as f:
             yaml.dump(existing, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
 

@@ -2,14 +2,7 @@ generic:
   max_retries: 2
   reflection_depth: detailed
   evolution_level_cap: 2
-  notes:
-  - (自动) 「generic」连续 3 次失败
-  - (自动) 「generic」类型任务成功 5 次
-  - (自动) 「generic」连续 3 次失败
-  - (自动) 「fail_test_5」连续 3 次失败
-  - (自动) 「fail_test_5」连续 3 次失败
-  - (自动) 「fail_test_5」连续 3 次失败
-  - (自动) 「fail_test_5」连续 3 次失败
+  notes: []
 coding:
   max_retries: 3
   reflection_depth: detailed

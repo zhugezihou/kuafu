@@ -138,6 +138,26 @@ class AgentLoop:
             parts.append(f"- 成功率: {task_stats['success_rate']}%")
         parts.append("")
 
+        # 5b. 历史教训（来自 strategy/task_strategies.yaml 的 notes）
+        try:
+            from autonomous.strategy_loader import get_strategy
+            strategy = get_strategy("generic")
+            notes = strategy.get("notes", [])
+            if notes:
+                # 取最近 3 条有实质内容的教训（跳过纯自动标记的）
+                recent_notes = [n for n in notes if "fail_test" not in n and "连续 3 次" not in n and "(自动)" not in n]
+                if not recent_notes:
+                    recent_notes = notes[-3:]  # 保底：取最新 3 条
+                else:
+                    recent_notes = recent_notes[-3:]
+                parts.append("## 历史教训")
+                parts.append("以下是从过往任务中沉淀的教训，请注意参考：")
+                for n in recent_notes:
+                    parts.append(f"- {n}")
+                parts.append("")
+        except Exception:
+            pass  # 教训加载失败不影响主流程
+
         # 6. 安全规则
         parts.append("## 安全规则")
         parts.append("- 执行命令前会进行风险分级：safe(自动执行) / attention(需确认) / dangerous(需审批) / forbidden(禁止)")
@@ -145,13 +165,25 @@ class AgentLoop:
         parts.append("- 输出中不会包含环境变量或敏感配置文件内容")
         parts.append("")
 
-        # 7. 历史记忆
-        recent = self.memory.recall("", limit=10)
-        if recent:
-            parts.append("## 相关记忆")
-            for m in recent[-5:]:
-                parts.append(f"- {m.get('key', '?')}: {m.get('content', '')[:100]}")
+        # 7. 历史记忆 — 优先召回 lesson 标签的经验笔记
+        lessons = self.memory.recall("lesson L0 evolution", limit=5)
+        if lessons:
+            parts.append("## 经验沉淀")
+            parts.append("以下是从过往任务中沉淀的经验笔记：")
             parts.append("")
+            for m in lessons[-3:]:
+                content = m.get('content', '')[:300]
+                parts.append(content)
+                parts.append("---")
+            parts.append("")
+        else:
+            # 兜底：召回最近的记忆
+            recent = self.memory.recall("", limit=5)
+            if recent:
+                parts.append("## 相关记忆")
+                for m in recent[-3:]:
+                    parts.append(f"- {m.get('key', '?')}: {m.get('content', '')[:100]}")
+                parts.append("")
 
         # 7b. 当前模型配置
         parts.append("## 当前模型配置")

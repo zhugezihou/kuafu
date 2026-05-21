@@ -149,7 +149,7 @@ def match_skills(task: str) -> list[dict]:
 def _detect_task_type(task: str) -> str:
     """从用户任务文本探测任务类型。
 
-    返回: "coding" / "research" / "file_operation" / "generic"
+    返回: "coding" / "research" / "file_operation" / "weather" / "generic"
     """
     task_lower = task.lower()
     # coding 关键词
@@ -172,6 +172,13 @@ def _detect_task_type(task: str) -> str:
     for kw in file_kw:
         if kw in task_lower:
             return "file_operation"
+
+    # weather 关键词
+    weather_kw = ["天气", "气温", "下雨", "下雪", "刮风", "台风",
+                  "湿度", "温度", "是多少度"]
+    for kw in weather_kw:
+        if kw in task_lower:
+            return "weather"
 
     return "generic"
 

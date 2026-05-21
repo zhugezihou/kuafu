@@ -9,12 +9,4 @@
 - severity: warning
   rule: '参考历史教训: 「generic」类型任务成功 5 次'
 - severity: warning
-  rule: '参考历史教训: 「generic」连续 3 次失败'
-- severity: warning
-  rule: '参考历史教训: 「fail_test_5」连续 3 次失败'
-- severity: warning
-  rule: '参考历史教训: 「fail_test_5」连续 3 次失败'
-- severity: warning
-  rule: '参考历史教训: 「fail_test_5」连续 3 次失败'
-- severity: warning
   rule: '参考历史教训: 「fail_test_5」连续 3 次失败'

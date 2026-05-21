@@ -59,7 +59,7 @@ class KuafuAgent:
 
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.name = "夸父"
-        self.version = "0.2.0"
+        self.version = "0.3.0"
         self.memory = MemoryAPI()
         self.evolution = EvolutionEngine(memory=self.memory)
         self.llm = llm_client or LLMClient()
@@ -83,6 +83,21 @@ class KuafuAgent:
         # P2: 启动自主决策线程（daemon=True，周期性检查空闲状态）
         self._prioritizer_thread: Optional[threading.Thread] = None
         self._init_prioritizer()
+
+        # P3: 启动主动网络学习引擎（daemon=True，每隔数小时自动学习）
+        self._web_learner: Optional[Any] = None
+        self._init_web_learner()
+
+        # P4: 启动自检优化程序（daemon=True，每 4 小时自动体检）
+        from autonomous.self_health import HealthCheckerThread
+        self._health_checker_thread: Optional[Any] = None
+        self._health_checker = HealthCheckerThread(
+            memory_remember_fn=lambda key, content, tags: self.memory.remember(
+                key=key, content=content, tags=tags
+            ),
+        )
+        self._health_checker_thread = self._health_checker
+        self._health_checker_thread.start()
 
     def _setup(self):
         """首次启动设置。"""
@@ -137,6 +152,37 @@ class KuafuAgent:
             self._prioritizer_thread = None
             import logging
             logging.warning(f"P2 Prioritizer 启动失败: {e}")
+
+    # ---- P3: 主动网络学习引擎 ----
+
+    def _init_web_learner(self):
+        """初始化主动网络学习引擎（可选）。"""
+        try:
+            from autonomous.web_learner import WebLearner
+
+            self._web_learner = WebLearner(
+                llm_chat_fn=self.llm.chat,
+                memory_remember_fn=lambda key, content, tags: self.memory.remember(
+                    key=key, content=content, tags=tags or []
+                ),
+                memory_recall_fn=lambda query, limit=5: self.memory.recall(query, limit=limit),
+                evolution_emit_fn=lambda level, action, target, payload: (
+                    self.evolution.evaluate_and_evolve(
+                        task_result={"success": True, "task_type": target, "result": action},
+                        task=action,
+                        messages=[],
+                    )
+                    if hasattr(self.evolution, 'evaluate_and_evolve')
+                    else None
+                ),
+                learn_interval=21600,   # 6 小时
+                max_per_cycle=8,
+            )
+            self._web_learner.start(daemon=True)
+        except Exception as e:
+            self._web_learner = None
+            import logging
+            logging.warning(f"P3 WebLearner 启动失败: {e}")
 
     @property
     def identity(self) -> str:
