@@ -217,6 +217,10 @@ class EvolutionEngine:
         if level >= 3 and target.startswith("skills/"):
             self._extract_skill(target, trigger)
 
+        # L2: 进化后同步更新 strategy/ 文件（双向同步）
+        if level == 2:
+            self._sync_strategy(trigger)
+
         # 记忆联动：将进化事件持久化为记忆，供后续任务参考
         if self._memory is not None:
             level_label = {1: "即时优化", 2: "策略进化", 3: "技能提取"}.get(level, f"L{level}")
@@ -230,6 +234,170 @@ class EvolutionEngine:
                 pass  # 记忆失败不影响进化核心流程
 
         return event
+
+    # ---- L2: 策略双向同步 ----
+
+    def _sync_strategy(self, trigger: str):
+        """L2 进化后，同步更新 strategy/ 目录下的文件。
+
+        核心逻辑：
+        - quality.yaml: 从 task_history 中提取新的质量规则
+        - prompts.yaml: 更新默认 prompt 模板
+        - task_strategies.yaml: 更新策略参数
+
+        如果 LLM 可用，让 LLM 从任务历史中提炼优化建议；
+        如果 LLM 不可用，使用保守的模板更新（追加建议）。
+        """
+        strategy_dir = ROOT_DIR / "strategy"
+        strategy_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            if self._llm is not None:
+                self._sync_strategy_with_llm(trigger, strategy_dir)
+            else:
+                self._sync_strategy_template(trigger, strategy_dir)
+        except Exception as e:
+            # 策略同步失败不影响核心流程
+            self._log_event(EvolutionEvent(
+                level=2,
+                trigger=f"策略同步失败: {e}",
+                action="跳过本次 strategy/ 更新",
+                target="strategy/",
+            ))
+
+    def _sync_strategy_with_llm(self, trigger: str, strategy_dir: Path):
+        """用 LLM 分析任务历史，生成有实质内容的策略更新。"""
+        recent = self._task_history[-10:]
+        if not recent:
+            return
+
+        # 构建任务摘要
+        summary_lines = []
+        for t in recent:
+            summary_lines.append(
+                f"- 类型: {t.get('task_type', '?')} | "
+                f"成功: {t.get('success')} | "
+                f"工具: {t.get('tool_calls', 0)}次 | "
+                f"结果: {str(t.get('result', ''))[:120]}"
+            )
+        summary = "\n".join(summary_lines)
+
+        prompt = (
+            f"你是夸父的策略优化引擎。基于最近 {len(recent)} 次任务执行记录，\n"
+            f"分析出可以改进的策略建议。\n\n"
+            f"## 最近任务\n{summary}\n\n"
+            f"## 触发原因\n{trigger}\n\n"
+            f"## 输出要求\n"
+            f"请输出 JSON 格式（不要其他内容）：\n"
+            f"{{\n"
+            f'  "rules": ["新规则1", "新规则2"],\n'
+            f'  "quality_rules": [\n'
+            f'    {{"severity": "warning", "rule": "具体标准描述"}}\n'
+            f"  ],\n"
+            f'  "strategy_updates": {{"max_retries": 3}}\n'
+            f"}}\n"
+            f"规则应具体、可执行，每条不超过 80 字。\n"
+            f"如果没有建议，对应字段为空列表/空对象。\n"
+        )
+
+        response = self._llm.chat(messages=[
+            {"role": "system", "content": "你是一个策略优化 AI。输出纯净 JSON，不要 markdown 包裹。"},
+            {"role": "user", "content": prompt},
+        ])
+
+        content = ""
+        if isinstance(response, dict) and response.get("success"):
+            content = response["content"]
+        elif isinstance(response, str):
+            content = response
+        else:
+            content = str(response)
+
+        # 尝试解析 JSON
+        try:
+            import json as _json
+            # 去掉可能的 markdown 包裹
+            clean = content.strip()
+            if clean.startswith("```"):
+                clean = clean.split("\n", 1)[-1]
+                clean = clean.rsplit("```", 1)[0]
+            data = _json.loads(clean.strip())
+        except (json.JSONDecodeError, ValueError):
+            data = {}
+
+        # 更新 quality.yaml
+        new_rules = data.get("quality_rules", [])
+        if new_rules:
+            quality_path = strategy_dir / "quality.yaml"
+            if quality_path.exists():
+                import yaml
+                with open(quality_path, "r", encoding="utf-8") as f:
+                    existing = yaml.safe_load(f) or []
+            else:
+                existing = []
+            existing.extend(new_rules)
+            # 去重（按 rule 字段）
+            seen = set()
+            deduped = []
+            for r in existing:
+                if r["rule"] not in seen:
+                    seen.add(r["rule"])
+                    deduped.append(r)
+            import yaml
+            with open(quality_path, "w", encoding="utf-8") as f:
+                yaml.dump(deduped, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+
+        # 更新 task_strategies.yaml 的规则
+        new_strategy_rules = data.get("rules", [])
+        if new_strategy_rules:
+            strategies_path = strategy_dir / "task_strategies.yaml"
+            if strategies_path.exists():
+                import yaml
+                with open(strategies_path, "r", encoding="utf-8") as f:
+                    existing = yaml.safe_load(f) or {}
+            else:
+                existing = {}
+            existing["generic"] = existing.get("generic", {})
+            existing["generic"].setdefault("notes", [])
+            existing["generic"]["notes"].extend(new_strategy_rules)
+            import yaml
+            with open(strategies_path, "w", encoding="utf-8") as f:
+                yaml.dump(existing, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+
+    def _sync_strategy_template(self, trigger: str, strategy_dir: Path):
+        """LLM 不可用时的降级同步：保守追加建议。"""
+        import yaml
+
+        # 更新 quality.yaml
+        quality_path = strategy_dir / "quality.yaml"
+        if quality_path.exists():
+            with open(quality_path, "r", encoding="utf-8") as f:
+                existing = yaml.safe_load(f) or []
+        else:
+            existing = []
+
+        # 添加一条保守规则
+        new_rule = {
+            "severity": "warning",
+            "rule": f"参考历史教训: {trigger[:60]}"
+        }
+        existing.append(new_rule)
+        with open(quality_path, "w", encoding="utf-8") as f:
+            yaml.dump(existing, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+
+        # 更新 task_strategies.yaml — 在 generic 下追加 notes
+        strategies_path = strategy_dir / "task_strategies.yaml"
+        if strategies_path.exists():
+            with open(strategies_path, "r", encoding="utf-8") as f:
+                existing = yaml.safe_load(f) or {}
+        else:
+            existing = {"generic": {}}
+        if "generic" not in existing:
+            existing["generic"] = {}
+        existing["generic"].setdefault("notes", [])
+        existing["generic"]["notes"].append(f"(自动) {trigger[:50]}")
+        with open(strategies_path, "w", encoding="utf-8") as f:
+            yaml.dump(existing, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
 
     # ---- L0: LLM 任务经验提取 ----
 
@@ -288,29 +456,54 @@ class EvolutionEngine:
     def _extract_skill(self, target: str, trigger: str) -> Optional[str]:
         """真正将进化事件转化为 skills/ 下的 YAML 技能文件。
 
-        Args:
-            target: 目标路径，如 "skills/research.yaml"
-            path: 目标文件路径
-            task_type: 触发进化的任务类型
+        P3 增强：如果有 LLM 客户端，使用 LLM 从任务历史中生成有实质内容的 skill；
+        如果 LLM 不可用或生成失败，降级为保底模板填充。
         """
-        path = ROOT_DIR / target
-        task_type = path.stem  # e.g. "research" from "skills/research.yaml"
+        task_type = Path(target).stem  # e.g. "research" from "skills/research.yaml"
 
-        # 从任务历史中找到这个类型的成功案例
+        # P3: 优先用 LLM 生成有实质内容的 skill
+        if self._llm is not None:
+            try:
+                from autonomous.skill_extractor import SkillExtractor
+                extractor = SkillExtractor(self._llm.chat, self._memory)
+                result = extractor.extract(
+                    task_history=self._task_history,
+                    task_type=task_type,
+                    trigger=trigger,
+                )
+                if result and result.get("quality") == "pass":
+                    return result["path"]
+                # LLM 提取失败或质量不合格，降级到模板保底
+                fallback_reason = result.get("reason", "质量不合格") if result else "LLM 调用失败"
+                self._log_event(EvolutionEvent(
+                    level=3,
+                    trigger=f"LLM skill 提取降级: {fallback_reason}",
+                    action="使用模板保底写入",
+                    target=target,
+                ))
+            except ImportError:
+                # autonomous.skill_extractor 不可用（如依赖不完整），降级
+                pass
+            except Exception as e:
+                # LLM 调用异常，降级
+                pass
+
+        # ─── 保底：模板填充（原始方案） ───
+        return self._legacy_extract_skill(target, task_type)
+
+    def _legacy_extract_skill(self, target: str, task_type: str) -> Optional[str]:
+        """保底方案：模板填充生成 skill。"""
+        path = ROOT_DIR / target
         relevant_tasks = [
             t for t in self._task_history
             if t.get("task_type") == task_type and t.get("success")
         ]
 
-        # 构建描述和关键词
-        desc = f"夸父自动提取的技能包。触发: {trigger[:80]}"
+        desc = f"夸父自动提取的「{task_type}」技能包（保底模板）"
         keywords = [task_type.replace("_", ""), "自动生成"]
-
-        # 如果有具体任务内容，从结果中提取关键词
         if relevant_tasks:
             last_result = relevant_tasks[-1].get("result", "")
             desc = f"从「{task_type}」类型任务中自动提取的最佳实践（基于 {len(relevant_tasks)} 次成功经验）"
-            # 从结果中提取可能的关键词
             result_words = re.findall(r'[\u4e00-\u9fff\w]+', last_result[:500])
             extra_kw = [w for w in result_words if 2 <= len(w) <= 8]
             keywords = list(set(keywords + extra_kw[:6]))
@@ -318,20 +511,17 @@ class EvolutionEngine:
         # 构建 steps 和 pitfalls
         steps = [
             f"这是从 {len(relevant_tasks)} 次成功「{task_type}」任务中自动提取的经验",
-            "请根据当前任务的具体需求，灵活应用之前的成功模式",
-            "完成主要工作后，报告最终结果",
+            "请在任务中应用之前的成功模式",
+            "完成后生成结果报告",
         ]
-        pitfalls = ["自动提取的技能包，请确认步骤适用于当前任务"]
+        pitfalls = ["自动保底生成的技能包，请酌情使用"]
 
-        # 如果任务历史中有搜索结果或用户纠正，补充为提示
         if relevant_tasks:
             last = relevant_tasks[-1]
             if last.get("user_correction"):
                 pitfalls.append(f"历史教训: {last['user_correction'][:100]}")
 
-        # 构造 YAML 内容
-        lines = [
-            f'name: "{task_type}"',
+        lines = [f'name: "{task_type}"',
             f'description: "{desc}"',
             "keywords:",
         ]
@@ -341,13 +531,13 @@ class EvolutionEngine:
         for s in steps:
             lines.append(f'  - "{s}"')
         lines.append("examples:")
-        lines.append("  - \"无\"")
+        lines.append('  - "无（保底生成）"')
         lines.append("pitfalls:")
         for p in pitfalls:
             lines.append(f'  - "{p}"')
         lines.append(f"usage_count: 0")
         lines.append(f"created_at: {int(time.time())}")
-        lines.append(f"source: auto_extracted_from_L3")
+        lines.append(f"source: auto_extracted_from_L3_fallback")
 
         content = "\n".join(lines) + "\n"
         path.parent.mkdir(parents=True, exist_ok=True)

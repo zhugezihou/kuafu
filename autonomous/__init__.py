@@ -2,6 +2,7 @@
 
 from autonomous.reviewer import Reviewer, ReviewerThread
 from autonomous.learner import Learner
+from autonomous.skill_extractor import SkillExtractor
 
 try:
     from autonomous.prioritizer import (

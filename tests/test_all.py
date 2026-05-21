@@ -228,13 +228,17 @@ def test_llm_client_init():
 
 def test_agent_loop_tools():
     """测试 AgentLoop 工具定义完整性"""
-    from core.agent_loop import TOOLS_DEFINITIONS
+    from core.agent_loop import AgentLoop
 
-    tool_names = [t["function"]["name"] for t in TOOLS_DEFINITIONS]
+    loop = AgentLoop()
+    tools = loop.tools.get_schemas()
+    tool_names = [t["function"]["name"] for t in tools]
     expected = {"terminal", "read_file", "write_file", "patch",
-                "search_files", "web_search", "web_fetch", "finish"}
+                "search_files", "web_search", "web_fetch", "finish",
+                "finish_step", "whiteboard_read", "whiteboard_write",
+                "github_search", "github_get_repo", "tavily_search"}
     assert set(tool_names) == expected, f"工具不匹配: {set(tool_names) ^ expected}"
-    print(f"✅ agent_loop: 8 个工具定义完整 ({', '.join(tool_names)})")
+    print(f"✅ agent_loop: {len(tool_names)} 个工具定义完整 ({', '.join(tool_names)})")
 
 
 def test_agent_loop_build_prompt():

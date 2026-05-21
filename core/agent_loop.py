@@ -22,6 +22,10 @@ from core.session_store import SessionStore
 from core.context_compress import ContextCompressor, LocalSummarizer
 from core.safety import SafetyLayer
 from core.skill_resolver import discover_skills, match_skills, inject_skills_to_prompt
+from core.whiteboard import Whiteboard, Decomposer, Step, WhiteboardExecutor
+from autonomous.strategy_loader import (
+    get_prompt, get_strategy, get_quality, get_rules, render_prompt,
+)
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
@@ -79,21 +83,31 @@ class AgentLoop:
         self.current_session_id: Optional[str] = None
 
     def build_system_prompt(self, task: str = "") -> str:
-        """组装完整的系统 prompt。"""
+        """组装完整的系统 prompt。
+
+        结构：
+        1. 身份声明（IDENTITY.md）（不可变）
+        2. 核心规则（来自 strategy/task_strategies.yaml + 默认规则）
+        3. 工具说明
+        4. 输出格式
+        5. 进化状态
+        6. 安全规则
+        7. 历史记忆
+        8. 用户偏好
+        9. 当前模型配置
+        10. 可用技能 — 根据任务自动匹配
+        """
         parts = []
 
         # 1. 身份声明
         parts.append(load_identity_statement())
         parts.append("")
 
-        # 2. 核心规则
+        # 2. 核心规则 — 从 strategy/ 加载，降级到默认
         parts.append("## 核心规则")
-        parts.append("- 你是夸父，一个自我进化的 AI agent")
-        parts.append("- 用户是你的主人（在 IDENTITY.md 中定义）")
-        parts.append("- 每次任务完成后，必须反思学到了什么")
-        parts.append("- 如果用户纠正了你，记住这个教训")
-        parts.append("- 绝对不可以修改 core/ 目录下的任何文件")
-        parts.append("- 用中文思考和回复")
+        rules = get_rules()
+        for rule in rules:
+            parts.append(f"- {rule}")
         parts.append("")
 
         # 3. 工具说明
@@ -139,7 +153,17 @@ class AgentLoop:
                 parts.append(f"- {m.get('key', '?')}: {m.get('content', '')[:100]}")
             parts.append("")
 
-        # 7. 用户偏好
+        # 7b. 当前模型配置
+        parts.append("## 当前模型配置")
+        if self.llm:
+            parts.append(f"- 后端: {self.llm.backend}")
+            parts.append(f"- 模型: {self.llm.model}")
+            parts.append(f"- API URL: {self.llm.base_url}")
+            parts.append(f"- max_tokens: {self.llm.max_tokens}")
+            parts.append(f"- temperature: {self.llm.temperature}")
+        parts.append("")
+
+        # 8. 用户偏好
         prefs_path = ROOT_DIR / "memory" / "user_prefs.json"
         if prefs_path.exists():
             try:
@@ -152,8 +176,30 @@ class AgentLoop:
             except (json.JSONDecodeError, OSError):
                 pass
 
-        # 8. 可用技能 — 根据任务自动匹配最相关的技能
+        # 9. 可用技能 — 根据任务自动匹配最相关的技能
+        #    同时注入该任务类型的质量标准（来自 strategy/quality.yaml）
         if task:
+            # 探测任务类型：匹配关键词任务类型
+            task_lower = task.lower()
+            task_type = "generic"
+            for tt in ["coding", "research", "file_operation"]:
+                if tt in task_lower:
+                    task_type = tt
+                    break
+
+            # 注入质量标准（如果有）
+            quality_rules = get_quality(task_type.replace("file_operation", "file_op")
+                                        .replace("generic", "code"))
+            if quality_rules:
+                parts.append("## 质量标准")
+                parts.append("完成此任务时请注意以下标准：")
+                parts.append("")
+                for qr in quality_rules:
+                    icon = {"required": "🔴", "warning": "🟡", "optional": "🟢"}
+                    parts.append(f"  {icon.get(qr['severity'], '⚪')} [{qr['severity']}] {qr['rule']}")
+                parts.append("")
+
+            # 技能匹配
             matched = match_skills(task)
             if matched:
                 parts.append("## 相关技能参考")
@@ -794,3 +840,215 @@ class AgentLoop:
                     self._log(f"📝 学到用户偏好: {key} = {value}")
         except Exception as e:
             self._log(f"⚠️ 偏好学习异常: {e}")
+
+    # ── 白板模式 ──────────────────────────────────────────────────
+
+    def run_whiteboard(self, task: str) -> dict:
+        """白板模式：分解 → 逐步执行 → 汇总。
+
+        核心思路：将复杂任务分解为多个小步骤，
+        每个 step 有独立的上下文窗口，避免累积。
+        步骤之间的信息通过 Whiteboard 传递（只传摘要，不传原始对话）。
+
+        启动流程：
+        1. 构建 system_prompt（含白板工具 whiteboard_read/write）
+        2. 调用 LLM 获取步骤分解 + 白板策略
+        3. 逐个 step 执行，每个 step 是独立的 agent_loop 子调用
+        4. 汇总所有步骤结果
+        """
+        start = time.time()
+        errors = []
+
+        # 1. 创建白板实例
+        whiteboard = Whiteboard()
+
+        # 2. 构建系统提示（增加白板模式说明）
+        system_prompt = self.build_system_prompt(task) + """
+
+## 白板模式
+
+你当前处于**白板模式**。任务将按以下方式执行：
+
+### 步骤分解
+1. 先分析任务，将其分解为 **3-8 个独立步骤**
+2. 每个步骤用 `whiteboard_write` 写入白板（含类型、描述、依赖）
+3. 按步骤顺序逐个执行
+
+### 白板工具
+- `whiteboard_read(partition)` — 读取白板特定分区的内容
+- `whiteboard_write(partition, content)` — 写入信息到白板
+
+### 白板分区
+- `current_state`: 当前进度描述
+- `completed`: 已完成的工作摘要
+- `next_plan`: 下一步计划
+- `intermediate`: 中间结果
+- `excluded_paths`: 已排除的尝试（避免重复踩坑）
+- `hypotheses`: 假设或推测
+- `logs`: 执行日志
+
+### 执行规则
+- 先写分解计划到白板，然后逐个步骤执行
+- 每一步完成后用 `whiteboard_write(completed, ...)` 记录
+- 遇到问题时用 `whiteboard_write(excluded_paths, ...)` 记录排除的路径
+- 最后用 `whiteboard_write(current_state, ...)` 更新全局状态
+
+### 步骤模板
+每步应包含：
+- **type**: research / code / file / verify / test
+- **description**: 具体做什么
+- **context**: 前置步骤的摘要（最大 200 字）
+"""
+
+        # 3. 创建专用 session
+        self.current_session_id = self.sessions.create_session(title=f"[whiteboard] {task[:40]}")
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": task},
+        ]
+        self.sessions.append_message(self.current_session_id, "user", task)
+
+        tool_schemas = self.tools.get_schemas()
+
+        # 4. 执行白板循环（所有步骤在同一 session 中完成）
+        for turn in range(self.max_turns):
+            self._log(f"🤔 白板第 {turn + 1}/{self.max_turns} 轮 — LLM 思考中...")
+
+            # 上下文压缩
+            if self.compressor.needs_compression(messages):
+                self._log(f"📏 白板上下文超限，压缩...")
+                result = self.compressor.compress_with_local_llm(messages)
+                if result.messages_removed > 0:
+                    system_msgs = [m for m in messages if m.get("role") == "system"]
+                    recent = [m for m in messages if m.get("role") != "system"][-8:]
+                    messages = system_msgs + [{
+                        "role": "system",
+                        "content": f"【上下文压缩】以下是对旧对话的摘要，请基于此继续当前任务：\n{result.summary}",
+                    }] + recent
+
+            # 调用 LLM
+            response = self.llm.chat(messages, tools=tool_schemas)
+            if not response["success"]:
+                error_msg = response.get("error", "LLM 调用失败")
+                errors.append(error_msg)
+                break
+
+            # 添加 assistant 回复
+            assistant_msg = {"role": "assistant", "content": response["content"]}
+            if response.get("tool_calls"):
+                assistant_msg["tool_calls"] = [
+                    {
+                        "id": tc["id"],
+                        "type": tc["type"],
+                        "function": {
+                            "name": tc["function"]["name"],
+                            "arguments": json.dumps(tc["function"]["arguments"], ensure_ascii=False),
+                        },
+                    }
+                    for tc in response["tool_calls"]
+                ]
+            messages.append(assistant_msg)
+            self.sessions.append_message(self.current_session_id, "assistant",
+                                         response["content"] or "(调用了工具)")
+
+            # 检查 finish
+            finish_called = False
+            final_result = ""
+            if response.get("tool_calls"):
+                for tc in response["tool_calls"]:
+                    if tc["function"]["name"] == "finish":
+                        args = tc["function"]["arguments"]
+                        final_result = args.get("result", response.get("content", ""))
+                        finish_called = True
+                        break
+                if finish_called:
+                    # 执行剩余的 tool calls（非 finish）
+                    non_finish_calls = [tc for tc in response["tool_calls"]
+                                        if tc["function"]["name"] != "finish"]
+                    for tc in non_finish_calls:
+                        fn_name = tc["function"]["name"]
+                        self._log(f"🔧 白板: 执行 {fn_name}(...)")
+                        tool_result = self.tools.execute(tc)
+                        safe_output = str(tool_result.get("output", "(无输出)"))
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": safe_output,
+                        })
+                    break
+
+            # 执行工具调用
+            if response.get("tool_calls"):
+                for tc in response["tool_calls"]:
+                    fn_name = tc["function"]["name"]
+                    arg_preview = json.dumps(tc.get("function", {}).get("arguments", {}),
+                                             ensure_ascii=False)[:60]
+                    self._log(f"🔧 白板: 执行 {fn_name}({arg_preview}...)")
+
+                    tool_result = self.tools.execute(tc)
+
+                    safe_output = str(tool_result.get("output", "(无输出)"))
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": safe_output,
+                    })
+                    self.sessions.append_message(self.current_session_id, "tool",
+                                                 safe_output[:500])
+
+                    if not tool_result["success"]:
+                        err = f"白板工具 {fn_name} 失败: {safe_output[:200]}"
+                        errors.append(err)
+            else:
+                # LLM 直接回复（极少情况）
+                final_result = response["content"]
+                break
+
+        # 5. 提取白板内容作为最终结果
+        if not final_result:
+            try:
+                board_state = whiteboard.read("current_state")
+                completed = whiteboard.read("completed")
+                plans = whiteboard.read("next_plan")
+                final_result = f"当前状态: {board_state}\n\n已完成:\n{completed}\n\n下一步:\n{plans}"
+            except Exception:
+                final_result = response.get("content", "(无输出)")
+
+        # 6. 构建标准结果
+        task_result = {
+            "success": len(errors) == 0,
+            "result": final_result,
+            "summary": whiteboard.read("completed")[:500] if whiteboard else final_result[:200],
+            "errors": errors,
+            "tool_calls": len(messages),
+            "task_type": "whiteboard",
+            "duration": round(time.time() - start, 3),
+        }
+
+        # 后处理（与普通 run 相同的反思/自检等）
+        if self.current_session_id:
+            session = self.sessions.get_session(self.current_session_id)
+            if session and session.message_count > 10:
+                self.sessions.archive_session(self.current_session_id)
+
+        self.memory.remember(
+            key=f"wb_task:{time.strftime('%Y%m%d_%H%M%S')}",
+            content=final_result[:200],
+            tags=["task", "whiteboard"],
+        )
+
+        self._deep_reflect(task_result, messages)
+        self._self_check(task_result, messages, start)
+        self._learn_user_preferences(task_result, task)
+
+        evolution_event = self.evolution.evaluate_and_evolve(task_result)
+        if evolution_event:
+            task_result["evolution"] = evolution_event
+
+        quality = self._quality_score(task_result, messages)
+        task_result["quality"] = quality
+        task_result["turns"] = len(messages)
+        task_result["messages_count"] = len(messages)
+
+        return task_result

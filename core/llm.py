@@ -36,7 +36,7 @@ KUAFFU_BACKEND = os.environ.get("KUAFFU_BACKEND", "cloud").strip().lower()
 DEFAULT_MODEL = "deepseek-chat"
 
 # 本地模型配置
-LOCAL_BASE_URL = "http://localhost:8080"
+LOCAL_BASE_URL = os.environ.get("KUAFFU_LOCAL_BASE_URL", "http://localhost:8080")
 LOCAL_MODEL = "Qwen3.5-9B-UD-Q4_K_XL.gguf"
 LOCAL_MAX_TOKENS = 4096
 
@@ -286,6 +286,44 @@ class LLMClient:
             "usage": None,
             "error": last_error,
         }
+
+    def switch(self, config: dict) -> str:
+        """运行时切换模型配置。
+
+        Args:
+            config: 包含 'backend', 'model', 'base_url', 'max_tokens', 'temperature' 的字典。
+                    不提供的字段保持当前值。
+
+        Returns:
+            描述切换结果的字符串。
+        """
+        old_model = self.model
+        old_backend = self.backend
+
+        # 应用新配置
+        if "backend" in config:
+            self.backend = config["backend"].strip().lower()
+        if "model" in config:
+            self.model = config["model"]
+        if "base_url" in config:
+            self.base_url = config["base_url"].rstrip("/")
+        if "max_tokens" in config:
+            self.max_tokens = int(config["max_tokens"])
+        if "temperature" in config:
+            self.temperature = float(config["temperature"])
+        if "api_key" in config:
+            self.api_key = config["api_key"]
+
+        # 同步环境变量（供子进程和 Reviewer 使用）
+        os.environ["KUAFFU_BACKEND"] = self.backend
+
+        changed = []
+        if self.model != old_model:
+            changed.append(f"模型: {old_model} → {self.model}")
+        if self.backend != old_backend:
+            changed.append(f"后端: {old_backend} → {self.backend}")
+
+        return f"模型已切换: {'; '.join(changed) if changed else '无变化'}" if changed else "配置无变化"
 
     def count_tokens(self, text: str) -> int:
         """粗略估算 token 数（中文约 1.5 tokens/字，英文约 1 token/4 字符）。"""

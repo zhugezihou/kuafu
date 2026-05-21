@@ -137,6 +137,11 @@ class ToolRegistry:
         self.register("tavily_search", self._tavily_search_schema(), self._handle_tavily_search)
         self.register("finish", self._finish_schema(), self._handle_finish)
 
+        # 白板模式工具
+        self.register("finish_step", self._finish_step_schema(), self._handle_finish_step)
+        self.register("whiteboard_read", self._whiteboard_read_schema(), self._handle_whiteboard_read)
+        self.register("whiteboard_write", self._whiteboard_write_schema(), self._handle_whiteboard_write)
+
     # ── Schema 定义 ────────────────────────────────────────────────
 
     @staticmethod
@@ -723,6 +728,109 @@ class ToolRegistry:
             "result": args.get("result", ""),
             "summary": args.get("summary", ""),
         }
+
+    # ---- finish_step ----
+
+    @staticmethod
+    def _finish_step_schema() -> dict:
+        return {
+            "description": "【白板模式】标记当前步骤完成，输出结果和摘要。在 WhiteboardExecutor 的分步执行中使用，表示当前步骤执行完毕",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "output": {
+                        "type": "string",
+                        "description": "当前步骤的输出结果",
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "当前步骤的简要摘要（用于日志和检查点）",
+                    },
+                },
+                "required": ["output", "summary"],
+            },
+        }
+
+    def _handle_finish_step(self, args: dict) -> dict:
+        return {
+            "success": True,
+            "output": args.get("output", ""),
+            "summary": args.get("summary", ""),
+        }
+
+    # ---- whiteboard_read ----
+
+    @staticmethod
+    def _whiteboard_read_schema() -> dict:
+        return {
+            "description": "【白板模式】读取外部白板中指定分区的内容。分区包括：current_state（当前执行状态）、completed（已完成步骤）、next_plan（待执行计划）、intermediate（中间结果库）。每次只读取一个分区，内容不消耗 LLM 上下文窗口",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "partition": {
+                        "type": "string",
+                        "enum": ["current_state", "completed", "next_plan", "intermediate"],
+                        "description": "要读取的白板分区名",
+                    },
+                },
+                "required": ["partition"],
+            },
+        }
+
+    def _handle_whiteboard_read(self, args: dict) -> dict:
+        partition = args.get("partition", "")
+        try:
+            from core.whiteboard import Whiteboard
+            wb = Whiteboard()
+            data = wb.read(partition)
+            if not data:
+                return {"success": True, "output": f"白板分区「{partition}」为空"}
+            output = json.dumps(data, ensure_ascii=False, indent=2)
+            return {"success": True, "output": output}
+        except Exception as e:
+            return {"success": False, "output": f"读取白板失败: {e}"}
+
+    # ---- whiteboard_write ----
+
+    @staticmethod
+    def _whiteboard_write_schema() -> dict:
+        return {
+            "description": "【白板模式】向外部白板的指定分区写入一条记录。分区包括：current_state（当前状态）、completed（已完成步骤）、next_plan（计划）、intermediate（中间结果）、excluded_paths（已排除路径）、hypotheses（待验证假设）。内容不消耗 LLM 上下文窗口",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "partition": {
+                        "type": "string",
+                        "enum": ["current_state", "completed", "next_plan", "intermediate", "excluded_paths", "hypotheses"],
+                        "description": "目标分区名",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "要写入的内容（建议简洁，关键信息在前200字符）",
+                    },
+                    "key": {
+                        "type": "string",
+                        "description": "可选的内容标识键（用于后续检索）",
+                    },
+                },
+                "required": ["partition", "content"],
+            },
+        }
+
+    def _handle_whiteboard_write(self, args: dict) -> dict:
+        partition = args.get("partition", "")
+        content = args.get("content", "")
+        key = args.get("key", "")
+        try:
+            from core.whiteboard import Whiteboard
+            wb = Whiteboard()
+            entry = {"content": content}
+            if key:
+                entry["key"] = key
+            wb.append(partition, entry)
+            return {"success": True, "output": f"已写入白板分区「{partition}」"}
+        except Exception as e:
+            return {"success": False, "output": f"写入白板失败: {e}"}
 
     # ---- github_search ----
 

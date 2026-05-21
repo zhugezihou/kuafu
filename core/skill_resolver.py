@@ -85,23 +85,34 @@ def discover_skills() -> list[dict]:
 def match_skills(task: str) -> list[dict]:
     """根据用户任务，匹配最相关的技能列表。
 
-    Returns:
-        [{"name": str, "steps": list[str], "description": str}, ...]
-        按匹配度从高到低排序。
-    """
-    triggers = _load_triggers()
-    if not triggers:
-        return []
+    两阶段匹配：
+    1. task_type 精确匹配（P3 生成的 skill 格式）
+    2. keywords 模糊匹配（传统格式）
 
+    Returns:
+        [{"name": str, "steps": list[str], "description": str, "task_type": str, ...}, ...]
+        按匹配度从高到低排序。task_type 精确匹配优先于 keyword 模糊匹配。
+    """
     task_lower = task.lower()
     matched_names = set()
     scores = {}
 
-    # 关键词匹配
-    for kw, skill_name in triggers.items():
-        if kw in task_lower:
-            matched_names.add(skill_name)
-            scores[skill_name] = scores.get(skill_name, 0) + 1
+    # 阶段1：task_type 精确匹配
+    # 先探测任务类型
+    task_type = _detect_task_type(task)
+    if task_type != "generic":
+        tt_matches = _match_by_task_type(task_type)
+        for name in tt_matches:
+            matched_names.add(name)
+            scores[name] = scores.get(name, 0) + 10  # 精确匹配权重10
+
+    # 阶段2：keywords 模糊匹配（传统方式）
+    triggers = _load_triggers()
+    if triggers:
+        for kw, skill_name in triggers.items():
+            if kw in task_lower:
+                matched_names.add(skill_name)
+                scores[skill_name] = scores.get(skill_name, 0) + 1
 
     if not matched_names:
         return []
@@ -123,15 +134,66 @@ def match_skills(task: str) -> list[dict]:
                     "steps": data.get("steps", []),
                     "examples": data.get("examples", []),
                     "pitfalls": data.get("pitfalls", []),
+                    "task_type": data.get("task_type", ""),
                     "score": scores.get(name, 1),
                     "file": yaml_file.name,
                 })
         except Exception:
             pass
 
-    # 按匹配分降序
+    # 按匹配分降序（task_type 精确匹配 +10 自然排在前面）
     result.sort(key=lambda x: x["score"], reverse=True)
     return result
+
+
+def _detect_task_type(task: str) -> str:
+    """从用户任务文本探测任务类型。
+
+    返回: "coding" / "research" / "file_operation" / "generic"
+    """
+    task_lower = task.lower()
+    # coding 关键词
+    coding_kw = ["写代码", "写一个", "实现", "编程", "debug", "修复bug",
+                 "重构", "写脚本", "代码", "函数", "类", "api", "接口"]
+    for kw in coding_kw:
+        if kw in task_lower:
+            return "coding"
+
+    # research 关键词
+    research_kw = ["搜索", "调研", "研究", "查一下", "找资料", "收集",
+                   "分析", "总结", "对比", "比较", "趋势", "最新"]
+    for kw in research_kw:
+        if kw in task_lower:
+            return "research"
+
+    # file_operation 关键词
+    file_kw = ["读文件", "写文件", "处理文件", "压缩", "解压", "备份",
+               "移动文件", "复制", "删除", "重命名"]
+    for kw in file_kw:
+        if kw in task_lower:
+            return "file_operation"
+
+    return "generic"
+
+
+def _match_by_task_type(task_type: str) -> list[str]:
+    """按 task_type 精确匹配 skill。
+
+    返回匹配的 skill 名称列表。
+    """
+    matched = []
+    for yaml_file in SKILLS_DIR.glob("*.yaml"):
+        try:
+            import yaml
+            with open(yaml_file, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+            if not data:
+                continue
+            if data.get("task_type") == task_type:
+                matched.append(data.get("name", yaml_file.stem))
+        except Exception:
+            pass
+    return matched
 
 
 def inject_skills_to_prompt(task: str, existing_prompt: str) -> str:

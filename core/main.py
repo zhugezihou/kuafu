@@ -28,6 +28,7 @@ from core.sandbox import is_path_allowed_for_write, validate_command
 from core.memory_api import MemoryAPI
 from core.evolution import EvolutionEngine, EvolutionEvent
 from core.llm import LLMClient
+from core.model_manager import ModelManager, ALIASES, MODEL_TEMPLATES
 from core.agent_loop import AgentLoop
 from autonomous.reviewer import ReviewerThread
 
@@ -62,6 +63,9 @@ class KuafuAgent:
         self.memory = MemoryAPI()
         self.evolution = EvolutionEngine(memory=self.memory)
         self.llm = llm_client or LLMClient()
+        self.model_manager = ModelManager()
+        # 同步 ModelManager 与 LLMClient：以 LLMClient 为准
+        self._sync_model_manager_with_llm()
         self._task_count = 0
         # 多轮对话上下文
         self._conversation: Optional[dict] = None
@@ -204,7 +208,16 @@ class KuafuAgent:
             except (json.JSONDecodeError, Exception):
                 pass
 
-        # 6. 相关记忆
+        # 6. 当前模型信息
+        parts.append("## 当前模型配置")
+        parts.append(f"- 后端: {self.llm.backend}")
+        parts.append(f"- 模型: {self.llm.model}")
+        parts.append(f"- API URL: {self.llm.base_url}")
+        parts.append(f"- max_tokens: {self.llm.max_tokens}")
+        parts.append(f"- temperature: {self.llm.temperature}")
+        parts.append("")
+
+        # 7. 相关记忆
         recent = self.memory.recall("", limit=10)
         if recent:
             parts.append("## 相关记忆")
@@ -214,9 +227,13 @@ class KuafuAgent:
 
         return "\n".join(parts)
 
-    def run(self, task: str, task_type: str = "generic") -> dict:
+    def run(self, task: str, task_type: str = "generic", mode: str = "standard") -> dict:
         """执行一次任务。
         
+        支持两种模式：
+        - standard: 标准 AgentLoop（常规对话 + 工具调用）
+        - whiteboard: 白板模式（分解 → 逐步执行 → 汇总）
+
         如果用户输入的是问候/寒暄，直接回复，不进入 agent 循环。
         
         使用 AgentLoop 驱动完整的 LLM + 工具执行循环。
@@ -254,6 +271,20 @@ class KuafuAgent:
                 "task_type": "greeting",
             }
 
+        # 模型切换/查询检测 — 不进 agent 循环
+        model_switch_reply = self._detect_model_switch(task)
+        if model_switch_reply:
+            self._task_count -= 1  # 这不是真正的任务
+            return {
+                "success": True,
+                "result": model_switch_reply,
+                "summary": model_switch_reply,
+                "turns": 0,
+                "errors": [],
+                "duration": 0.0,
+                "task_type": "model_switch",
+            }
+
         # 创建 AgentLoop 执行
         loop = AgentLoop(
             llm=self.llm,
@@ -261,7 +292,12 @@ class KuafuAgent:
             evolution=self.evolution,
             on_step=lambda msg: print(f"  {msg}", flush=True),
         )
-        result = loop.run(task)
+
+        # 根据 mode 选择执行路径
+        if mode == "whiteboard":
+            result = loop.run_whiteboard(task)
+        else:
+            result = loop.run(task)
 
         # 补充元信息
         result["task_type"] = task_type
@@ -330,6 +366,19 @@ class KuafuAgent:
                 "errors": [],
                 "duration": 0.0,
                 "task_type": "greeting",
+            }
+
+        # 模型切换/查询检测
+        model_switch_reply = self._detect_model_switch(input_text)
+        if model_switch_reply:
+            return {
+                "success": True,
+                "result": model_switch_reply,
+                "summary": model_switch_reply,
+                "turns": 0,
+                "errors": [],
+                "duration": 0.0,
+                "task_type": "model_switch",
             }
 
         # 是否为后续轮次
@@ -424,6 +473,47 @@ class KuafuAgent:
         self._conversation = None
         self._conversation_messages = []
 
+    def _sync_model_manager_with_llm(self):
+        """以 LLMClient 实际状态为准，同步 ModelManager 配置。"""
+        mm = self.model_manager.as_dict()
+        if self.llm.backend != mm.get("backend") or self.llm.model != mm.get("model"):
+            self.model_manager.apply({
+                "backend": self.llm.backend,
+                "model": self.llm.model,
+                "base_url": self.llm.base_url,
+                "max_tokens": getattr(self.llm, "max_tokens", 4096),
+                "temperature": getattr(self.llm, "temperature", 0.7),
+            })
+
+    # ---- 模型切换 ----  #
+
+    def switch_model(self, target: str) -> str:
+        """运行时切换模型。
+
+        支持：
+        - 模板 ID: 'cloud:deepseek', 'local:qwen', 'cloud:claude'
+        - 别名: 'deepseek', 'claude', 'qwen', 'local', 'cloud'
+        - 快速后端切换: 'local', 'cloud'
+        - 自定义参数: '--backend local --model xxx'
+        - 自定义模型名: 'gpt-4o-mini'
+
+        Returns:
+            人类可读的切换结果。
+        """
+        result = self.model_manager.switch(target)
+        if result["success"]:
+            # 应用到当前 LLMClient
+            self.llm.switch(result["config"])
+            msg = result["message"]
+            self.memory.remember(
+                key=f"model_switch:{int(time.time())}",
+                content=msg,
+                tags=["model_switch", self.llm.backend, self.llm.model],
+            )
+        else:
+            msg = result["message"]
+        return msg
+
     # ---- 状态查询 ----
 
     def get_status(self) -> dict:
@@ -445,8 +535,6 @@ class KuafuAgent:
 
     @staticmethod
     def _detect_greeting(text: str) -> str:
-        """检测问候/寒暄，匹配则返回回复，否则返回空字符串。"""
-        text = text.strip()
 
         # 纯问候/自我介绍/闲聊 — 不进 agent 循环
         greeting_patterns = [
@@ -466,6 +554,73 @@ class KuafuAgent:
 
         return ""
 
+    def _detect_model_switch(self, text: str) -> Optional[str]:
+        """检测模型切换意图。
+
+        格式：
+        - "切换模型 local" / "切到 deepseek" / "用 claude"
+        - "模型列表" / "查看可用模型"
+        - "当前模型" / "查看模型"
+
+        Returns:
+            如果检测到切换命令，返回切换目标字符串；如果是查询，返回已格式化的信息字符串；否则返回 None。
+        """
+        text = text.strip()
+
+        # 查询：查看可用模型
+        if re.match(r"^(查看|显示|列出|有哪些|看看|list)\s*(可用\s*)?模型[t]*(模板)?", text, re.IGNORECASE):
+            return self._format_model_list()
+        if re.match(r"^(模型列表|可用模型|模型模板|模型大全|model list|models)$", text, re.IGNORECASE):
+            return self._format_model_list()
+
+        # 查询：当前模型
+        if re.match(r"^(当前模型|查看模型|模型状态|你.*(什么|当前|用).*模型|你.*模型.*什么|model\s*$)", text, re.IGNORECASE):
+            cfg = self.model_manager.as_dict()
+            active = f"**当前模型：** `{self.llm.model}`\n"
+            active += f"**后端：** {self.llm.backend}\n"
+            active += f"**API URL：** {self.llm.base_url}\n"
+            active += f"**max_tokens：** {self.llm.max_tokens}\n"
+            active += f"**temperature：** {self.llm.temperature}\n"
+            active += f"**profile：** `{cfg.get('profile', '—')}`"
+            return active
+
+        # 切换命令
+        m = re.match(r"^切换\s*(模型|后端|到)\s*(.+)$", text, re.IGNORECASE)
+        if m:
+            target = m.group(2).strip()
+            return self.switch_model(target)
+
+        m = re.match(r"^切(到|换)\s*(.+)$", text, re.IGNORECASE)
+        if m:
+            target = m.group(2).strip()
+            return self.switch_model(target)
+
+        m = re.match(r"^用\s*(.+)$", text, re.IGNORECASE)
+        if m:
+            target = m.group(1).strip()
+            if target in ALIASES or target in MODEL_TEMPLATES:
+                return self.switch_model(target)
+            for alias in ALIASES:
+                if target.startswith(alias):
+                    return self.switch_model(alias)
+        return None
+
+    def _format_model_list(self) -> str:
+        """格式化可用模型列表。"""
+        templates = self.model_manager.list_templates()
+        aliases = self.model_manager.list_aliases()
+        lines = ["**可用模型模板：**"]
+        for t in templates:
+            marker = " ✅" if t["active"] else ""
+            lines.append(f"  `{t['id']}` — {t['name']}{marker}")
+        lines.append("")
+        lines.append("**简写别名：**")
+        for alias, target in sorted(aliases.items()):
+            lines.append(f"  `{alias}` → `{target}`")
+        lines.append("")
+        lines.append("**使用：** `切换模型 <别名/模板ID>`")
+        return "\n".join(lines)
+
     def __repr__(self) -> str:
         return f"<KuafuAgent v{self.version} | {self._task_count} tasks | LLM: {self.llm.model}>"
 
@@ -484,6 +639,10 @@ def main():
     parser = argparse.ArgumentParser(description="夸父 Agent CLI")
     parser.add_argument("task", nargs="?", help="直接执行任务")
     parser.add_argument("--status", action="store_true", help="查看状态")
+    parser.add_argument("--whiteboard", action="store_true",
+                        help="使用白板模式执行（复杂任务分解为多步，节省上下文）")
+    parser.add_argument("--mode", choices=["standard", "whiteboard"], default=None,
+                        help="执行模式（覆盖 --whiteboard 的简写）")
 
     args = parser.parse_args()
 
@@ -493,8 +652,11 @@ def main():
         return
 
     if args.task:
-        print(f"📋 任务: {args.task}")
-        result = agent.run(args.task)
+        # 确定执行模式
+        mode = args.mode or ("whiteboard" if args.whiteboard else "standard")
+        mode_label = "📋" if mode == "standard" else "🧩"
+        print(f"{mode_label} 任务 ({mode}): {args.task}")
+        result = agent.run(args.task, mode=mode)
         status = "✅" if result["success"] else "❌"
         print(f"\n{status} 结果:")
         print(result.get("result", "(无结果)"))

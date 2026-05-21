@@ -13,3 +13,6 @@ memory/**/*.json
 models/*.gguf
 kuafu.log
 kuafu.pid
+.whiteboard/
+memory/sessions.db
+matrix_animation.html
