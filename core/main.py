@@ -20,7 +20,7 @@ import json
 import time
 import re
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Callable
 
 # 核心模块
 from core.identity import load_identity_statement, detect_identity_impersonation
@@ -31,6 +31,7 @@ from core.llm import LLMClient
 from core.model_manager import ModelManager, ALIASES, MODEL_TEMPLATES
 from core.agent_loop import AgentLoop
 from autonomous.reviewer import ReviewerThread
+from core.ui import AsyncAgentUI
 
 # P2: 自主决策模块（可选加载）
 try:
@@ -333,7 +334,7 @@ class KuafuAgent:
                 result.append(ch)
         return ''.join(result).strip()
 
-    def converse(self, input_text: str, task_type: str = "generic") -> dict:
+    def converse(self, input_text: str, task_type: str = "generic", on_step: Optional[Callable[[str], None]] = None) -> dict:
         """多轮对话 — 延续上下文。
 
         与 run() 的区别：
@@ -345,6 +346,7 @@ class KuafuAgent:
         Args:
             input_text: 用户本轮输入
             task_type: 任务类型（默认 generic）
+            on_step: 可选步骤回调（如 AsyncAgentUI.on_step）
 
         Returns:
             同 run() 的返回结构
@@ -395,11 +397,12 @@ class KuafuAgent:
         )
 
         # 构建 AgentLoop
+        step_callback = on_step or (lambda msg: print(f"  {msg}", flush=True))
         loop = AgentLoop(
             llm=self.llm,
             memory=self.memory,
             evolution=self.evolution,
-            on_step=lambda msg: print(f"  {msg}", flush=True),
+            on_step=step_callback,
         )
 
         # 传递历史上下文（最近的 5 轮）
@@ -670,46 +673,10 @@ def main():
         print(f"\n⏱ {result['duration']}s | 轮次: {result.get('turns', 0)} | 错误: {len(result.get('errors', []))}")
         return
 
-    # 交互模式（多轮对话）— 使用 readline 支持行编辑
-    import readline
-    print("夸父交互模式 (输入 'exit' 退出，'new' 重置对话)")
-    while True:
-        try:
-            task = input("\n> ").strip()
-            if task.lower() in ("exit", "quit", "q"):
-                break
-            if task.lower() in ("new", "reset", "r"):
-                agent.reset_conversation()
-                print("🔄 对话已重置")
-                continue
-            if not task:
-                continue
-            result = agent.converse(task)
-            status_icon = "✅" if result["success"] else "❌"
-            if result["success"]:
-                print(f"\n{status_icon} {result.get('result', '(无结果)')}")
-            else:
-                errs = result.get("errors", [])
-                err_detail = f" — {'; '.join(errs[:3])}" if errs else ""
-                print(f"\n{status_icon} 执行失败{err_detail}")
-                if not errs:
-                    print(f"   结果: {result.get('result', '(空)')[:200]}")
-            if result.get("evolution"):
-                evo = result["evolution"]
-                print(f"   🧬 进化: L{evo.level} — {evo.action}")
-            turn_label = "多轮" if result.get("is_followup") else "单次"
-            print(f"   ⏱ {result['duration']}s | {turn_label} | {result.get('turns', 0)} turns")
-            # 质量评分
-            quality = result.get("quality")
-            if quality:
-                bar = "🟩" * int(quality["score"]) + "⬜" * (10 - int(quality["score"]))
-                print(f"   📊 质量: {quality['score']}/10 {bar}")
-                if quality.get("suggestions") and not result.get("success"):
-                    for s in quality["suggestions"][:2]:
-                        print(f"   💡 {s}")
-        except KeyboardInterrupt:
-            print("\n再见！")
-            break
+    # 交互模式（多轮对话）— 使用 AsyncAgentUI 支持实时输入
+    ui = AsyncAgentUI()
+    ui.process_tasks(lambda task: agent.converse(task, on_step=ui.on_step))
+    agent.reset_conversation()
 
 
 if __name__ == "__main__":
