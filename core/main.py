@@ -670,46 +670,11 @@ def main():
         print(f"\n⏱ {result['duration']}s | 轮次: {result.get('turns', 0)} | 错误: {len(result.get('errors', []))}")
         return
 
-    # 交互模式（多轮对话）— 使用 readline 支持行编辑
-    import readline
-    print("夸父交互模式 (输入 'exit' 退出，'new' 重置对话)")
-    while True:
-        try:
-            task = input("\n> ").strip()
-            if task.lower() in ("exit", "quit", "q"):
-                break
-            if task.lower() in ("new", "reset", "r"):
-                agent.reset_conversation()
-                print("🔄 对话已重置")
-                continue
-            if not task:
-                continue
-            result = agent.converse(task)
-            status_icon = "✅" if result["success"] else "❌"
-            if result["success"]:
-                print(f"\n{status_icon} {result.get('result', '(无结果)')}")
-            else:
-                errs = result.get("errors", [])
-                err_detail = f" — {'; '.join(errs[:3])}" if errs else ""
-                print(f"\n{status_icon} 执行失败{err_detail}")
-                if not errs:
-                    print(f"   结果: {result.get('result', '(空)')[:200]}")
-            if result.get("evolution"):
-                evo = result["evolution"]
-                print(f"   🧬 进化: L{evo.level} — {evo.action}")
-            turn_label = "多轮" if result.get("is_followup") else "单次"
-            print(f"   ⏱ {result['duration']}s | {turn_label} | {result.get('turns', 0)} turns")
-            # 质量评分
-            quality = result.get("quality")
-            if quality:
-                bar = "🟩" * int(quality["score"]) + "⬜" * (10 - int(quality["score"]))
-                print(f"   📊 质量: {quality['score']}/10 {bar}")
-                if quality.get("suggestions") and not result.get("success"):
-                    for s in quality["suggestions"][:2]:
-                        print(f"   💡 {s}")
-        except KeyboardInterrupt:
-            print("\n再见！")
-            break
+    # 交互模式（多轮对话）— 固定底部输入框
+    from core.input_bottom import FixedBottomInput
+    ui = FixedBottomInput()
+    ui.run(lambda task: agent.converse(task))
+    agent.reset_conversation()
 
 
 if __name__ == "__main__":
