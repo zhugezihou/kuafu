@@ -27,11 +27,13 @@ def test_sandbox():
     """测试沙盒系统"""
     from core.sandbox import is_path_allowed_for_write, validate_command
 
+    root = Path(__file__).resolve().parent.parent
+
     # 拒绝写 core/
-    allowed, reason_allowed = is_path_allowed_for_write("/home/asus/kuafu/strategy/test.txt")
+    allowed, reason_allowed = is_path_allowed_for_write(f"{root}/strategy/test.txt")
     assert allowed, f"strategy/ 应允许写入: {reason_allowed}"
 
-    denied, reason_denied = is_path_allowed_for_write("/home/asus/kuafu/core/test.txt")
+    denied, reason_denied = is_path_allowed_for_write(f"{root}/core/test.txt")
     assert not denied, f"core/ 应禁止写入: {reason_denied}"
 
     # 命令安全
@@ -227,7 +229,7 @@ def test_agent_loop_build_prompt():
     assert "夸父" in prompt
     assert "核心规则" in prompt
     assert "可用工具" in prompt
-    assert "进化状态" in prompt
+    assert "执行规则" in prompt
     print("✅ agent_loop: 系统 prompt 组装正常")
 
 
