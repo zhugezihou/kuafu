@@ -72,6 +72,8 @@ class KuafuAgent:
         # 同步 ModelManager 与 LLMClient：以 LLMClient 为准
         self._sync_model_manager_with_llm()
         self._task_count = 0
+        self._conversation = None
+        self._conversation_messages = []
         self._setup()
 
         # P0: 启动后台复盘线程（可选，daemon=True）
