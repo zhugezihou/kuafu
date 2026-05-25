@@ -31,11 +31,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# 复制项目文件
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
+# 复制并安装项目
 COPY . .
+RUN pip install --no-cache-dir -e .
 
 # 创建数据目录
 RUN mkdir -p /app/memory /app/models /app/skills
