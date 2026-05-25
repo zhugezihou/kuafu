@@ -24,9 +24,26 @@ from core.safety import SafetyLayer
 from core.skill_resolver import discover_skills, match_skills, inject_skills_to_prompt, increment_usage, record_usage
 from core.whiteboard import Whiteboard, Decomposer, Step, WhiteboardExecutor
 from core.mcp_bridge import MCPBridge
-from autonomous.strategy_loader import (
-    get_prompt, get_strategy, get_quality, get_rules, render_prompt,
-)
+# 策略/规则加载：优先从 autonomous.strategy_loader 加载，降级到默认值
+try:
+    from autonomous.strategy_loader import get_rules as _get_rules
+    from autonomous.strategy_loader import get_quality as _get_quality
+    _HAS_STRATEGY = True
+except ImportError:
+    _HAS_STRATEGY = False
+
+    def _get_rules():
+        return [
+            "1. 直接完成用户请求，不要说'我可以帮你'之类的废话",
+            "2. 一次只做一个工具调用，等待结果再继续",
+            "3. 完成任务后调用 finish() 工具",
+        ]
+
+    def _get_quality(task_type: str = "generic"):
+        return []
+
+get_rules = lambda: _get_rules() if _HAS_STRATEGY else _get_rules()
+get_quality = lambda task_type="generic": _get_quality(task_type) if _HAS_STRATEGY else _get_quality(task_type)
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 

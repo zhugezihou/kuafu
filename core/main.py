@@ -30,7 +30,12 @@ from core.evolution import EvolutionEngine, EvolutionEvent
 from core.llm import LLMClient
 from core.model_manager import ModelManager, ALIASES, MODEL_TEMPLATES
 from core.agent_loop import AgentLoop, detect_task_type
-from autonomous.reviewer import ReviewerThread
+# P1: 后台复盘线程（可选加载）
+try:
+    from autonomous.reviewer import ReviewerThread
+    _HAS_REVIEWER = True
+except ImportError:
+    _HAS_REVIEWER = False
 
 # P2: 自主决策模块（可选加载）
 try:
@@ -67,22 +72,19 @@ class KuafuAgent:
         # 同步 ModelManager 与 LLMClient：以 LLMClient 为准
         self._sync_model_manager_with_llm()
         self._task_count = 0
-        # 自主学习模式
-        self._learning_auto_mode: bool = False
-        self._learning_auto_start_time: float = 0.0
-        self._learning_auto_learned_before: int = 0  # 进入模式前的已学计数
-        # 多轮对话上下文
-        self._conversation: Optional[dict] = None
-        self._conversation_messages: list = []
         self._setup()
-        # P0: 启动后台复盘线程（daemon=True，自动随主进程退出）
-        self._reviewer_thread = ReviewerThread(
-            llm_chat_fn=self.llm.chat,
-            memory_remember_fn=lambda key, content, tags: self.memory.remember(
-                key=key, content=content, tags=tags
-            ),
-        )
-        self._reviewer_thread.start()
+
+        # P0: 启动后台复盘线程（可选，daemon=True）
+        if _HAS_REVIEWER:
+            self._reviewer_thread = ReviewerThread(
+                llm_chat_fn=self.llm.chat,
+                memory_remember_fn=lambda key, content, tags: self.memory.remember(
+                    key=key, content=content, tags=tags
+                ),
+            )
+            self._reviewer_thread.start()
+        else:
+            self._reviewer_thread = None
 
         # P2: 启动自主决策线程（daemon=True，周期性检查空闲状态）
         self._prioritizer_thread: Optional[threading.Thread] = None
@@ -92,16 +94,19 @@ class KuafuAgent:
         self._web_learner: Optional[Any] = None
         self._init_web_learner()
 
-        # P4: 启动自检优化程序（daemon=True，每 4 小时自动体检）
-        from autonomous.self_health import HealthCheckerThread
+        # P4: 启动自检优化程序（可选，daemon=True，每 4 小时自动体检）
         self._health_checker_thread: Optional[Any] = None
-        self._health_checker = HealthCheckerThread(
-            memory_remember_fn=lambda key, content, tags: self.memory.remember(
-                key=key, content=content, tags=tags
-            ),
-        )
-        self._health_checker_thread = self._health_checker
-        self._health_checker_thread.start()
+        try:
+            from autonomous.self_health import HealthCheckerThread
+            self._health_checker = HealthCheckerThread(
+                memory_remember_fn=lambda key, content, tags: self.memory.remember(
+                    key=key, content=content, tags=tags
+                ),
+            )
+            self._health_checker_thread = self._health_checker
+            self._health_checker_thread.start()
+        except ImportError:
+            self._health_checker = None
 
         # P5: WebHook 服务器（可选）
         self._webhook_server = None
