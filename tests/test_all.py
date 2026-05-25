@@ -11,6 +11,9 @@ from pathlib import Path
 # 添加项目根目录到 path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# 预设 dummy API key，用于 LLM 无关的测试
+os.environ.setdefault("KUAFFU_API_KEY", "test-dummy-key")
+
 
 def test_identity():
     """测试身份系统"""
