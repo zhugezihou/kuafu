@@ -32,8 +32,8 @@ fi
 source "$KUAFFU_DIR/venv/bin/activate"
 if [ $# -eq 0 ]; then
     # 无参数 → 交互模式
-    python3 "$KUAFFU_DIR/run.py"
+    exec python -m core.main
 else
     # 有参数 → 命令式
-    python3 "$KUAFFU_DIR/run.py" "$@"
+    exec python -m core.main "$@"
 fi

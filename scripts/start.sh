@@ -27,15 +27,17 @@ MODE="${1:-interactive}"
 case "$MODE" in
     --feishu|-f)
         echo "🚀 启动夸父飞书机器人..."
-        exec python -m core.feishu_bot
+        echo "   ⚠️ 飞书 Channel 尚未集成到 main.py，请参考 core/channel/feishu.py"
+        echo "   python -m core.main # 交互模式作为替代"
         ;;
     --cron|-c)
         echo "🚀 启动夸父 Cron 调度器..."
-        exec python -m core.cron_scheduler
+        echo "   ⚠️ Cron 调度器已集成到 core/main.py，使用 --webhook-port 触发"
+        echo "   或直接在交互模式下使用"
         ;;
     --daemon|-d)
         echo "🚀 后台启动夸父..."
-        nohup python launcher.py > "$ROOT_DIR/kuafu.log" 2>&1 &
+        nohup python -m core.main > "$ROOT_DIR/kuafu.log" 2>&1 &
         PID=$!
         echo $PID > "$ROOT_DIR/kuafu.pid"
         echo "   PID: $PID"

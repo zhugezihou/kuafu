@@ -4,7 +4,7 @@ build-backend = "setuptools.backends._legacy:_Backend"
 
 [project]
 name = "kuafu"
-version = "0.2.0"
+version = "0.4.0"
 description = "夸父 (Kuafu) — 一个自我进化的 AI Agent 框架"
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -41,7 +41,7 @@ Repository = "https://github.com/zhugezihou/kuafu"
 Feedback = "https://github.com/zhugezihou/kuafu-feedback"
 
 [project.scripts]
-kuafu = "core.main:cli"
+kuafu = "core.main:main"
 kuafu-wizard = "setup_wizard:main"
 
 [tool.setuptools.packages.find]

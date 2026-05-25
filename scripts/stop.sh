@@ -32,8 +32,8 @@ if [ -f "$PID_FILE" ]; then
     fi
 fi
 
-# 也停止所有 launcher 进程
-PIDS=$(pgrep -f "python.*launcher\.py" 2>/dev/null || true)
+# 也停止所有夸父进程
+PIDS=$(pgrep -f "python.*core\\.main" 2>/dev/null || true)
 if [ -n "$PIDS" ]; then
     echo "⏹  停止 launcher 进程..."
     kill $PIDS 2>/dev/null || true

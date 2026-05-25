@@ -137,8 +137,8 @@ if [ "$SKIP_VENV" != "true" ]; then
 fi
 
 source "$KUAFFU_DIR/venv/bin/activate"
-inf "安装依赖 (pyyaml)..."
-$PYTHON -m pip install -q -r "$KUAFFU_DIR/requirements.txt" 2>&1 | tail -5
+inf "安装核心依赖 (pyyaml)..."
+$PYTHON -m pip install -q -e "$KUAFFU_DIR" 2>&1 | tail -5
 ok "依赖安装完成"
 
 # ─── 4. 可选额外依赖 ─────────────────────────────────────────────────────────

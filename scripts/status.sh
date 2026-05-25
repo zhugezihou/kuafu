@@ -40,7 +40,7 @@ if [ -f "$ROOT_DIR/kuafu.pid" ]; then
     fi
 else
     # 查找所有夸父进程
-    KUA_PIDS=$(pgrep -f "python.*kuafu\|python.*core\.main\|python.*launcher" 2>/dev/null || true)
+    KUA_PIDS=$(pgrep -f "python.*core\\.main" 2>/dev/null || true)
     if [ -n "$KUA_PIDS" ]; then
         warn "无 pid 文件，但有进程: $KUA_PIDS"
     else
