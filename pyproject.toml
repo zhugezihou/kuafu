@@ -45,7 +45,7 @@ kuafu = "core.main:main"
 kuafu-wizard = "setup_wizard:main"
 
 [tool.setuptools.packages.find]
-include = ["kuafu*", "core*"]
+include = ["kuafu*", "core*", "autonomous*"]
 
 [tool.setuptools.package-data]
 "*" = ["*.yaml", "*.md", "*.txt"]
