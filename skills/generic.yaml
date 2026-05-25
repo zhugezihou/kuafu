@@ -1,0 +1,22 @@
+name: generic
+description: 从「generic」类型任务中自动提取的最佳实践（基于 4 次成功经验）
+keywords:
+- 待执行计划
+- 好的
+- 白板包含以下分区
+- 当前执行状态
+- 现在我可以通过
+- 自动生成
+- generic
+- 已完成步骤
+steps:
+- 这是从 4 次成功「generic」任务中自动提取的经验
+- 请在任务中应用之前的成功模式
+- 完成后生成结果报告
+examples:
+- 无（保底生成）
+pitfalls:
+- 自动保底生成的技能包，请酌情使用
+usage_count: 2
+created_at: 1779631531
+source: auto_extracted_from_L3_fallback

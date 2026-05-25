@@ -1,0 +1,2 @@
+2026-05-22 11:41:35,081 [kuafu.web_learner] INFO: [WebLearner] GitHub Trending: 获取 15 个仓库
+2026-05-22 11:41:35,081 [kuafu.web_learner] INFO: [WebLearner] 源「github_trending」所有候选已学或过期前跳过

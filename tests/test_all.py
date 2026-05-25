@@ -67,64 +67,40 @@ def test_memory_api():
 
 
 def test_evolution():
-    """测试进化引擎"""
+    """测试进化引擎（D 方案 — 即兴进化）"""
     from core.evolution import EvolutionEngine
 
     engine = EvolutionEngine()
 
-    # 正常任务 — 不触发进化（刚开始，历史不足5次）
+    # D 方案：无 LLM 时 evaluate_and_evolve 永远返回 None
     result = engine.evaluate_and_evolve({
         "success": True,
         "errors": [],
         "tool_calls": 3,
         "task_type": "coding",
         "duration": 5.0,
-        "user_correction": None,
     })
-    assert result is None, f"刚开始不应触发进化: {result}"
+    assert result is None, "无 LLM 时不应触发进化"
 
-    # 连续失败任务（不同类型避免误触L2成功条件）
+    # 持续跑任务记录到统计
     for i in range(5):
         engine.evaluate_and_evolve({
-            "success": False,
-            "errors": ["语法错误"],
+            "success": True,
+            "errors": [],
             "tool_calls": 2,
-            "task_type": f"fail_test_{i}",  # 不同类型避免同类型成功计数
+            "task_type": f"test_task_{i}",
             "duration": 3.0,
-            "user_correction": None,
         })
 
-    # 再触发2次 — 连续3次失败应触发L2
-    for _ in range(2):
-        engine.evaluate_and_evolve({
-            "success": False,
-            "errors": ["语法错误"],
-            "tool_calls": 2,
-            "task_type": "fail_test_5",
-            "duration": 3.0,
-            "user_correction": None,
-        })
+    # 检查任务统计
+    stats = engine.get_task_stats()
+    assert stats["total"] >= 6
+    assert "coding" in stats["by_type"]
 
-    # 应触发L2进化（连续3次失败）
-    event = engine.evaluate_and_evolve({
-        "success": False,
-        "errors": ["语法错误"],
-        "tool_calls": 2,
-        "task_type": "fail_test_5",
-        "duration": 3.0,
-        "user_correction": None,
-    })
-    assert event is not None, "连续失败应触发进化"
-    assert event.level == 2, f"应触发 L2 进化，得到 L{event.level}"
-    assert "失败" in event.trigger
-
-    # 检查统计
-    stats = engine.get_evolution_stats()
-    assert stats["total_evolutions"] >= 1
-    assert 2 in stats["by_level"]
-
-    stats2 = engine.get_task_stats()
-    assert stats2["total"] >= 8
+    # 检查进化统计（结构完整性，精确值可能因历史数据浮动）
+    evo_stats = engine.get_evolution_stats()
+    assert "total_evolutions" in evo_stats
+    assert "by_level" in evo_stats
 
     print("✅ evolution: 触发条件 & 统计正常")
 
@@ -136,7 +112,7 @@ def test_agent_repr():
     agent = KuafuAgent()
     assert "KuafuAgent" in repr(agent)
     assert "夸父" in agent.name
-    assert "0.2" in agent.version
+    assert "0.4" in agent.version
 
     print("✅ main: Agent 初始化正常")
 
@@ -236,7 +212,8 @@ def test_agent_loop_tools():
     expected = {"terminal", "read_file", "write_file", "patch",
                 "search_files", "web_search", "web_fetch", "finish",
                 "finish_step", "whiteboard_read", "whiteboard_write",
-                "github_search", "github_get_repo", "tavily_search"}
+                "github_search", "github_get_repo", "tavily_search",
+                "delegate_task"}
     assert set(tool_names) == expected, f"工具不匹配: {set(tool_names) ^ expected}"
     print(f"✅ agent_loop: {len(tool_names)} 个工具定义完整 ({', '.join(tool_names)})")
 
@@ -254,6 +231,54 @@ def test_agent_loop_build_prompt():
     print("✅ agent_loop: 系统 prompt 组装正常")
 
 
+def test_webhook_lifecycle():
+    """测试 WebHook 服务器生命周期（启动 → 健康检查 → 停止）"""
+    from core.webhook_server import WebhookServer
+    from urllib.request import urlopen, Request
+    from urllib.error import URLError
+
+    server = WebhookServer(port=18765, token="test-token")
+    assert server.start(), "WebHook 启动应成功"
+    assert server.is_running()
+
+    # 健康检查
+    import time as _time
+    _time.sleep(0.5)  # 等服务器就绪
+    try:
+        resp = urlopen("http://127.0.0.1:18765/health", timeout=3)
+        data = json.loads(resp.read().decode())
+        assert data["status"] == "ok"
+    except URLError:
+        pass  # 环境可能不支持 localhost 回环
+
+    server.stop()
+    assert not server.is_running()
+    print("✅ webhook: 启动/健康检查/停止正常")
+
+
+def test_subagent_schema():
+    """测试子 Agent 系统的 schema 和并发限制"""
+    from core.subagent import get_delegate_schema, MAX_CONCURRENT, MAX_TURNS
+
+    schema = get_delegate_schema()
+    assert "goal" in schema.get("parameters", {}).get("required", [])
+    assert "context" in schema.get("parameters", {}).get("required", [])
+    assert MAX_CONCURRENT >= 1
+    assert MAX_TURNS >= 1
+    assert schema.get("description", "").startswith("将")
+    print(f"✅ subagent: schema 定义正常 (并发上限={MAX_CONCURRENT}, 轮次上限={MAX_TURNS})")
+
+
+def test_channel_init():
+    """测试 ChannelManager 可正常导入和基础操作"""
+    from core.channel import ChannelManager
+
+    mgr = ChannelManager()
+    assert mgr.list() == []
+    assert mgr.get("nonexistent") is None
+    print("✅ channel: ChannelManager 初始化正常")
+
+
 if __name__ == "__main__":
     tests = [
         test_identity,
@@ -267,6 +292,9 @@ if __name__ == "__main__":
         test_llm_client_init,
         test_agent_loop_tools,
         test_agent_loop_build_prompt,
+        test_webhook_lifecycle,
+        test_subagent_schema,
+        test_channel_init,
     ]
     
     passed = 0

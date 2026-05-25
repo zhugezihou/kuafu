@@ -112,6 +112,9 @@ class AgentLoop:
         self.mcp_bridge: Optional[MCPBridge] = None
         self._init_mcp()
 
+        # 记忆维护计数器（每 10 轮触发一次去重/过期清理/合并）
+        self._mem_maintenance_counter = 0
+
     def _register_delegate_tool(self):
         """注册 delegate_task 工具（子 Agent 系统）。"""
         try:
@@ -594,6 +597,18 @@ class AgentLoop:
 
         task_result["turns"] = turn_count
         task_result["messages_count"] = len(messages)
+
+        # 定时记忆维护（每 10 轮触发一次）
+        self._mem_maintenance_counter += 1
+        if self._mem_maintenance_counter >= 10:
+            self._mem_maintenance_counter = 0
+            try:
+                result = self.memory.maintenance()
+                if result["expired"] > 0 or result["merged"] > 0:
+                    self._log(f"记忆维护: 清理 {result['expired']} 过期 + 合并 {result['merged']} 条")
+            except Exception as e:
+                self._log(f"记忆维护异常: {e}")
+
         return task_result
 
     def _self_check(self, task_result: dict, messages: list, start: float) -> None:

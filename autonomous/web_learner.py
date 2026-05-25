@@ -276,7 +276,7 @@ class WebLearner:
                 % time.strftime("%Y-%m-%d", time.gmtime(time.time() - 86400 * 7))
             )
             req = urllib.request.Request(url, headers={
-                "User-Agent": "Kuafu/0.3.0",
+                "User-Agent": "Kuafu/0.4.0",
                 "Accept": "application/vnd.github.v3+json",
             })
             with urllib.request.urlopen(req, timeout=15) as resp:
@@ -310,7 +310,7 @@ class WebLearner:
         try:
             req = urllib.request.Request(
                 "https://hacker-news.firebaseio.com/v0/topstories.json",
-                headers={"User-Agent": "Kuafu/0.3.0"},
+                headers={"User-Agent": "Kuafu/0.4.0"},
             )
             with urllib.request.urlopen(req, timeout=15) as resp:
                 story_ids = json.loads(resp.read().decode("utf-8"))
@@ -320,7 +320,7 @@ class WebLearner:
                 try:
                     item_req = urllib.request.Request(
                         f"https://hacker-news.firebaseio.com/v0/item/{sid}.json",
-                        headers={"User-Agent": "Kuafu/0.3.0"},
+                        headers={"User-Agent": "Kuafu/0.4.0"},
                     )
                     with urllib.request.urlopen(item_req, timeout=10) as item_resp:
                         item = json.loads(item_resp.read().decode("utf-8"))
@@ -356,7 +356,7 @@ class WebLearner:
             encoded = urllib.parse.quote(query)
             url = f"https://api.github.com/search/repositories?q={encoded}&sort=stars&order=desc&per_page={per_page}"
             req = urllib.request.Request(url, headers={
-                "User-Agent": "Kuafu/0.3.0",
+                "User-Agent": "Kuafu/0.4.0",
                 "Accept": "application/vnd.github.v3+json",
             })
             with urllib.request.urlopen(req, timeout=15) as resp:

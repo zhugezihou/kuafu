@@ -59,7 +59,7 @@ class KuafuAgent:
 
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.name = "夸父"
-        self.version = "0.3.0"
+        self.version = "0.4.0"
         self.memory = MemoryAPI()
         self.llm = llm_client or LLMClient()
         self.evolution = EvolutionEngine(memory=self.memory, llm=self.llm)
@@ -102,6 +102,9 @@ class KuafuAgent:
         )
         self._health_checker_thread = self._health_checker
         self._health_checker_thread.start()
+
+        # P5: WebHook 服务器（可选）
+        self._webhook_server = None
 
     def _setup(self):
         """首次启动设置。"""
@@ -831,6 +834,48 @@ class KuafuAgent:
     def __repr__(self) -> str:
         return f"<KuafuAgent v{self.version} | {self._task_count} tasks | LLM: {self.llm.model}>"
 
+    # ---- WebHook 服务器 ----
+
+    def start_webhook(
+        self,
+        port: int = 8765,
+        token: str = "",
+    ) -> bool:
+        """启动 WebHook 服务器（后台线程）。"""
+        if self._webhook_server and self._webhook_server.is_running():
+            return True
+
+        try:
+            from core.webhook_server import WebhookServer
+            self._webhook_server = WebhookServer(port=port, token=token)
+            self._webhook_server.set_handler(
+                on_task=lambda payload, task_id: self._handle_webhook_task(payload, task_id)
+            )
+            return self._webhook_server.start()
+        except Exception as e:
+            import logging
+            logging.error(f"WebHook 启动失败: {e}")
+            return False
+
+    def _handle_webhook_task(self, payload: dict, task_id: str):
+        """处理 WebHook 任务（在线程中执行）。"""
+        task = payload.get("task", payload.get("prompt", ""))
+        if not task:
+            return
+
+        context = payload.get("context", {})
+        mode = context.get("mode", "standard")
+        print(f"\n[WebHook:{task_id}] 收到任务: {task[:80]}...")
+        result = self.run(task, mode=mode)
+        status = "✅" if result["success"] else "❌"
+        print(f"[WebHook:{task_id}] {status} 完成 ({result['duration']}s)")
+
+    def stop_webhook(self):
+        """停止 WebHook 服务器。"""
+        if self._webhook_server:
+            self._webhook_server.stop()
+            self._webhook_server = None
+
 
 # ---- CLI 入口 ----
 
@@ -850,8 +895,15 @@ def main():
                         help="使用白板模式执行（复杂任务分解为多步，节省上下文）")
     parser.add_argument("--mode", choices=["standard", "whiteboard"], default=None,
                         help="执行模式（覆盖 --whiteboard 的简写）")
+    parser.add_argument("--webhook-port", type=int, default=0,
+                        help="启动 WebHook 服务器（指定端口，如 8765）")
+    parser.add_argument("--webhook-token", default="",
+                        help="WebHook 认证 Token")
 
     args = parser.parse_args()
+
+    if args.webhook_port:
+        agent.start_webhook(port=args.webhook_port, token=args.webhook_token)
 
     if args.status:
         status = agent.get_status()

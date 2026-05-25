@@ -1,0 +1,25 @@
+name: 微服务框架构建技能
+description: 基于Python构建异步微服务框架，包含路由、中间件和错误处理
+task_type: coding
+keywords:
+- coding
+- 微服务框架
+- Python异步
+- 请求路由
+- 中间件
+- 错误处理
+steps:
+- 使用asyncio设计异步事件循环，处理并发请求
+- 利用inspect模块实现参数注入，解析请求上下文
+- 构建请求路由表，匹配URL路径到处理函数
+- 实现中间件链，支持请求前后处理逻辑
+- 添加统一错误处理机制，返回结构化错误响应
+- 集成日志记录，跟踪请求执行流程
+pitfalls:
+- 注意asyncio中的协程生命周期管理，避免未等待的协程导致资源泄漏
+- inspect参数注入时需处理默认值和可选参数，避免注入失败
+- 中间件链中错误处理需捕获所有异常，防止链中断
+- 路由匹配需支持动态路径参数，避免硬编码路由模式
+usage_count: 3
+created_at: 1779645426
+source: kuafu_impromptu_evolution
