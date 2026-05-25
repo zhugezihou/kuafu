@@ -21,13 +21,36 @@ from core.tool_registry import ToolRegistry
 from core.session_store import SessionStore
 from core.context_compress import ContextCompressor, LocalSummarizer
 from core.safety import SafetyLayer
-from core.skill_resolver import discover_skills, match_skills, inject_skills_to_prompt
+from core.skill_resolver import discover_skills, match_skills, inject_skills_to_prompt, increment_usage, record_usage
 from core.whiteboard import Whiteboard, Decomposer, Step, WhiteboardExecutor
+from core.mcp_bridge import MCPBridge
 from autonomous.strategy_loader import (
     get_prompt, get_strategy, get_quality, get_rules, render_prompt,
 )
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
+
+# task_type 检测：关键词 → 类型映射
+_TASK_TYPE_KEYWORDS = {
+    "coding": ["代码", "写一个", "实现", "修复", "bug", "写个函数", "编写", "debug", "改代码", "写脚本", "重构"],
+    "research": ["搜索", "查找", "调研", "研究", "查一下", "搜索一下", "查资料", "了解", "什么是", "为什么", "分析", "github", "git", "仓库", "开源", "项目", "寻找", "找一下"],
+    "file_operation": ["创建文件", "写入", "读取", "修改文件", "删除", "移动", "拷贝", "重命名", "目录"],
+    "design": ["设计", "架构", "方案", "规划", "流程图", "画图", "原型"],
+    "troubleshooting": ["报错", "错误", "失败", "异常", "连不上", "超时", "挂掉了", "崩溃", "起不来"],
+    "devops": ["部署", "发布", "配置", "安装", "docker", "服务器", "nginx", "数据库", "环境", "docker-compose"],
+    "analysis": ["对比", "比较", "评估", "优劣势", "哪个好", "区别", "差异"],
+}
+
+def detect_task_type(task: str) -> str:
+    """根据任务内容检测任务类型。"""
+    if not task:
+        return "generic"
+    task_lower = task.lower()
+    for tt, keywords in _TASK_TYPE_KEYWORDS.items():
+        for kw in keywords:
+            if kw in task_lower:
+                return tt
+    return "generic"
 
 
 def load_identity_statement() -> str:
@@ -69,10 +92,10 @@ class AgentLoop:
         self.on_step = on_step
 
         # 上下文压缩器 — 阈值根据后端动态设置
-        # 本地 Qwen3.5-9B: -c 8192，threshold=6500（留充足冗余给摘要调用和实时输出）
+        # 本地 Qwen3.5-9B: -c 32768，threshold=28000（留充足冗余给摘要调用和实时输出）
         # 云端 DeepSeek: 64K+ context，threshold=12000
         local_backend = getattr(self.llm, 'backend', 'cloud') == 'local'
-        ctx_threshold = 6500 if local_backend else 12000
+        ctx_threshold = 28000 if local_backend else 12000
         self.compressor = ContextCompressor(
             max_context_tokens=ctx_threshold,
             keep_recent_rounds=5,
@@ -82,20 +105,47 @@ class AgentLoop:
         # 当前会话 ID（由 run() 创建）
         self.current_session_id: Optional[str] = None
 
-    def build_system_prompt(self, task: str = "") -> str:
-        """组装完整的系统 prompt。
+        # 注册 delegate_task 工具（子 Agent 系统）
+        self._register_delegate_tool()
 
-        结构：
-        1. 身份声明（IDENTITY.md）（不可变）
-        2. 核心规则（来自 strategy/task_strategies.yaml + 默认规则）
-        3. 工具说明
-        4. 输出格式
-        5. 进化状态
-        6. 安全规则
-        7. 历史记忆
-        8. 用户偏好
-        9. 当前模型配置
-        10. 可用技能 — 根据任务自动匹配
+        # 加载 MCP Server 集成
+        self.mcp_bridge: Optional[MCPBridge] = None
+        self._init_mcp()
+
+    def _register_delegate_tool(self):
+        """注册 delegate_task 工具（子 Agent 系统）。"""
+        try:
+            from core.subagent import get_delegate_schema, handle_delegate
+            schema = get_delegate_schema()
+            self.tools.register("delegate_task", schema, handle_delegate)
+            self._log("🧩 子 Agent 系统就绪: delegate_task 工具已注册")
+        except Exception as e:
+            self._log(f"⚠️ 子 Agent 注册失败: {e}")
+
+    def _init_mcp(self):
+        """初始化 MCP 桥接，加载配置并注册工具。"""
+        mcp_config_path = ROOT_DIR / "core" / "mcp_config.yaml"
+        if not mcp_config_path.exists():
+            return
+        try:
+            bridge = MCPBridge()
+            bridge.load_config(str(mcp_config_path))
+            failed = bridge.connect_all()
+            if failed:
+                self._log(f"⚠️ MCP Server 连接失败: {', '.join(failed)}")
+            count = bridge.register_to_registry(self.tools)
+            if count > 0:
+                self._log(f"🔌 MCP 集成就绪: {count} 个外部工具已注册")
+            self.mcp_bridge = bridge
+        except Exception as e:
+            self._log(f"⚠️ MCP 初始化失败: {e}")
+            self.mcp_bridge = None
+
+    def build_system_prompt(self, task: str = "") -> str:
+        """组装精简版系统 prompt。
+
+        目标：用最少的 tokens 传递关键约束。
+        结构：身份 → 核心规则 → 工具(精简) → 输出格式+执行规则 → 进化状态 → 记忆 → 配置 → 质量标准+技能(按需) → 自我认知(一行)
         """
         parts = []
 
@@ -113,7 +163,7 @@ class AgentLoop:
         # 3. 工具说明
         parts.append("## 可用工具")
         parts.append("你有以下工具可用，通过 function_call 调用：")
-        for tool_def in self.tools.get_schemas():
+        for tool_def in self.tools.get_schemas()[:8]:  # 只展示前8个，剩余由 schema 自动补充
             fn = tool_def["function"]
             desc = fn["description"].split("。")[0]
             parts.append(f"- {fn['name']}: {desc}")
@@ -121,92 +171,43 @@ class AgentLoop:
         parts.append("完成任务后，调用 finish() 工具结束。")
         parts.append("")
 
-        # 4. 输出格式
+        # 4. 输出格式 + 执行规则（方向三：一步思考+一步执行）
         parts.append("## 输出格式")
         parts.append("- 你的回复是直接对用户说的话，不是系统日志或任务报告")
         parts.append("- 如果用户问问题，直接回答内容本身，不要说'已回答'、'已介绍'、'已完成'这类")
         parts.append("")
+        parts.append("## 执行规则")
+        parts.append("- 一次只做一个工具调用：先思考下一步做什么，调用一个工具，等结果回来后再思考下一步")
+        parts.append("- 不要同时调用多个工具。单步执行，每步只做一件事")
+        parts.append("- 每步 tool 调用前先输出简短思考（一句话说清这一步要做什么）")
+        parts.append("- 工具结果返回后，先判断结果是否足够，再决定下一步还是 finish")
+        parts.append("")
 
-        # 5. 进化状态
+        # 5. 进化状态（精简版）
         stats = self.evolution.get_evolution_stats()
-        parts.append("## 进化状态")
-        parts.append(f"- 总进化次数: {stats['total_evolutions']}")
-        parts.append(f"- 各级进化: {stats.get('by_level', {})}")
-        task_stats = self.evolution.get_task_stats()
-        parts.append(f"- 已完成任务: {task_stats['total']}")
-        if task_stats["total"] > 0:
-            parts.append(f"- 成功率: {task_stats['success_rate']}%")
-        parts.append("")
-
-        # 5b. 历史教训（来自 strategy/task_strategies.yaml 的 notes）
-        try:
-            from autonomous.strategy_loader import get_strategy
-            strategy = get_strategy("generic")
-            notes = strategy.get("notes", [])
-            if notes:
-                # 取最近 3 条有实质内容的教训（跳过纯自动标记的）
-                recent_notes = [n for n in notes if "fail_test" not in n and "连续 3 次" not in n and "(自动)" not in n]
-                if not recent_notes:
-                    recent_notes = notes[-3:]  # 保底：取最新 3 条
-                else:
-                    recent_notes = recent_notes[-3:]
-                parts.append("## 历史教训")
-                parts.append("以下是从过往任务中沉淀的教训，请注意参考：")
-                for n in recent_notes:
-                    parts.append(f"- {n}")
-                parts.append("")
-        except Exception:
-            pass  # 教训加载失败不影响主流程
-
-        # 6. 安全规则
-        parts.append("## 安全规则")
-        parts.append("- 执行命令前会进行风险分级：safe(自动执行) / attention(需确认) / dangerous(需审批) / forbidden(禁止)")
-        parts.append("- API key、token、密码等敏感信息在日志和输出中自动脱敏")
-        parts.append("- 输出中不会包含环境变量或敏感配置文件内容")
-        parts.append("")
-
-        # 7. 历史记忆 — 优先召回 lesson 标签的经验笔记
-        lessons = self.memory.recall("lesson L0 evolution", limit=5)
-        if lessons:
-            parts.append("## 经验沉淀")
-            parts.append("以下是从过往任务中沉淀的经验笔记：")
+        total = stats['total_evolutions']
+        if total > 0:
+            parts.append(f"## 进化状态")
+            parts.append(f"- 已进化 {total} 次")
             parts.append("")
-            for m in lessons[-3:]:
-                content = m.get('content', '')[:300]
-                parts.append(content)
-                parts.append("---")
-            parts.append("")
-        else:
-            # 兜底：召回最近的记忆
-            recent = self.memory.recall("", limit=5)
-            if recent:
-                parts.append("## 相关记忆")
-                for m in recent[-3:]:
-                    parts.append(f"- {m.get('key', '?')}: {m.get('content', '')[:100]}")
-                parts.append("")
 
-        # 7b. 当前模型配置
-        parts.append("## 当前模型配置")
+        # 6. 历史记忆 — 直接召回最近记忆（仅当有具体查询时）
+        # 注：recall("") 在 file 模式下返回最新 N 条，但 Python "" in text 恒 True
+        # 导致全部是 P2 空闲决策垃圾，不注入空的召回。
+        # recent = self.memory.recall("", limit=3)
+        # if recent:
+        #     for m in recent[-2:]:
+        #         parts.append(f"- {m.get('key', '?')}: {m.get('content', '')[:100]}")
+
+    
+        # 7. 当前模型配置（精简）
         if self.llm:
-            parts.append(f"- 后端: {self.llm.backend}")
-            parts.append(f"- 模型: {self.llm.model}")
-            parts.append(f"- API URL: {self.llm.base_url}")
-            parts.append(f"- max_tokens: {self.llm.max_tokens}")
-            parts.append(f"- temperature: {self.llm.temperature}")
-        parts.append("")
+            parts.append(f"## 配置")
+            parts.append(f"- 后端: {self.llm.backend} | 模型: {self.llm.model}")
+            parts.append("")
 
-        # 8. 用户偏好
-        prefs_path = ROOT_DIR / "memory" / "user_prefs.json"
-        if prefs_path.exists():
-            try:
-                prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
-                if prefs:
-                    parts.append("## 用户偏好")
-                    for k, v in prefs.items():
-                        parts.append(f"- {k}: {v}")
-                    parts.append("")
-            except (json.JSONDecodeError, OSError):
-                pass
+        # 8. 用户偏好 — 已合并到自我认知模块，此处不再单独注入
+        #     （见下方 ## 自我认知 区块）
 
         # 9. 可用技能 — 根据任务自动匹配最相关的技能
         #    同时注入该任务类型的质量标准（来自 strategy/quality.yaml）
@@ -231,39 +232,45 @@ class AgentLoop:
                     parts.append(f"  {icon.get(qr['severity'], '⚪')} [{qr['severity']}] {qr['rule']}")
                 parts.append("")
 
-            # 技能匹配
+            # 技能匹配 + 注入（完整步骤 + 使用计数）
             matched = match_skills(task)
             if matched:
-                parts.append("## 相关技能参考")
-                parts.append("以下技能与你当前任务匹配，供参考使用：")
+                parts.append("## 相关技能")
+                parts.append("以下技能与你当前任务相关：")
                 parts.append("")
-                for skill in matched[:3]:
-                    parts.append(f"---")
+                for skill in matched[:2]:
+                    increment_usage(skill['name'])  # 追踪使用
                     parts.append(f"### {skill['name']}")
                     if skill.get("description"):
                         parts.append(f"{skill['description']}")
-                    parts.append("")
                     if skill.get("steps"):
                         parts.append("**步骤：**")
                         for i, step in enumerate(skill["steps"], 1):
                             parts.append(f"  {i}. {step}")
-                        parts.append("")
                     if skill.get("pitfalls"):
                         parts.append("**注意事项：**")
-                        for p in skill["pitfalls"]:
-                            parts.append(f"  ⚠️ {p}")
-                        parts.append("")
-                parts.append("---")
-                parts.append("技能仅供参考，根据实际情况灵活执行。")
+                        for pitfall in skill["pitfalls"]:
+                            parts.append(f"  ⚠️ {pitfall}")
+                    parts.append("")
+                parts.append("技能仅供参考，不必完全照做。根据实际情况决定如何执行。")
                 parts.append("")
-        else:
-            # 无具体任务时，简略列出所有可用技能
+
+        # ── 自我认知（精简版） ──────────────────────────────────
+        try:
+            parts.append("## 自我认知")
             all_skills = discover_skills()
-            if all_skills:
-                parts.append("## 可用技能参考")
-                for s in all_skills:
-                    parts.append(f"- {s['name']}: {s['description']}")
-                parts.append("")
+            skills_count = len(all_skills) if all_skills else 0
+            prefs_path = ROOT_DIR / "memory" / "user_prefs.json"
+            pref_count = 0
+            if prefs_path.exists():
+                try:
+                    pref_count = len(json.loads(prefs_path.read_text(encoding="utf-8")))
+                except Exception:
+                    pass
+            parts.append(f"📚 {skills_count} 技能 | 👤 {pref_count} 用户偏好 | ⚡ {total} 次进化")
+            parts.append("")
+        except Exception:
+            pass
 
         return "\n".join(parts)
 
@@ -449,15 +456,57 @@ class AgentLoop:
                     tool_result = self.tools.execute(tc)
 
                     # 安全脱敏：对终端输出中的 API key、token 等脱敏
-                    safe_output = SafetyLayer.sanitize_text(
-                        str(tool_result.get("output", "(无输出)"))
-                    )
+                    raw_output = str(tool_result.get("output", "(无输出)"))
+                    safe_output = SafetyLayer.sanitize_text(raw_output)
 
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc["id"],
-                        "content": safe_output,
-                    })
+                    # ── 工具结果过滤：让 LLM 快速判断结果是否有贡献 ──
+                    # 条件：结果超过 200 字符 且 工具调用成功 且 非错误
+                    should_keep = True
+                    needs_filter = (
+                        len(safe_output) > 500  # 只有大结果才判，小结果直接保留
+                        and tool_result["success"]
+                        and fn_name not in ("web_search", "web_extract", "web_crawl", "read_file")  # 搜索/提取/读文件默认保留
+                    )
+                    if needs_filter:
+                        filter_prompt = (
+                            "你是一个结果过滤器。用户正在做一个任务，下面是一个工具调用的返回结果。\n"
+                            "判断这个结果对当前任务是否有实质贡献（有帮助的信息/数据/代码片段），\n"
+                            "还是只是过程性/噪音内容。\n\n"
+                            f"当前任务：{task[:100]}\n"
+                            f"工具名称：{fn_name}\n"
+                            f"结果预览（前500字）：\n{safe_output[:500]}\n\n"
+                            "只回复 'keep' 或 'discard'，不要其他内容。"
+                        )
+                        try:
+                            filter_resp = self.llm.chat([{
+                                "role": "system",
+                                "content": "你是一个简洁的结果过滤器。只回复 keep 或 discard。"
+                            }, {
+                                "role": "user",
+                                "content": filter_prompt,
+                            }], tools=None)
+                            if filter_resp["success"]:
+                                decision = filter_resp["content"].strip().lower()
+                                if decision.startswith("discard"):
+                                    should_keep = False
+                                    self._log(f"🗑️ 过滤掉 {fn_name} 结果 ({len(safe_output)} chars) — 判定无贡献")
+                        except Exception:
+                            pass  # 过滤失败则保留结果（保守策略）
+
+                    if should_keep:
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": safe_output,
+                        })
+                    else:
+                        # 丢弃但留一个简短的占位
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": f"[工具 {fn_name} 的结果被过滤（判定无贡献），原长 {len(safe_output)} 字符]",
+                        })
+
                     self.sessions.append_message(
                         self.current_session_id, "tool",
                         safe_output[:500],
@@ -487,7 +536,7 @@ class AgentLoop:
             "summary": final_summary,
             "errors": errors,
             "tool_calls": turn_count,
-            "task_type": "generic",
+            "task_type": detect_task_type(task),
             "duration": round(time.time() - start, 3),
         }
 

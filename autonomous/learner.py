@@ -103,7 +103,11 @@ class Learner:
         """
         signals = []
 
-        # 按优先级顺序检测（从最严重的开始）
+        # 0. 日常经验提取（不依赖任何触发条件，每次任务后都尝试）
+        daily = self._extract_daily_lesson(task_result, task)
+        if daily:
+            signals.append(daily)
+
         # 1. 用户纠正信号（最高优先级）
         correction = self._detect_user_correction(task_result, task)
         if correction:
@@ -509,6 +513,53 @@ class Learner:
             else:
                 break
         return count
+
+    # ── 日常学习提取（新增） ─────────────────────────────────────────
+
+    def _extract_daily_lesson(self, task_result: dict, task: str) -> Optional[dict]:
+        """每次任务执行后提取日常学习内容。
+        
+        不依赖失败/纠正等特殊条件，每次 after_task 都会尝试运行。
+        用极简方式把任务中有价值的经验提取出来，让夸父持续积累。
+        """
+        if not task:
+            return None
+
+        task_type = task_result.get("task_type", "generic")
+        result_preview = (task_result.get("result", "") or "")[:200]
+        success = task_result.get("success", False)
+
+        # 成功任务：提取做了什么
+        if success:
+            # 简单任务（打开文件、查看状态等）不提取，太 trivial
+            trivial_keywords = ["查看", "打开", "读取", "显示", "列出", "检查", "status", "ls", "cat"]
+            if any(kw in task.lower() for kw in trivial_keywords):
+                task_len = len(task)
+                if task_len < 50 and len(result_preview) < 100:
+                    return None
+
+            return {
+                "type": "daily_lesson",
+                "priority": "S",
+                "title": f"完成: {task[:60]}",
+                "detail": (
+                    f"任务类型: {task_type}\n"
+                    f"结果: {result_preview[:200]}"
+                )[:300],
+                "severity": 1,
+            }
+
+        # 失败任务：提取教训
+        errors = task_result.get("errors", [])
+        error_text = "; ".join(errors[:3])[:200] if errors else "未知原因"
+
+        return {
+            "type": "daily_lesson",
+            "priority": "B",
+            "title": f"失败: {task[:60]}",
+            "detail": f"错误: {error_text}",
+            "severity": 2,
+        }
 
     @staticmethod
     def _parse_llm_output(result) -> str:

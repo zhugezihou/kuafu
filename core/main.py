@@ -29,7 +29,7 @@ from core.memory_api import MemoryAPI
 from core.evolution import EvolutionEngine, EvolutionEvent
 from core.llm import LLMClient
 from core.model_manager import ModelManager, ALIASES, MODEL_TEMPLATES
-from core.agent_loop import AgentLoop
+from core.agent_loop import AgentLoop, detect_task_type
 from autonomous.reviewer import ReviewerThread
 
 # P2: 自主决策模块（可选加载）
@@ -61,12 +61,16 @@ class KuafuAgent:
         self.name = "夸父"
         self.version = "0.3.0"
         self.memory = MemoryAPI()
-        self.evolution = EvolutionEngine(memory=self.memory)
         self.llm = llm_client or LLMClient()
+        self.evolution = EvolutionEngine(memory=self.memory, llm=self.llm)
         self.model_manager = ModelManager()
         # 同步 ModelManager 与 LLMClient：以 LLMClient 为准
         self._sync_model_manager_with_llm()
         self._task_count = 0
+        # 自主学习模式
+        self._learning_auto_mode: bool = False
+        self._learning_auto_start_time: float = 0.0
+        self._learning_auto_learned_before: int = 0  # 进入模式前的已学计数
         # 多轮对话上下文
         self._conversation: Optional[dict] = None
         self._conversation_messages: list = []
@@ -134,11 +138,13 @@ class KuafuAgent:
                     try:
                         decision = self._idle_prioritizer.decide()
                         if decision:
-                            self.memory.remember(
-                                key=f"priority:{int(_time.time())}",
-                                content=f"【空闲决策】{decision.title} ({decision.priority_score:.0f}分)",
-                                tags=["decision", "prioritizer", decision.category],
-                            )
+                            # 不再写入记忆（避免污染系统 prompt）
+                            # self.memory.remember(
+                            #     key=f"priority:{int(_time.time())}",
+                            #     content=f"【空闲决策】{decision.title} ({decision.priority_score:.0f}分)",
+                            #     tags=["decision", "prioritizer", decision.category],
+                            # )
+                            pass
                     except Exception:
                         pass
 
@@ -263,17 +269,14 @@ class KuafuAgent:
         parts.append(f"- temperature: {self.llm.temperature}")
         parts.append("")
 
-        # 7. 相关记忆
-        recent = self.memory.recall("", limit=10)
-        if recent:
-            parts.append("## 相关记忆")
-            for m in recent[-5:]:
-                parts.append(f"- {m.get('key', '?')}: {m.get('content', '')[:100]}")
-            parts.append("")
+        # 7. 相关记忆（仅当有具体查询时召回）
+        # 注：recall("") 在 file 模式下返回最新 N 条，但 Python 中 "" in text 恒 True
+        # 导致返回的全是 P2 空闲决策垃圾。空查询时跳过，需要时由 LLM 决定具体查什么。
+        # recent = self.memory.recall("", limit=10)
 
         return "\n".join(parts)
 
-    def run(self, task: str, task_type: str = "generic", mode: str = "standard") -> dict:
+    def run(self, task: str, mode: str = "standard") -> dict:
         """执行一次任务。
         
         支持两种模式：
@@ -346,7 +349,9 @@ class KuafuAgent:
             result = loop.run(task)
 
         # 补充元信息
-        result["task_type"] = task_type
+        # 使用 agent_loop 内部检测的 task_type（更准确）
+        detected_type = result.get("task_type", "generic")
+        result["task_type"] = detected_type
         result["duration"] = round(time.time() - start, 3)
 
         # 回调：通知 evolution 已完成
@@ -379,7 +384,7 @@ class KuafuAgent:
                 result.append(ch)
         return ''.join(result).strip()
 
-    def converse(self, input_text: str, task_type: str = "generic") -> dict:
+    def converse(self, input_text: str) -> dict:
         """多轮对话 — 延续上下文。
 
         与 run() 的区别：
@@ -390,7 +395,6 @@ class KuafuAgent:
 
         Args:
             input_text: 用户本轮输入
-            task_type: 任务类型（默认 generic）
 
         Returns:
             同 run() 的返回结构
@@ -412,6 +416,19 @@ class KuafuAgent:
                 "errors": [],
                 "duration": 0.0,
                 "task_type": "greeting",
+            }
+
+        # 自主学习模式指令检测
+        learn_mode_reply = self._detect_learning_mode(input_text)
+        if learn_mode_reply:
+            return {
+                "success": True,
+                "result": learn_mode_reply,
+                "summary": learn_mode_reply,
+                "turns": 0,
+                "errors": [],
+                "duration": 0.0,
+                "task_type": "learning_mode",
             }
 
         # 模型切换/查询检测
@@ -437,7 +454,7 @@ class KuafuAgent:
         self.memory.remember(
             key=f"converse:{self._task_count}",
             content=context_note,
-            tags=["conversation", task_type],
+            tags=["conversation", detect_task_type(input_text)],
         )
 
         # 构建 AgentLoop
@@ -458,7 +475,8 @@ class KuafuAgent:
         result = loop.run(enriched_input)
 
         # 补充元信息
-        result["task_type"] = task_type
+        # 使用 agent_loop 内部检测的 task_type（更准确）
+        result["task_type"] = result.get("task_type", "generic")
         result["duration"] = round(time.time() - start, 3)
         result["is_followup"] = is_followup
 
@@ -666,6 +684,149 @@ class KuafuAgent:
         lines.append("")
         lines.append("**使用：** `切换模型 <别名/模板ID>`")
         return "\n".join(lines)
+
+    # ── 自主学习模式 ──────────────────────────────────────────────────
+
+    def _detect_learning_mode(self, text: str) -> Optional[str]:
+        """检测自主学习模式指令（start learn / stop learn）。
+
+        进入学习模式时，WebLearner 进入高强度扫描状态（15 秒间隔），
+        退出时汇总本轮学习成果。
+        """
+        text = text.strip().lower()
+
+        # 开始自主学习
+        start_patterns = [
+            r"^(开始|启动|开启|进入)\s*(自主)?\s*(学习|自?学)\s*(模式)?$",
+            r"^start\s+(learn|learning|auto)\s*(mode)?$",
+            r"^go\s+(learn|learning)$",
+            r"^(我休息了|我睡了|休息|学习模式)$",
+            r"^(自主学习|自动学习|自学)$",
+        ]
+        is_start = any(re.match(p, text) for p in start_patterns)
+
+        # 停止自主学习
+        stop_patterns = [
+            r"^(停止|结束|退出|关闭|退出)\s*(自主)?\s*(学习|自学)\s*(模式)?$",
+            r"^stop\s+(learn|learning|auto)\s*(mode)?$",
+            r"^(我回来了|我醒了|醒来|停止学习)$",
+            r"^(退出学习模式|结束学习)$",
+        ]
+        is_stop = any(re.match(p, text) for p in stop_patterns)
+
+        # 查询学习模式状态
+        status_patterns = [
+            r"^(学习状态|学习进展|学习进度|看看学了什么)$",
+            r"^learning\s*(status|progress|state)$",
+            r"^(学了什么|学了多少|学习报告)$",
+        ]
+        is_status = any(re.match(p, text) for p in status_patterns)
+
+        # 如果没有 WebLearner，告知无法自主学习
+        if not self._web_learner:
+            if is_start or is_stop or is_status:
+                return "⚠️ 主动网络学习引擎未加载，无法使用自主学习模式。"
+            return None
+
+        # —— 查询状态 ——
+        if is_status:
+            if not self._learning_auto_mode:
+                s = self._web_learner.stats
+                return (
+                    f"📊 **当前学习状态〔非自主学习模式〕**\n"
+                    f"- 已学累计: {s['learned_count']} 个\n"
+                    f"- WebLearner {'🟢 运行中' if s['is_running'] else '🔴 未启动'}\n"
+                    f"- 后台扫描间隔: {s['interval']}s\n\n"
+                    f"输入 `start learn` 进入高强度自主学习模式"
+                )
+            elapsed = time.time() - self._learning_auto_start_time
+            s = self._web_learner.stats
+            session_learned = s["total_learned_since_start"] - self._learning_auto_learned_before
+            return (
+                f"📊 **自主学习进行中〔{int(elapsed // 60)}分{int(elapsed % 60)}秒〕**\n"
+                f"- 本轮已学: {session_learned} 个项目\n"
+                f"- 累计扫源: {s['source_index']} 轮\n"
+                f"- 扫描间隔: {s['interval']}s\n\n"
+                f"输入 `stop learn` 结束学习并查看总结"
+            )
+
+        # —— 开始学习 ——
+        if is_start:
+            if self._learning_auto_mode:
+                return "🤖 已经处于自主学习模式了。输入 `stop learn` 停止。"
+
+            self._learning_auto_mode = True
+            self._learning_auto_start_time = time.time()
+            self._learning_auto_learned_before = self._web_learner.stats["total_learned_since_start"]
+
+            # 调整 WebLearner 为高强度模式
+            self._web_learner.set_interval(15)  # 15 秒高强度扫描
+            self._web_learner.set_max_per_cycle(10)  # 每轮最多学10个
+
+            # 确保 WebLearner 在运行
+            if not self._web_learner.stats["is_running"]:
+                self._web_learner.start(daemon=True)
+
+            self.memory.remember(
+                key=f"learning_mode:start:{int(time.time())}",
+                content="用户启动了高强度自主学习模式",
+                tags=["learning_mode", "start"],
+            )
+
+            return (
+                "🧠 **进入自主学习模式！**\n\n"
+                "我将在后台持续扫描以下源：\n"
+                "- GitHub Trending（热门仓库）\n"
+                "- Hacker News（技术热点）\n"
+                "- GitHub AI/LLM/RAG 相关项目\n\n"
+                "高强度扫描已开启，学到实用项目会自动记录。\n"
+                "你随时可以输入 `stop learn` 或 `我回来了` 结束学习，\n"
+                "我会汇总汇报本轮学习成果。\n\n"
+                "➡️ 夸父开始自主学习了，主公好好休息。"
+            )
+
+        # —— 停止学习 ——
+        if is_stop:
+            if not self._learning_auto_mode:
+                return "🤖 当前不在自主学习模式。输入 `start learn` 开始。"
+
+            self._learning_auto_mode = False
+            elapsed = time.time() - self._learning_auto_start_time
+
+            # 恢复默认设置
+            self._web_learner.set_interval(600)  # 恢复 10 分钟
+            self._web_learner.set_max_per_cycle(6)  # 恢复每轮6个
+
+            # 计算本轮成果
+            s = self._web_learner.stats
+            session_learned = s["total_learned_since_start"] - self._learning_auto_learned_before
+            total_count = s["learned_count"]
+
+            self.memory.remember(
+                key=f"learning_mode:stop:{int(time.time())}",
+                content=(
+                    f"自主学习模式结束，持续 {elapsed:.0f}s，本轮学习了 {session_learned} 个项目"
+                ),
+                tags=["learning_mode", "stop"],
+            )
+
+            minutes = int(elapsed // 60)
+            seconds = int(elapsed % 60)
+            time_str = f"{minutes}分{seconds}秒" if minutes else f"{seconds}秒"
+
+            # 生成成果汇报
+            lines = [
+                "📚 **自主学习报告**\n",
+                f"⏱ 学习时长: {time_str}",
+                f"✅ 本轮学到: {session_learned} 个实用项目",
+                f"📦 历史累计: {total_count} 个项目",
+                "",
+                "---",
+                "好了，主公回来了～夸父切换回正常模式，随时听令。",
+            ]
+            return "\n".join(lines)
+
+        return None
 
     def __repr__(self) -> str:
         return f"<KuafuAgent v{self.version} | {self._task_count} tasks | LLM: {self.llm.model}>"

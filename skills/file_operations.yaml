@@ -1,33 +1,33 @@
-name: "file_operations"
-description: "读写编辑文件。包含文件创建、读取、搜索、精确编辑等操作"
+name: file_operations
+description: 读写编辑文件。包含文件创建、读取、搜索、精确编辑等操作
 keywords:
-  - "文件"
-  - "编辑"
-  - "修改"
-  - "写入"
-  - "创建文件"
-  - "读文件"
-  - "写代码"
-  - "代码"
-  - "代码审查"
-  - "写程序"
+- 文件
+- 编辑
+- 修改
+- 写入
+- 创建文件
+- 读文件
+- 写代码
+- 代码
+- 代码审查
+- 写程序
 steps:
-  - "先用 read_file 读取目标文件了解内容"
-  - "用 search_files 搜索关键代码位置"
-  - "用 patch 做精确替换，不要整体覆盖文件"
-  - "只有新建文件时才用 write_file"
-  - "修改后验证：读回来检查是否改对了"
+- 先用 read_file 读取目标文件了解内容
+- 用 search_files 搜索关键代码位置
+- 用 patch 做精确替换，不要整体覆盖文件
+- 只有新建文件时才用 write_file
+- 修改后验证：读回来检查是否改对了
 examples:
-  - "任务：修改 agent_loop.py 增加一个技能注入功能"
-  - "1. read_file('core/agent_loop.py') 了解现有结构"
-  - "2. 确定在哪里插入新代码"
-  - "3. 用 patch 精确插入"
-  - "4. 验证：read_file 确认修改正确"
-  - ""
+- 任务：修改 agent_loop.py 增加一个技能注入功能
+- 1. read_file('core/agent_loop.py') 了解现有结构
+- 2. 确定在哪里插入新代码
+- 3. 用 patch 精确插入
+- 4. 验证：read_file 确认修改正确
+- ''
 pitfalls:
-  - "绝对不要修改 core/ 目录下的文件（只读保护区）"
-  - "patch 时 old_string 要包含足够上下文，确保唯一切换"
-  - "write_file 会完全覆盖文件内容，不要误用"
-  - "创建新文件前确认路径正确"
-  - "编辑 .py 文件后不需要手动检查语法——系统会自动 lint"
-usage_count: 0
+- 绝对不要修改 core/ 目录下的文件（只读保护区）
+- patch 时 old_string 要包含足够上下文，确保唯一切换
+- write_file 会完全覆盖文件内容，不要误用
+- 创建新文件前确认路径正确
+- 编辑 .py 文件后不需要手动检查语法——系统会自动 lint
+usage_count: 1

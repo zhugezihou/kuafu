@@ -1,0 +1,24 @@
+# 夸父 MCP Server 配置文件
+# 每个 Server 对应一个独立的 MCP 子进程 (stdio 传输)
+# 支持的 MCP Server: https://github.com/modelcontextprotocol/servers
+
+mcp_servers:
+  # 示例：文件系统操作
+  # filesystem:
+  #   command: npx
+  #   args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/asus"]
+  #   enabled: false
+
+  # 示例：Brave 搜索
+  # brave-search:
+  #   command: npx
+  #   args: ["-y", "@modelcontextprotocol/server-brave-search"]
+  #   env:
+  #     BRAVE_API_KEY: "${BRAVE_API_KEY}"
+  #   enabled: false
+
+  # 示例：SQLite 数据库
+  # sqlite:
+  #   command: uvx
+  #   args: ["mcp-server-sqlite", "--db-path", "/home/asus/data.db"]
+  #   enabled: false

@@ -10,3 +10,9 @@
   rule: '参考历史教训: 「generic」类型任务成功 5 次'
 - severity: warning
   rule: '参考历史教训: 「fail_test_5」连续 3 次失败'
+- severity: required
+  rule: 执行 「generic」连续 3 次失败 类任务前先检查前置条件和错误边界
+- severity: optional
+  rule: 遇到 「generic」类型任务成功 5 次 类任务时参考以往成功的工作流
+- severity: required
+  rule: 执行 「generic」连续 4 次失败 类任务前先检查前置条件和错误边界

@@ -2,7 +2,10 @@ generic:
   max_retries: 2
   reflection_depth: detailed
   evolution_level_cap: 2
-  notes: []
+  notes:
+  - 需要加强 「generic」连续 3 次失败 类任务的预处理和边界检查
+  - 在 「generic」类型任务成功 5 次 类任务中形成了有效的工作模式，可复用
+  - 需要加强 「generic」连续 4 次失败 类任务的预处理和边界检查
 coding:
   max_retries: 3
   reflection_depth: detailed
