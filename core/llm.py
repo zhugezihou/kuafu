@@ -159,6 +159,9 @@ class LLMClient:
                 def _long_wait_log():
                     nonlocal _logged
                     while True:
+                        # 请求已完成，_req_start 被设为 None
+                        if _req_start is None:
+                            return
                         elapsed = time.time() - _req_start
                         if elapsed >= 30 and not _logged:
                             _logged = True
