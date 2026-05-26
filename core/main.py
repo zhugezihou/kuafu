@@ -337,11 +337,14 @@ class KuafuAgent:
         start = time.time()
         self._task_count += 1
 
+        # 先检测任务类型
+        init_task_type = detect_task_type(task)
+
         # 记录任务开始
         self.memory.remember(
             key=f"task:{self._task_count}",
             content=f"任务 #{self._task_count}: {task[:200]}",
-            tags=["task", task_type],
+            tags=["task", init_task_type],
         )
 
         # 问候/寒暄检测 — 不进 agent 循环
