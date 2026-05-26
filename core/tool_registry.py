@@ -23,6 +23,9 @@ import urllib.error
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from core.safety import CommandLevel, SafetyLayer
+from core.approval import ApprovalManager
+
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
@@ -358,12 +361,37 @@ class ToolRegistry:
         if not command.strip():
             return {"success": False, "output": "命令不能为空"}
 
-        # 安全检查：禁止危险命令
-        dangerous = ["rm -rf /", "mkfs.", "dd if=", "> /dev/", ":(){ :|:& };:"]
-        for d in dangerous:
-            if d in command:
-                return {"success": False, "output": f"命令被安全策略拦截: 包含危险模式 '{d}'"}
+        # ── 集成 SafetyLayer 安全分级 + 拒绝跟踪 ──
+        level, risk_name, reason = SafetyLayer.classify_command(command)
 
+        # 检查拒绝跟踪的自动决策
+        need_ask, decision = SafetyLayer.needs_approval_with_denial(level, command)
+        if need_ask:
+            # 需要询问用户 → 发起审批
+            approved = ApprovalManager.terminal_prompt(
+                title=f"执行命令",
+                detail=(
+                    f"命令: `{SafetyLayer.sanitize_command(command)}`\n"
+                    f"风险等级: {level}\n"
+                    f"风险: {risk_name}\n"
+                    f"原因: {reason}\n"
+                ),
+                risk="high" if level == CommandLevel.DANGEROUS else "medium",
+            )
+            if approved:
+                SafetyLayer.report_approval(command)
+            else:
+                # 用户拒绝了 → 记录到 DenialTracker
+                SafetyLayer.report_denial(command)
+                return {"success": False, "output": f"操作已被用户拒绝: {reason}"}
+        elif decision == "block":
+            # 拒绝跟踪自动阻止
+            return {"success": False, "output": f"操作被安全策略自动阻止（已学习用户频繁拒绝此类命令）: {reason}"}
+        elif decision == "allow" and level in (CommandLevel.ATTENTION, CommandLevel.DANGEROUS):
+            # 拒绝跟踪自动放行（已学习信任）— 打印日志但执行
+            print(f"🔓 [DenialTracker] 自动放行 {level} 级命令（已学习用户信任）: {SafetyLayer.sanitize_command(command)}")
+
+        # ── 执行命令 ──
         try:
             result = subprocess.run(
                 command,

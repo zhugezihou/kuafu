@@ -22,6 +22,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from core.safety import SafetyLayer
+
 
 @dataclass
 class ToolError:
@@ -56,6 +58,11 @@ class Observation:
     # ── 用户输入分析 ──
     user_input: str = ""
     has_user_correction: bool = False
+
+    # ── 拒绝跟踪信号 ──
+    denials: int = 0                    # 本轮任务中被拒绝的命令数
+    has_auto_block: bool = False        # 是否触发了自动阻止
+    has_auto_allow: bool = False        # 是否触发了自动放行
 
     # ── 增量状态（由 EvolutionState 填充） ──
     is_novel_task: bool = False          # 首次遇到的 task_type
@@ -119,6 +126,7 @@ class Observer:
         self._tool_calls: int = 0
         self._current_tool: str = ""
         self._current_retry: int = 0
+        self._prev_denial_total: int = 0
 
     def on_tool_call(self, tool_name: str, args: dict, result: Any):
         """每个 tool call 完成后调用（零成本）。
@@ -166,6 +174,9 @@ class Observer:
         Returns:
             Observation 对象（纯数据，零 LLM 调用）
         """
+        # 获取拒绝跟踪统计
+        denial_stats = self._get_denial_stats_since_last()
+
         obs = Observation(
             success=task_result.get("success", False),
             task_type=task_result.get("task_type", "generic"),
@@ -180,6 +191,9 @@ class Observer:
             tool_chain=list(self._tool_chain),
             tool_calls=self._tool_calls,
             tools_used=set(self._tools_used),
+            denials=denial_stats.get("recent_denials", 0),
+            has_auto_block=denial_stats.get("has_auto_block", False),
+            has_auto_allow=denial_stats.get("has_auto_allow", False),
         )
 
         # 自检是否有未知错误
@@ -190,6 +204,28 @@ class Observer:
         self._reset()
 
         return obs
+
+    def _get_denial_stats_since_last(self) -> dict:
+        """获取自上次 reset 后的拒绝统计。
+        
+        DenialTracker 是全局的，这里取总数快照差来估算本轮新增。
+        """
+        try:
+            stats = SafetyLayer.denial_tracker.get_stats()
+            prev_total = self._prev_denial_total
+            self._prev_denial_total = stats["total_denials"]
+            recent = stats["total_denials"] - prev_total
+            return {
+                "recent_denials": max(0, recent),
+                "total_denials": stats["total_denials"],
+                "has_auto_block": any(
+                    v.get("degraded") 
+                    for v in stats.get("patterns", {}).values()
+                ),
+                "has_auto_allow": stats["degraded_count"] > 0,
+            }
+        except Exception:
+            return {"recent_denials": 0, "total_denials": 0, "has_auto_block": False, "has_auto_allow": False}
 
     def _reset(self):
         """重置运行时状态。"""

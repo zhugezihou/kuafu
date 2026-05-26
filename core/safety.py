@@ -14,9 +14,11 @@
 
 import json
 import os
+import time
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Pattern
+from typing import Any, Optional, Pattern
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
@@ -51,6 +53,178 @@ SENSITIVE_PATTERNS: list[tuple[str, Pattern]] = [
 ]
 
 
+# ── 拒绝跟踪（Denial Tracking） ──────────────────────────────────────
+#
+# 记录用户拒绝执行命令的次数和模式，自动调整安全策略敏感度。
+# Claude Code 启发：连续拒绝 N 次 → 降低同类命令的敏感度/自动信任
+
+@dataclass
+class DenialRecord:
+    """一次命令拒绝记录。"""
+    command_pattern: str          # 匹配的命令模式（如 "pip install"）
+    count: int = 0                # 拒绝次数
+    first_seen: float = 0.0      # 首次拒绝时间
+    last_seen: float = 0.0       # 最近拒绝时间
+    consecutive_denials: int = 0  # 连续拒绝次数
+    degraded: bool = False        # 是否已降级（降低敏感度后不再询问此类命令）
+
+
+@dataclass
+class DenialConfig:
+    """拒绝跟踪配置项。"""
+    # 连续拒绝多少次后自动降级（不再询问此类命令，默认直接执行）
+    auto_trust_threshold: int = 3
+    # 拒绝记录保存文件
+    state_file: str = "memory/.denial_state.json"
+    # 降级后的命令默认行为: "allow"（自动允许）或 "block"（自动拒绝）
+    degraded_action: str = "allow"
+
+
+class DenialTracker:
+    """拒绝跟踪器 — 跟踪用户拒绝命令的模式，自动调整安全策略。
+
+    核心机制：
+    - 每次命令被拒绝时记录，按命令模式（分类）聚合
+    - 同一模式连续拒绝 N 次（auto_trust_threshold）后自动降级
+    - 降级后同类命令不再询问用户，直接按 degraded_action 处理
+    - 持久化到 .denial_state.json，夸父重启后仍保留学习结果
+
+    使用方式：
+        tracker = DenialTracker()
+        # 命令被拒绝时
+        tracker.record_denial("pip install")
+        # 查询是否应降级
+        if tracker.should_degrade("pip install"):
+            # 自动处理，不询问用户
+        # 检查命令是否需要询问（自动决策）
+        decision = tracker.get_decision("pip install")  # "ask" / "allow" / "block"
+    """
+
+    def __init__(self, root_dir: Optional[Path] = None, config: Optional[DenialConfig] = None):
+        self.root_dir = root_dir or ROOT_DIR
+        self.config = config or DenialConfig()
+        self.state_path = self.root_dir / self.config.state_file
+        self._data: dict[str, dict] = self._load()
+
+    # ── 公开接口 ──
+
+    def record_denial(self, command_pattern: str) -> dict:
+        """记录一次命令被拒绝。返回更新后的记录。"""
+        now = time.time()
+        entry = self._data.get(command_pattern, {
+            "count": 0,
+            "first_seen": now,
+            "last_seen": now,
+            "consecutive_denials": 0,
+            "degraded": False,
+        })
+        entry["count"] += 1
+        entry["consecutive_denials"] = entry.get("consecutive_denials", 0) + 1
+        entry["last_seen"] = now
+        if entry["first_seen"] == 0:
+            entry["first_seen"] = now
+
+        # 自动降级判定
+        if entry["consecutive_denials"] >= self.config.auto_trust_threshold and not entry["degraded"]:
+            entry["degraded"] = True
+
+        self._data[command_pattern] = entry
+        self._save()
+        return entry
+
+    def record_approval(self, command_pattern: str):
+        """记录一次命令被批准（重置连续拒绝计数）。"""
+        entry = self._data.get(command_pattern)
+        if entry:
+            entry["consecutive_denials"] = 0
+            self._save()
+
+    def should_degrade(self, command_pattern: str) -> bool:
+        """检查命令是否达到降级条件（连续拒绝 >= 阈值）。"""
+        entry = self._data.get(command_pattern, {})
+        return entry.get("degraded", False)
+
+    def get_decision(self, command_pattern: str) -> str:
+        """获取对该命令的决策：'ask'（询问用户）| 'allow'（自动允许）| 'block'（自动阻止）。
+
+        逻辑：
+        1. 如果已降级 → 按 degraded_action 自动处理
+        2. 如果未降级 → 始终 ask
+        """
+        entry = self._data.get(command_pattern, {})
+        if entry.get("degraded", False):
+            return self.config.degraded_action  # "allow" or "block"
+        return "ask"
+
+    def get_stats(self) -> dict:
+        """获取拒绝跟踪统计。"""
+        total_patterns = len(self._data)
+        degraded_count = sum(1 for v in self._data.values() if v.get("degraded"))
+        total_denials = sum(v.get("count", 0) for v in self._data.values())
+        return {
+            "total_patterns": total_patterns,
+            "degraded_count": degraded_count,
+            "total_denials": total_denials,
+            "patterns": dict(self._data),
+        }
+
+    def match_command(self, command: str) -> Optional[str]:
+        """查找命令匹配的已知拒绝模式。返回匹配的模式名或 None。
+
+        匹配逻辑：如果命令包含 DANGEROUS_COMMANDS 中的某个模式文本，
+        则返回该模式的 risk_name。
+        """
+        command_lower = command.lower()
+        # 先查完整命令匹配
+        if command_lower in self._data:
+            return command_lower
+        # 再查子串匹配
+        for pattern_key in self._data:
+            if pattern_key in command_lower:
+                return pattern_key
+        return None
+
+    def reset_pattern(self, command_pattern: str) -> bool:
+        """重置某个命令模式的拒绝计数。"""
+        if command_pattern in self._data:
+            self._data[command_pattern] = {
+                "count": 0,
+                "first_seen": 0,
+                "last_seen": 0,
+                "consecutive_denials": 0,
+                "degraded": False,
+            }
+            self._save()
+            return True
+        return False
+
+    def reset_all(self):
+        """重置所有拒绝记录。"""
+        self._data = {}
+        self._save()
+
+    # ── 持久化 ──
+
+    def _load(self) -> dict:
+        try:
+            if self.state_path.exists():
+                with open(self.state_path) as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        return data
+        except (json.JSONDecodeError, OSError):
+            pass
+        return {}
+
+    def _save(self):
+        try:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.state_path, "w") as f:
+                json.dump(self._data, f, indent=2, ensure_ascii=False)
+        except OSError:
+            pass
+
+
 # ── 命令危险分级 ──────────────────────────────────────────────────
 
 class CommandLevel:
@@ -83,7 +257,10 @@ DANGEROUS_COMMANDS = [
 
 
 class SafetyLayer:
-    """安全层。提供 API 脱敏、命令分级、敏感内容检测。"""
+    """安全层。提供 API 脱敏、命令分级、敏感内容检测、拒绝跟踪。"""
+
+    # 全局拒绝跟踪器（所有 SafetyLayer 实例共享）
+    denial_tracker: DenialTracker = DenialTracker()
 
     # ── API 脱敏 ──────────────────────────────────────────────────
 
@@ -184,6 +361,46 @@ class SafetyLayer:
         return level in (CommandLevel.ATTENTION, CommandLevel.DANGEROUS)
 
     @staticmethod
+    def needs_approval_with_denial(level: str, command: str) -> tuple[bool, str]:
+        """判断是否需要用户确认（集成拒绝跟踪）。
+
+        与 needs_approval() 的区别：
+        - 检查 DenialTracker 的决策（如果命令已降级，直接 allow/block）
+        - 返回 (need_ask: bool, decision: str)
+
+        Returns:
+            (True, "ask")   → 需要询问用户
+            (False, "allow") → 自动允许（已获信任）
+            (False, "block") → 自动阻止（已学习用户反复拒绝此类命令）
+        """
+        # 基本判断：不需要审批的级别直接放行
+        if level not in (CommandLevel.ATTENTION, CommandLevel.DANGEROUS):
+            return (False, "allow")
+
+        # 拒绝跟踪判断
+        decision = SafetyLayer.denial_tracker.get_decision(command)
+
+        if decision == "allow":
+            # 用户已连续拒绝 N 次同类命令 → 自动降级放行（用户觉得烦了）
+            return (False, "allow")
+        elif decision == "block":
+            # 已学习用户反复拒绝此类命令 → 自动阻止
+            return (False, "block")
+
+        # 默认：询问用户
+        return (True, "ask")
+
+    @staticmethod
+    def report_denial(command: str):
+        """报告一次命令被用户拒绝。"""
+        SafetyLayer.denial_tracker.record_denial(command)
+
+    @staticmethod
+    def report_approval(command: str):
+        """报告一次命令被用户批准（重置连续拒绝计数）。"""
+        SafetyLayer.denial_tracker.record_approval(command)
+
+    @staticmethod
     def get_approval_message(level: str, risk_name: str, reason: str) -> Optional[str]:
         """获取审批提示信息。"""
         if level == CommandLevel.DANGEROUS:
@@ -247,6 +464,7 @@ class SafetyLayer:
                 "auto_sanitize_api_keys": True,
                 "auto_sanitize_output": True,
             },
+            "denial_tracking": SafetyLayer.denial_tracker.get_stats(),
         }
 
     @staticmethod
