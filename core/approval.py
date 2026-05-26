@@ -29,6 +29,7 @@ core/approval.py — Permission System（审批 + 权限 + Deny 优先规则）
 """
 
 import json
+import os
 import time
 import logging
 import sys
