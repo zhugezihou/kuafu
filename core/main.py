@@ -30,6 +30,14 @@ from core.evolution import EvolutionEngine, EvolutionEvent
 from core.llm import LLMClient
 from core.model_manager import ModelManager, ALIASES, MODEL_TEMPLATES
 from core.agent_loop import AgentLoop, detect_task_type
+
+# 飞书通知（仅发送，不启用轮询）
+try:
+    from core.feishu_bot import FeishuBot, FEISHU_ENABLED as _FEISHU_ENABLED
+except ImportError:
+    FeishuBot = None
+    _FEISHU_ENABLED = False
+
 # P1: 后台复盘线程（可选加载）
 try:
     from autonomous.reviewer import ReviewerThread
@@ -74,6 +82,15 @@ class KuafuAgent:
         self._task_count = 0
         self._conversation = None
         self._conversation_messages = []
+
+        # ── 飞书通知（仅发送，不启动轮询）──
+        self._feishu_bot = None
+        if _FEISHU_ENABLED and FeishuBot is not None:
+            try:
+                self._feishu_bot = FeishuBot()  # 从环境变量自动读取
+            except Exception:
+                self._feishu_bot = None
+
         self._setup()
 
         # P0: 启动后台复盘线程（可选，daemon=True）
@@ -361,6 +378,8 @@ class KuafuAgent:
             evolution=self.evolution,
             on_step=lambda msg: print(f"  {msg}", flush=True),
         )
+        # 注入审批推送回调
+        self._inject_approval_notifier(loop)
 
         # 根据 mode 选择执行路径
         if mode == "whiteboard":
@@ -495,6 +514,8 @@ class KuafuAgent:
             evolution=self.evolution,
             on_step=lambda msg: print(f"  {msg}", flush=True),
         )
+        # 注入审批推送回调
+        self._inject_approval_notifier(loop)
 
         # 传递历史上下文（最近的 5 轮）
         if is_followup:
@@ -589,7 +610,25 @@ class KuafuAgent:
                 "temperature": getattr(self.llm, "temperature", 0.7),
             })
 
-    # ---- 模型切换 ----  #
+    def _inject_approval_notifier(self, loop: AgentLoop) -> None:
+        """注入审批通知回调到 AgentLoop。"""
+        if self._feishu_bot is None:
+            return  # 飞书未配置，不注入
+
+        def _notify(tool_name: str, args: dict, req_id: str):
+            msg = (
+                f"🔐 终端审批请求\n"
+                f"工具: {tool_name}\n"
+                f"参数: {json.dumps(args, ensure_ascii=False, indent=2)[:200]}\n"
+                f"审批ID: {req_id}\n"
+                f"---\n"
+                f"请回复同意或拒绝"
+            )
+            self._feishu_bot.send_text(msg)
+
+        loop.on_approval_request = _notify
+
+    # ---- 模型切换 ----
 
     def switch_model(self, target: str) -> str:
         """运行时切换模型。

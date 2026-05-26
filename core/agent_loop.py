@@ -182,6 +182,10 @@ class AgentLoop:
         self.permission_enabled = True  # 设为 False 可完全绕过权限检查
         self._pretooluse_cache: dict = {}
 
+        # ── 审批通知回调 （外部注入，如飞书推送） ──
+        self.on_approval_request: Optional[Callable[[str, dict, str], None]] = None
+        # 签名: on_approval_request(tool_name, args, req_id) -> None
+
     def _register_delegate_tool(self):
         """注册 delegate_task 工具（子 Agent 系统）。"""
         try:
@@ -1003,6 +1007,13 @@ class AgentLoop:
                                 msg = f"🟡 {fn_name} 待审批 (ID: {perm.get('req_id', '?')})"
 
                             self._log(msg)
+
+                            # 触发审批通知回调（如飞书推送）
+                            if self.on_approval_request and perm["approach"] == "pending_approval":
+                                try:
+                                    self.on_approval_request(fn_name, args_dict, perm.get("req_id", "?"))
+                                except Exception as e:
+                                    self._log(f"⚠️ 审批通知推送失败: {e}")
                             messages.append({
                                 "role": "tool",
                                 "tool_call_id": tc["id"],
