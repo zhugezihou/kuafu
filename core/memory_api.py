@@ -26,6 +26,9 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 from typing import Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 try:
     import yaml
@@ -825,6 +828,58 @@ class MemoryAPI:
         return stats
 
     # ── 工具模式（供 AgentLoop 识别 memory 相关工具） ────────────────
+
+    def build_memory_block(self, budget_ratio: float = 1.0,
+                           include_search: str = "") -> str:
+        """构建注入到 system prompt 的记忆块。
+
+        对 file 后端：搜索最近记忆 + 按需检索。
+        对 hindsight 后端：使用 hindsight_recall 检索。
+
+        Args:
+            budget_ratio: 预算比例（0.0~1.0），来自 BudgetAllocator
+            include_search: 可选的关键词，触发按需检索
+
+        Returns:
+            str: 格式化的记忆上下文块，或空字符串
+        """
+        parts = []
+
+        if self._mode == "hindsight" and self._hindsight_backend:
+            try:
+                results = self._hindsight_backend.search(
+                    include_search if include_search else "记忆",
+                    limit=3,
+                )
+                if results:
+                    lines = ["=== 相关记忆 ==="]
+                    for r in results:
+                        c = r.get("content", "")[:200]
+                        if c:
+                            lines.append(f"  • {c}")
+                    parts.append('\n'.join(lines))
+            except Exception as e:
+                logger.warning(f"[MemoryAPI] hindsight 检索失败: {e}")
+
+        # file 模式：搜索最近记忆 + 按需检索
+        try:
+            recent = self._file_backend.search(
+                include_search if include_search else "",
+                limit=max(1, int(5 * budget_ratio)),
+            )
+            if recent:
+                lines = ["=== 相关记忆 ==="]
+                for r in recent:
+                    c = r.get("content", "")[:200]
+                    src = r.get("source", "")
+                    src_str = f" [{src}]" if src else ""
+                    if c:
+                        lines.append(f"  • {c}{src_str}")
+                parts.append('\n'.join(lines))
+        except Exception as e:
+            logger.warning(f"[MemoryAPI] 文件搜索失败: {e}")
+
+        return '\n\n'.join(parts)
 
     def get_tool_schemas(self) -> list[dict]:
         return [
