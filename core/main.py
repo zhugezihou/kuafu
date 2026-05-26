@@ -367,10 +367,16 @@ class KuafuAgent:
         # 回调：通知 evolution 已完成
         evolution_event = result.get("evolution")
         if evolution_event:
+            if isinstance(evolution_event, dict):
+                evo_level = evolution_event.get("evolution_mode", "info") or "info"
+                evo_action = evolution_event.get("reason", "未知")
+            else:
+                evo_level = getattr(evolution_event, "level", "info")
+                evo_action = getattr(evolution_event, "action", "未知")
             self.memory.remember(
-                key=f"evolution:L{evolution_event.level}:{self._task_count}",
-                content=f"L{evolution_event.level} 进化: {evolution_event.action}",
-                tags=["evolution", f"L{evolution_event.level}"],
+                key=f"evolution:L{evo_level}:{self._task_count}",
+                content=f"L{evo_level} 进化: {evo_action}",
+                tags=["evolution", f"L{evo_level}"],
             )
 
         return result
@@ -937,7 +943,13 @@ def main():
         print(result.get("result", "(无结果)"))
         if result.get("evolution"):
             evo = result["evolution"]
-            print(f"\n🧬 进化: L{evo.level} — {evo.action}")
+            if isinstance(evo, dict):
+                evo_level = evo.get("evolution_mode", "info") or "info"
+                evo_action = evo.get("reason", "未知")
+            else:
+                evo_level = getattr(evo, "level", "info")
+                evo_action = getattr(evo, "action", "未知")
+            print(f"\n🧬 进化: L{evo_level} — {evo_action}")
         quality = result.get("quality")
         if quality:
             bar = "🟩" * int(quality["score"]) + "⬜" * (10 - int(quality["score"]))
@@ -971,7 +983,13 @@ def main():
                     print(f"   结果: {result.get('result', '(空)')[:200]}")
             if result.get("evolution"):
                 evo = result["evolution"]
-                print(f"   🧬 进化: L{evo.level} — {evo.action}")
+                if isinstance(evo, dict):
+                    evo_level = evo.get("evolution_mode", "info") or "info"
+                    evo_action = evo.get("reason", "未知")
+                else:
+                    evo_level = getattr(evo, "level", "info")
+                    evo_action = getattr(evo, "action", "未知")
+                print(f"   🧬 进化: L{evo_level} — {evo_action}")
             turn_label = "多轮" if result.get("is_followup") else "单次"
             print(f"   ⏱ {result['duration']}s | {turn_label} | {result.get('turns', 0)} turns")
             # 质量评分
