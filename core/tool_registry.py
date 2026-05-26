@@ -67,7 +67,7 @@ class ToolRegistry:
         """
         # 移除已存在的同名工具（所有池）
         self._schemas = [s for s in self._schemas if s["function"]["name"] != name]
-        self._deferred = [s for s in self._deferred if s["function"]["name"] != name]
+        self._deferred = [s for s in self._deferred if s.get("schema", {}).get("function", {}).get("name") != name]
         self._injected_tools = [s for s in self._injected_tools
                                 if s["function"]["name"] != name]
         full_schema = {
