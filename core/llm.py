@@ -22,6 +22,9 @@ from typing import Optional
 import urllib.request
 import urllib.error
 
+import logging
+logger = logging.getLogger(__name__)
+
 # 加载 .env — 只查项目根目录
 ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 if ENV_PATH.exists():
