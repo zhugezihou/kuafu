@@ -311,7 +311,19 @@ class AgentLoop:
             budget_tag="system",
         )
 
-        # ── 2. 核心规则 ──
+        # ── 2. 当前日期 ──
+        from datetime import datetime
+        now = datetime.now()
+        date_cn = f"{now.year}年{now.month}月{now.day}日"
+        pm.add_section(
+            section_id="current_datetime",
+            title="",
+            content=f"当前日期: {date_cn} 星期{['一','二','三','四','五','六','日'][now.weekday()]}",
+            order=1,
+            budget_tag="system",
+        )
+
+        # ── 3. 核心规则 ──
         rules = get_rules()
         rules_content = "\n".join(f"- {rule}" for rule in rules)
         pm.add_section(
