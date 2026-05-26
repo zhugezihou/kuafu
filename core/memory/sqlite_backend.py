@@ -40,7 +40,7 @@ class SQLiteFTSBackend:
 
     def _connect(self):
         """连接数据库，建表（如果不存在）"""
-        self._conn = sqlite3.connect(str(self.db_path))
+        self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
@@ -443,7 +443,11 @@ class SQLiteFTSBackend:
 
     def close(self):
         if self._conn:
-            self._conn.close()
+            try:
+                self._conn.close()
+            except sqlite3.ProgrammingError:
+                # 跨线程关闭是安全的（实际连接已关闭），忽略
+                pass
             self._conn = None
 
     def __del__(self):

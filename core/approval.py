@@ -33,6 +33,7 @@ import os
 import time
 import logging
 import sys
+import threading
 from pathlib import Path
 from typing import Optional, Any
 from dataclasses import dataclass, asdict
@@ -438,6 +439,9 @@ def _load(req_id: str) -> Optional[ApprovalRequest]:
 class ApprovalManager:
     """审批管理器，纯静态方法。"""
 
+    # 终端审批全局锁：确保同时只有一个终端提示在等待用户输入
+    _terminal_lock = threading.Lock()
+
     # ── 权限检查主入口（三合一） ──────────────────────────────────
 
     @staticmethod
@@ -587,71 +591,73 @@ class ApprovalManager:
         """终端交互式审批。
 
         打印报告 + 显示 [y/N] 选项，等待用户输入。
+        全局锁确保同时只有一个终端提示等待用户输入。
         适用于夸父对话中需要用户当场确认的场景。
         返回 True（批准）/ False（拒绝/超时）。
         """
-        import sys
-        from select import select
+        with ApprovalManager._terminal_lock:
+            import sys
+            from select import select
 
-        req_id = _req_id(title)
-        req = ApprovalRequest(
-            id=req_id,
-            title=title,
-            detail=detail,
-            risk=risk,
-            status="pending",
-            created_at=time.time(),
-            timeout=timeout,
-        )
+            req_id = _req_id(title)
+            req = ApprovalRequest(
+                id=req_id,
+                title=title,
+                detail=detail,
+                risk=risk,
+                status="pending",
+                created_at=time.time(),
+                timeout=timeout,
+            )
 
-        # 打印审批信息
-        risk_icon = {"low": "🟢", "medium": "🟡", "high": "🔴"}.get(risk, "🟡")
-        print(f"\n{'='*60}")
-        print(f"  {risk_icon}  审批请求 [{risk.upper()}]")
-        print(f"  标题: {title}")
-        print(f"  详情: ")
-        for line in detail.strip().split("\n"):
-            print(f"    {line}")
-        print(f"{'='*60}")
-        print()
+            # 打印审批信息
+            risk_icon = {"low": "🟢", "medium": "🟡", "high": "🔴"}.get(risk, "🟡")
+            print(f"\n{'='*60}")
+            print(f"  {risk_icon}  审批请求 [{risk.upper()}]")
+            print(f"  标题: {title}")
+            print(f"  详情: ")
+            for line in detail.strip().split("\n"):
+                print(f"    {line}")
+            print(f"{'='*60}")
+            print()
 
-        print(f"是否执行？ [y/N] （{timeout}s 后自动拒绝）: ", end="", flush=True)
+            print(f"是否执行？ [y/N] （{timeout}s 后自动拒绝）: ", end="", flush=True)
 
-        if sys.stdin.isatty():
-            try:
-                import signal
+            if sys.stdin.isatty():
+                try:
+                    import signal
 
-                def handler(signum, frame):
-                    raise TimeoutError
+                    def handler(signum, frame):
+                        raise TimeoutError
 
-                signal.signal(signal.SIGALRM, handler)
-                signal.alarm(timeout)
-                answer = input().strip().lower()
-                signal.alarm(0)
-            except TimeoutError:
-                answer = ""
-                print()
-            except (EOFError, KeyboardInterrupt):
-                answer = ""
-        else:
-            ready, _, _ = select([sys.stdin], [], [], timeout)
-            if ready:
-                answer = sys.stdin.readline().strip().lower()
+                    signal.signal(signal.SIGALRM, handler)
+                    signal.alarm(timeout)
+                    answer = input().strip().lower()
+                    signal.alarm(0)
+                except TimeoutError:
+                    answer = ""
+                    print()
+                except (EOFError, KeyboardInterrupt):
+                    answer = ""
             else:
-                answer = ""
+                ready, _, _ = select([sys.stdin], [], [], timeout)
+                if ready:
+                    answer = sys.stdin.readline().strip().lower()
+                else:
+                    answer = ""
 
-        approved = answer in ("y", "yes", "是", "批准", "确认", "ok")
-        req.status = "approved" if approved else "rejected"
-        req.decided_at = time.time()
-        _save(req)
+            approved = answer in ("y", "yes", "是", "批准", "确认", "ok")
+            req.status = "approved" if approved else "rejected"
+            req.decided_at = time.time()
+            _save(req)
 
-        if approved:
-            print(f"  ✅ 已批准: {title}")
-        else:
-            print(f"  ⏭️  已跳过: {title}")
+            if approved:
+                print(f"  ✅ 已批准: {title}")
+            else:
+                print(f"  ⏭️  已跳过: {title}")
 
-        logger.info(f"{'✅' if approved else '❌'} 审批 {'通过' if approved else '拒绝'}: {title}")
-        return approved
+            logger.info(f"{'✅' if approved else '❌'} 审批 {'通过' if approved else '拒绝'}: {title}")
+            return approved
 
     # ── 决策接口（供 Hermes/外部调用） ──────────────────────────────────
 
