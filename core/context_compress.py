@@ -14,6 +14,7 @@
 """
 
 import json
+import os
 import time
 import urllib.request
 import urllib.error
@@ -381,3 +382,120 @@ class ContextCompressor:
         """估算在阈值内还能容纳多少轮对话。"""
         available = self.max_context_tokens - self.system_token_estimation
         return max(1, available // max(average_round_tokens, 100))
+
+
+class ToolResultStore:
+    """工具结果磁盘存储 + 自动摘要 (Microcompact)。
+
+    大工具结果写入磁盘，上下文中只留简短摘要 + 文件路径。
+    阈值：超过 MICRO_THRESHOLD_CHARS 的结果自动写磁盘。
+    """
+
+    MICRO_THRESHOLD_CHARS = 2000  # 超过此长度才做 microcompact
+
+    def __init__(self, base_dir: Optional[str] = None):
+        base = base_dir or os.environ.get("KUAFU_DATA_DIR") or str(Path.home() / ".kuafu")
+        self.results_dir = Path(base) / "tool_results"
+        self.results_dir.mkdir(parents=True, exist_ok=True)
+        # 保留最近 200 个文件
+        self._max_files = 200
+        self._next_id = 0
+
+    def store(self, fn_name: str, raw_output: str) -> dict:
+        """将工具结果写入磁盘，返回占位信息。
+
+        Returns:
+            dict: {
+                "file_id": str,          # 磁盘文件名
+                "file_path": str,        # 绝对路径
+                "preview": str,          # 前 200 字预览
+                "original_len": int,     # 原始长度
+                "compact": str,          # 进上下文的占位字符串
+            }
+        """
+        self._next_id += 1
+        file_id = f"{int(time.time())}_{self._next_id}_{fn_name[:20]}"
+        file_path = self.results_dir / f"{file_id}.txt"
+
+        # 写入磁盘
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(raw_output)
+
+        # 清理旧文件
+        self._cleanup_old_files()
+
+        # 生成预览（前200字）
+        preview = raw_output[:200].strip()
+        if len(raw_output) > 200:
+            preview += "..."
+
+        original_len = len(raw_output)
+        compact = (
+            f"[工具结果已存储] {fn_name} | "
+            f"大小: {original_len} chars | "
+            f"预览: {preview} | "
+            f"完整路径: {file_path}"
+        )
+
+        return {
+            "file_id": file_id,
+            "file_path": str(file_path),
+            "preview": preview,
+            "original_len": original_len,
+            "compact": compact,
+        }
+
+    def read_result(self, file_id_or_path: str) -> str:
+        """根据文件 ID 或路径读取完整的工具结果。"""
+        p = Path(file_id_or_path)
+        if not p.is_absolute():
+            p = self.results_dir / f"{file_id_or_path}.txt"
+        if not p.exists():
+            return f"[工具结果文件不存在: {p}]"
+        try:
+            return p.read_text(encoding="utf-8")
+        except Exception as e:
+            return f"[读取工具结果失败: {e}]"
+
+    def _cleanup_old_files(self):
+        """保留最多 _max_files 个文件，删除最旧的。"""
+        files = sorted(self.results_dir.iterdir(), key=lambda f: f.stat().st_mtime)
+        while len(files) > self._max_files:
+            files[0].unlink(missing_ok=True)
+            files = files[1:]
+
+    @classmethod
+    def load(cls, path: str) -> Optional[str]:
+        """类方法：根据文件路径读取存储的工具结果。"""
+        p = Path(path)
+        if not p.exists() or not p.is_file():
+            return None
+        try:
+            return p.read_text(encoding="utf-8")
+        except Exception:
+            return None
+
+    @classmethod
+    def should_compact(cls, text: str) -> bool:
+        """判断是否需要对工具结果做 microcompact。"""
+        return len(text) > cls.MICRO_THRESHOLD_CHARS
+
+    @classmethod
+    def try_read_from_path(cls, text: str) -> str:
+        """判断 text 是否是 microcompact 占位，若是则尝试读取磁盘文件。
+
+        用于内置读取工具：当 LLM 需要更多细节时自动读取。
+        """
+        if "完整路径:" not in text:
+            return ""
+        # 提取路径
+        for line in text.split("\n"):
+            if "完整路径:" in line:
+                path = line.split("完整路径:")[-1].strip()
+                p = Path(path)
+                if p.exists():
+                    try:
+                        return p.read_text(encoding="utf-8")
+                    except Exception:
+                        pass
+        return ""

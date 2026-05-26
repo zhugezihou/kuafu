@@ -137,6 +137,9 @@ class ToolRegistry:
         self.register("tavily_search", self._tavily_search_schema(), self._handle_tavily_search)
         self.register("finish", self._finish_schema(), self._handle_finish)
 
+        # Microcompact: 读取已存储的工具完整结果
+        self.register("read_tool_result", self._read_tool_result_schema(), self._handle_read_tool_result)
+
         # 白板模式工具
         self.register("finish_step", self._finish_step_schema(), self._handle_finish_step)
         self.register("whiteboard_read", self._whiteboard_read_schema(), self._handle_whiteboard_read)
@@ -314,6 +317,22 @@ class ToolRegistry:
                     },
                 },
                 "required": ["result"],
+            },
+        }
+
+    @staticmethod
+    def _read_tool_result_schema() -> dict:
+        return {
+            "description": "读取 Microcompact 已存储到磁盘的工具完整结果。当你在上下文中看到 '[工具结果已存储]' 占位时，调用此工具获取完整内容。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "完整路径（来自占位中的 '完整路径:' 字段）",
+                    },
+                },
+                "required": ["file_path"],
             },
         }
 
@@ -1083,3 +1102,19 @@ class ToolRegistry:
         total = data.get("total_results", len(results))
         lines.append(f"--- 共 {total} 条结果，显示前 {len(results)} 条 ---")
         return {"success": True, "output": "\n".join(lines).strip()}
+
+    # ---- read_tool_result (Microcompact) ----
+
+    def _handle_read_tool_result(self, args: dict) -> dict:
+        """读取 Microcompact 存储的完整工具结果。"""
+        file_path = args.get("file_path", "")
+        if not file_path:
+            return {"success": False, "output": "file_path 不能为空"}
+        try:
+            from core.context_compress import ToolResultStore
+            result = ToolResultStore.load(file_path)
+            if result is None:
+                return {"success": False, "output": f"工具结果文件不存在或已过期: {file_path}"}
+            return {"success": True, "output": result}
+        except Exception as e:
+            return {"success": False, "output": f"读取工具结果失败: {e}"}

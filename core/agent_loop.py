@@ -20,7 +20,7 @@ from core.evolution import EvolutionEngine
 from core.observer import Observer
 from core.tool_registry import ToolRegistry
 from core.session_store import SessionStore
-from core.context_compress import ContextCompressor, LocalSummarizer
+from core.context_compress import ContextCompressor, LocalSummarizer, ToolResultStore
 from core.safety import SafetyLayer
 from core.skill_resolver import discover_skills, match_skills, inject_skills_to_prompt, increment_usage, record_usage
 from core.whiteboard import Whiteboard, Decomposer, Step, WhiteboardExecutor
@@ -119,6 +119,9 @@ class AgentLoop:
             keep_recent_rounds=5,
             summarizer=LocalSummarizer(),
         )
+
+        # Microcompact: 大型工具结果 → 磁盘存储
+        self.tool_result_store = ToolResultStore()
 
         # 当前会话 ID（由 run() 创建）
         self.current_session_id: Optional[str] = None
@@ -570,6 +573,16 @@ class AgentLoop:
                     raw_output = str(tool_result.get("output", "(无输出)"))
                     safe_output = SafetyLayer.sanitize_text(raw_output)
 
+                    # ── Microcompact：大工具结果 → 磁盘摘要 ──
+                    if ToolResultStore.should_compact(safe_output):
+                        meta = self.tool_result_store.store(fn_name, safe_output)
+                        compact_text = meta["compact"]
+                        # 写磁盘后，放更紧凑的占位进上下文
+                        safe_output_for_context = compact_text
+                        self._log(f"📦 Microcompact: {fn_name} 结果 {len(raw_output)} chars → 磁盘 ({meta['file_path']})")
+                    else:
+                        safe_output_for_context = safe_output
+
                     # Observer：跟踪工具调用
                     tool_result_for_obs = {
                         "success": tool_result.get("success", False),
@@ -619,7 +632,7 @@ class AgentLoop:
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tc["id"],
-                            "content": safe_output,
+                            "content": safe_output_for_context,
                         })
                     else:
                         # 丢弃但留一个简短的占位
@@ -1273,10 +1286,17 @@ class AgentLoop:
                         self._log(f"🔧 白板: 执行 {fn_name}(...)")
                         tool_result = self.tools.execute(tc)
                         safe_output = str(tool_result.get("output", "(无输出)"))
+                        # ── Microcompact ──
+                        if ToolResultStore.should_compact(safe_output):
+                            meta = self.tool_result_store.store(fn_name, safe_output)
+                            context_output = meta["compact"]
+                            self._log(f"📦 Microcompact 白板: {fn_name} 结果 {len(safe_output)} chars → 磁盘")
+                        else:
+                            context_output = safe_output
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tc["id"],
-                            "content": safe_output,
+                            "content": context_output,
                         })
                     break
 
@@ -1291,10 +1311,17 @@ class AgentLoop:
                     tool_result = self.tools.execute(tc)
 
                     safe_output = str(tool_result.get("output", "(无输出)"))
+                    # ── Microcompact ──
+                    if ToolResultStore.should_compact(safe_output):
+                        meta = self.tool_result_store.store(fn_name, safe_output)
+                        context_output = meta["compact"]
+                        self._log(f"📦 Microcompact 白板: {fn_name} 结果 {len(safe_output)} chars → 磁盘")
+                    else:
+                        context_output = safe_output
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
-                        "content": safe_output,
+                        "content": context_output,
                     })
                     self.sessions.append_message(self.current_session_id, "tool",
                                                  safe_output[:500])
