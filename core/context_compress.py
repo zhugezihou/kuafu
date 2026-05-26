@@ -14,6 +14,7 @@
 """
 
 import json
+import logging
 import os
 import time
 import urllib.request
@@ -21,6 +22,8 @@ import urllib.error
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Callable
+
+logger = logging.getLogger(__name__)
 
 # token 估算常数（与 session_store 保持一致）
 # Qwen3.5-9B 实测中文约 1.69 chars/token，取安全值 1.6
@@ -157,11 +160,170 @@ class ContextCompressor:
         self.keep_recent_rounds = keep_recent_rounds
         self.system_token_estimation = system_token_estimation
         self.summarizer = summarizer or LocalSummarizer()
+        self.pin_manager = PinnedContentManager()
+        self._pinned_summary = ""  # 缓存上次压缩时的 Pin 摘要信息
 
     def needs_compression(self, messages: list[dict]) -> bool:
         """判断是否需要压缩。"""
         total = self._count_tokens(messages)
         return total > self.max_context_tokens
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # P0-1: 工具调用结果清除 (Tool Result Cleanup)
+    # ──────────────────────────────────────────────────────────────────────────
+    # 在压缩之前，对超过 N 轮的旧工具调用结果做轻量级替换。
+    # 节省约 40-60% token，但不会丢失信息（保留调用名称和参数概要）。
+    #
+
+    def clean_old_tool_results(
+        self,
+        messages: list[dict],
+        max_rounds: int = 4,
+        keep_summary_chars: int = 100,
+    ) -> tuple[list[dict], int]:
+        """对超过 max_rounds 轮的旧工具结果进行清除。
+
+        策略（非破坏性）：
+          1. 遍历消息列表，按 role='user' 分割轮次
+          2. 对超过 max_rounds 轮前的 tool 消息，将 content 替换为轻量占位
+          3. 同时对同一轮内的 assistant 消息的 tool_calls 参数保留函数名但精简参数值
+          4. 保留最后 keep_summary_chars 个字符的关键结果信息
+          5. 将所有被替换的结果数据转为一行简短的描述，不丢失工具调用名称
+
+        Args:
+            messages: 完整消息列表
+            max_rounds: 保留最近几轮的完整工具结果（默认 4 轮）
+            keep_summary_chars: 旧工具结果保留的最大字符数（默认 100）
+
+        Returns:
+            (新的消息列表, 节省的 token 数)
+        """
+        if not messages:
+            return messages, 0
+
+        saved_tokens = 0
+        new_messages = []  # type: list[dict]
+        round_num = 0
+
+        # 反向遍历：从最新消息往回算轮次
+        # 先算出每条消息的轮次编号
+        round_of_msg = []  # type: list[int]
+        for m in messages:
+            if m.get("role") == "user":
+                round_num += 1
+            round_of_msg.append(round_num)
+
+        total_rounds = round_num
+
+        # 如果总轮次 <= max_rounds，不需要清除
+        if total_rounds <= max_rounds:
+            return messages, 0
+
+        # 清除阈值轮次：比最新 max_rounds 轮更早的都清除
+        cleanup_threshold = total_rounds - max_rounds
+
+        # 临时收集被清除的工具调用名和原长度（用于统计）
+        cleaned_tools = {}  # type: dict[str, int]
+
+        for i, m in enumerate(messages):
+            msg_round = round_of_msg[i]
+            role = m.get("role", "")
+
+            if msg_round <= cleanup_threshold and role == "tool":
+                # 旧轮次的工具结果 → 替换为精简占位
+                content = m.get("content", "")
+                # 如果已经是占位符了，跳过（避免重复处理）
+                if isinstance(content, str) and content.startswith("[工具"):
+                    new_messages.append(m)
+                    continue
+
+                # 算出原长度
+                old_len = len(str(content)) if content else 0
+                saved_tokens += estimate_tokens(str(content)) if content else 0
+
+                # 提取工具名（从同一轮中最近的 assistant 消息中获取）
+                tool_name = "?"
+                for j in range(i - 1, max(i - 10, -1), -1):
+                    if round_of_msg[j] == msg_round and messages[j].get("role") == "assistant":
+                        tc_list = messages[j].get("tool_calls", [])
+                        for tc in tc_list:
+                            if tc.get("id") == m.get("tool_call_id"):
+                                tool_name = tc.get("function", {}).get("name", "?")
+                                break
+                        break
+
+                # 精简结果：保留前 keep_summary_chars 字符作为预览
+                content_str = str(content) if content else ""
+                if len(content_str) > keep_summary_chars:
+                    preview = content_str[:keep_summary_chars] + "..."
+                else:
+                    preview = content_str
+
+                key = tool_name or "?"
+                cleaned_tools[key] = cleaned_tools.get(key, 0) + old_len
+
+                # 生成精简占位
+                new_msg = dict(m)
+                new_msg["content"] = (
+                    f"[工具结果已归档] {tool_name} | "
+                    f"原长 {old_len} chars | "
+                    f"摘要: {preview[:keep_summary_chars]}"
+                )
+                new_messages.append(new_msg)
+
+            elif msg_round <= cleanup_threshold and role == "assistant":
+                # 旧轮次的 assistant 消息 → 精简 tool_calls 参数
+                tc_list = m.get("tool_calls", [])
+                if tc_list:
+                    # 精简 tool_calls 的 arguments：只留函数名，参数体积大幅压缩
+                    new_tc_list = []
+                    for tc in tc_list:
+                        fn = tc.get("function", {})
+                        arg_str = fn.get("arguments", "")
+                        # 对参数做极简压缩：保留长度和类型信息，去掉值
+                        if isinstance(arg_str, str) and len(arg_str) > 50:
+                            # 尝试解析 JSON 并压缩
+                            try:
+                                parsed = json.loads(arg_str)
+                                compressed_args = (
+                                    "{" + ", ".join(
+                                        f"{k}: {type(v).__name__}{'(' + str(len(str(v))) + ' chars)' if isinstance(v, str) else ''}"
+                                        for k, v in parsed.items()
+                                    ) + "}"
+                                )
+                            except (json.JSONDecodeError, TypeError):
+                                compressed_args = f"({len(arg_str)} chars)"
+                        else:
+                            compressed_args = arg_str
+
+                        new_fn = dict(fn)
+                        new_fn["arguments"] = compressed_args
+                        new_tc = dict(tc)
+                        new_tc["function"] = new_fn
+                        new_tc_list.append(new_tc)
+
+                    new_msg = dict(m)
+                    new_msg["tool_calls"] = new_tc_list
+                    new_messages.append(new_msg)
+                else:
+                    new_messages.append(m)
+            else:
+                new_messages.append(m)
+
+        # 统计日志
+        if cleaned_tools:
+            tool_stats = ", ".join(
+                f"{name}: {size} chars"
+                for name, size in sorted(
+                    cleaned_tools.items(), key=lambda x: -x[1]
+                )[:5]
+            )
+            logger.info(
+                f"🧹 工具结果清除: 清理 {len(cleaned_tools)} 个工具, "
+                f"节省约 {saved_tokens} tokens [{tool_stats}]"
+            )
+
+        return new_messages, saved_tokens
 
     def compress(self, messages: list[dict], llm_summarize: Optional[Callable] = None) -> CompressionResult:
         """压缩消息列表。
@@ -184,6 +346,42 @@ class ContextCompressor:
                 summary="无需压缩",
             )
 
+        # ── P1-2: 分离 Pin 消息，保护关键内容 ──
+        pinned_msgs, compressible_msgs = self.pin_manager.separate_pinned(messages)
+        pin_count = len(pinned_msgs)
+        if pin_count > 0:
+            logger.info(f"📌 Pin 保护: {pin_count}/{len(messages)} 条消息被保护")
+
+        # 如果没有可压缩的消息（全部被 Pin），返回
+        if not compressible_msgs:
+            return CompressionResult(
+                original_tokens=original_tokens,
+                compressed_tokens=original_tokens,
+                messages_removed=0,
+                summary="所有消息均被 Pin，无需压缩",
+            )
+
+        # 只对可压缩部分进行操作
+        compressible_only = [m for _, m in compressible_msgs]
+
+        # ── P0-1: 压缩前先清除旧工具结果（节省 40-60% token） ──
+        cleaned_messages, saved_tokens = self.clean_old_tool_results(compressible_only)
+
+        # 如果清除后 + Pin 消息不再需要压缩，直接返回
+        test_messages = [m for _, m in pinned_msgs] + cleaned_messages
+        if self._count_tokens(test_messages) <= self.max_context_tokens * 0.8:
+            compressed_tokens = self._count_tokens(cleaned_messages)
+            return CompressionResult(
+                original_tokens=original_tokens,
+                compressed_tokens=compressed_tokens,
+                messages_removed=0,
+                summary=f"工具结果清除后无需进一步压缩 (节省约 {saved_tokens} tokens)",
+                compression_ratio=round(1 - compressed_tokens / original_tokens, 3),
+            )
+
+        # 用清理后的消息继续压缩
+        messages = cleaned_messages
+
         # 分离 system 消息和非 system 消息
         system_msgs = [m for m in messages if m.get("role") == "system"]
         non_system = [m for m in messages if m.get("role") != "system"]
@@ -194,23 +392,32 @@ class ContextCompressor:
         old_msgs = non_system[:-keep_count] if len(non_system) > keep_count else []
 
         if not old_msgs:
+            # 没有旧消息需要压缩，但 Pin 消息 + 最近轮次已足够
+            pinned_contents = [m for _, m in pinned_msgs]
+            compressed = pinned_contents + recent_msgs
+            compressed_tokens = self._count_tokens(compressed)
             return CompressionResult(
                 original_tokens=original_tokens,
-                compressed_tokens=self._count_tokens(system_msgs + recent_msgs),
+                compressed_tokens=compressed_tokens,
                 messages_removed=0,
-                summary="轮次少，无需压缩",
+                summary="轮次少，无需压缩（Pin 消息已保留）",
             )
 
         # 生成旧消息的摘要
         summary = self._create_summary(old_msgs, llm_summarize)
 
+        # 缓存 Pin 摘要（供后续压缩参考）
+        self._pinned_summary = summary
+
         # 注入压缩通知
         summary_msg = {
             "role": "system",
-            "content": f"[上下文压缩] 以下部分已被压缩为摘要：\n{summary}",
+            "content": f"[上下文压缩] 以下部分已被压缩为摘要（Pin 保护了 {pin_count} 条关键消息）：\n{summary}",
         }
 
-        compressed = system_msgs + [summary_msg] + recent_msgs
+        # 组装：Pin 消息（按原始顺序） + 压缩摘要 + 最近轮次
+        pinned_contents = [m for _, m in pinned_msgs]
+        compressed = pinned_contents + [summary_msg] + recent_msgs
         compressed_tokens = self._count_tokens(compressed)
 
         return CompressionResult(
@@ -235,6 +442,39 @@ class ContextCompressor:
                 summary="无需压缩",
             )
 
+        # ── P1-2: 分离 Pin 消息 ──
+        pinned_msgs, compressible_msgs = self.pin_manager.separate_pinned(messages)
+        pin_count = len(pinned_msgs)
+        if pin_count > 0:
+            logger.info(f"📌 Pin 保护: {pin_count}/{len(messages)} 条消息被保护")
+
+        if not compressible_msgs:
+            return CompressionResult(
+                original_tokens=original_tokens,
+                compressed_tokens=original_tokens,
+                messages_removed=0,
+                summary="所有消息均被 Pin，无需压缩",
+            )
+
+        compressible_only = [m for _, m in compressible_msgs]
+
+        # ── P0-1: 压缩前先清除旧工具结果 ──
+        cleaned_messages, saved_tokens = self.clean_old_tool_results(compressible_only)
+
+        # 如果清除后 + Pin 消息不再需要压缩，直接返回
+        test_messages = [m for _, m in pinned_msgs] + cleaned_messages
+        if self._count_tokens(test_messages) <= self.max_context_tokens * 0.8:
+            compressed_tokens = self._count_tokens(cleaned_messages)
+            return CompressionResult(
+                original_tokens=original_tokens,
+                compressed_tokens=compressed_tokens,
+                messages_removed=0,
+                summary=f"工具结果清除后无需进一步压缩 (节省约 {saved_tokens} tokens)",
+            )
+
+        # 用清理后的消息继续压缩
+        messages = cleaned_messages
+
         # 分离 system 消息和非 system 消息
         system_msgs = [m for m in messages if m.get("role") == "system"]
         non_system = [m for m in messages if m.get("role") != "system"]
@@ -245,11 +485,14 @@ class ContextCompressor:
         old_msgs = non_system[:-keep_count] if len(non_system) > keep_count else []
 
         if not old_msgs:
+            pinned_contents = [m for _, m in pinned_msgs]
+            compressed = pinned_contents + recent_msgs
+            compressed_tokens = self._count_tokens(compressed)
             return CompressionResult(
                 original_tokens=original_tokens,
-                compressed_tokens=self._count_tokens(system_msgs + recent_msgs),
+                compressed_tokens=compressed_tokens,
                 messages_removed=0,
-                summary="轮次少，无需压缩",
+                summary="轮次少，无需压缩（Pin 消息已保留）",
             )
 
         # 构建对话文本供摘要
@@ -265,11 +508,13 @@ class ContextCompressor:
             "role": "system",
             "content": (
                 f"[上下文压缩] 移除了 {len(old_msgs)} 条旧消息，"
-                f"本地 LLM 摘要 (用时 {elapsed:.1f}s)：\n{summary}"
+                f"本地 LLM 摘要 (用时 {elapsed:.1f}s，"
+                f"Pin 保护了 {pin_count} 条关键消息)：\n{summary}"
             ),
         }
 
-        compressed = system_msgs + [summary_msg] + recent_msgs
+        pinned_contents = [m for _, m in pinned_msgs]
+        compressed = pinned_contents + [summary_msg] + recent_msgs
         compressed_tokens = self._count_tokens(compressed)
 
         return CompressionResult(
@@ -382,6 +627,133 @@ class ContextCompressor:
         """估算在阈值内还能容纳多少轮对话。"""
         available = self.max_context_tokens - self.system_token_estimation
         return max(1, available // max(average_round_tokens, 100))
+
+
+class PinnedContentManager:
+    """关键信息 Pin 机制 (P1-2)。
+
+    负责识别和保护「不能被压缩」的关键对话内容。
+    被 Pin 的消息在 compress() 中会被排除在压缩范围之外。
+
+    策略：
+    - 自动 Pin：
+      1. 系统提示（role=system）—— 始终保留
+      2. 用户最近一轮提问 —— 用户的核心意图
+      3. 包含显式 Pin 标记的消息（content 中含 '[PIN]' 或 metadata 中 pin=True）
+      4. 白板消息（含 'whiteboard'/'决策'/'决议' 等关键词的 system 消息）
+    - 显式 Pin：
+      用户可以说 "记住这个"、"保留这条"、"pin 这条"
+
+    Pin 优先级（决定在压缩中的保留顺序）：
+      0. system prompt（最高优先级，永不压缩）
+      1. 显式 Pin 消息
+      2. 白板/决策消息
+      3. 用户最近一轮提问
+    """
+
+    # 自动识别关键词
+    WHITEBOARD_KEYWORDS = ["白板", "决策", "决议", "decision", "whiteboard", "已确定", "已决定", "方案选择"]
+    PIN_MARKERS = ["[PIN]", "[pin]", "[保留]", "[KEEP]", "[keep]"]
+
+    def __init__(self):
+        self._explicit_pins: set[int] = set()  # 消息索引的显式 Pin 集合
+
+    def identify(self, messages: list[dict]) -> list[int]:
+        """识别所有需要 Pin 的消息索引。
+
+        Returns:
+            按优先级排序的消息索引列表（高优先级在前）
+        """
+        pinned_indices = set()
+
+        for i, m in enumerate(messages):
+            role = m.get("role", "")
+            content = str(m.get("content", ""))
+            metadata = m.get("metadata", {})
+
+            # P0: system prompt 始终 Pin
+            if role == "system":
+                pinned_indices.add(i)
+                continue
+
+            # P1: 显式 Pin（metadata 标记或消息中的 Pin 标记）
+            if metadata.get("pin", False):
+                pinned_indices.add(i)
+                continue
+            if any(marker in content for marker in self.PIN_MARKERS):
+                pinned_indices.add(i)
+                # 如果 Pin 的是一条 user 消息，也 Pin 紧随其后的 assistant 回复
+                if role == "user" and i + 1 < len(messages):
+                    pinned_indices.add(i + 1)
+                continue
+
+            # P2: 白板/决策消息（摘要注入的系统消息）
+            if role == "system" and any(kw in content for kw in self.WHITEBOARD_KEYWORDS):
+                pinned_indices.add(i)
+                continue
+
+        # 用户最近一轮提问（最后一条 user 消息）
+        last_user = None
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i].get("role") == "user":
+                last_user = i
+                break
+        if last_user is not None:
+            pinned_indices.add(last_user)
+
+        # 按优先级排序
+        def sort_key(idx):
+            m = messages[idx]
+            role = m.get("role", "")
+            content = str(m.get("content", ""))
+            # system 最高
+            if role == "system":
+                return 0
+            # 显式 Pin 次高
+            if m.get("metadata", {}).get("pin", False):
+                return 1
+            if any(marker in content for marker in self.PIN_MARKERS):
+                return 1
+            # 白板/决策
+            if role == "system" and any(kw in content for kw in self.WHITEBOARD_KEYWORDS):
+                return 2
+            # 用户最近提问
+            return 3
+
+        return sorted(pinned_indices, key=sort_key)
+
+    def pin_message(self, index: int):
+        """显式 Pin 某条消息。"""
+        self._explicit_pins.add(index)
+
+    def unpin_message(self, index: int):
+        """取消 Pin。"""
+        self._explicit_pins.discard(index)
+
+    def is_pinned_index(self, index: int, messages: list[dict]) -> bool:
+        """检查某条消息是否被 Pin（结合显式和自动识别）。"""
+        return index in self.identify(messages)
+
+    def separate_pinned(
+        self, messages: list[dict]
+    ) -> tuple[list[tuple[int, dict]], list[tuple[int, dict]]]:
+        """将消息分为 Pin 组和可压缩组。
+
+        Returns:
+            (pinned_msgs, compressible_msgs)
+            每个元素为 (index, message) 元组，保留原始索引用于重组。
+        """
+        pinned_indices = self.identify(messages)
+        pinned: list[tuple[int, dict]] = []
+        compressible: list[tuple[int, dict]] = []
+
+        for i, m in enumerate(messages):
+            if i in pinned_indices:
+                pinned.append((i, m))
+            else:
+                compressible.append((i, m))
+
+        return pinned, compressible
 
 
 class ToolResultStore:

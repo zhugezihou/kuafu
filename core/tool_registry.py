@@ -40,29 +40,32 @@ ToolHandler = Callable[[dict], dict]
 class ToolRegistry:
     """工具注册中心。管理所有可用工具的定义和执行。
 
-    核心设计：
-    - 核心工具（~10 个）：终端、文件读写、搜索、finish 等 — 始终暴露给 LLM
-    - 延迟加载工具（deferred）：搜索引擎、MCP、GitHub 等 — 通过 ToolSearch 元工具发现后动态注入
-    - 注入工具（injected）：ToolSearch 匹配后临时注入到下一轮 LLM 调用的工具
+    三级工具架构：
+    - 核心工具（core）：如 terminal、finish — 始终以全量 schema 暴露给 LLM
+    - 紧凑工具（compact）：如 read_file、write_file、patch 等 — 仅名称+描述在提示词中，
+      不占用 tools 参数；当 LLM 首次调用时自动提升为全量 schema 并注入
+    - 延迟工具（deferred）：如 web_search、github — 通过 ToolSearch 元工具发现后注入
     """
 
     def __init__(self):
         self._schemas: list[dict] = []     # 核心工具 schema（始终对 LLM 可见）
-        self._handlers: dict[str, ToolHandler] = {}  # 所有工具的 handler（core + deferred）
+        self._handlers: dict[str, ToolHandler] = {}  # 所有工具的 handler（core + compact + deferred）
+        self._compact: list[dict] = []     # 紧凑工具完整 schema（不暴露给 LLM，调用时自动提升）
         self._deferred: list[dict] = []     # 延迟加载工具定义（含 keywords 用于搜索）
-        self._injected_tools: list[dict] = []  # 当前 session 已通过 ToolSearch 激活的延迟工具
+        self._injected_tools: list[dict] = []  # 当前 session 已注入的完整 schema（compact 提升 + 延迟发现）
         self._register_core_tools()
 
     # ── 注册 API ───────────────────────────────────────────────────
 
     def register(self, name: str, schema: dict, handler: ToolHandler):
-        """注册核心工具（始终对 LLM 可见）。
+        """注册核心工具（始终以全量 schema 对 LLM 可见）。
 
-        与 register_deferred() 的区别：
-        - register() 的工具会出现在 get_schemas() 中，LLM 永远能看到
-        - register_deferred() 的工具藏在延迟池里，通过 ToolSearch 发现后注入
+        这三个注册方式的区别：
+        - register() 全量 schema 始终出现在 tools 参数中，LLM 每轮都看到
+        - register_compact() 仅名称+描述出现在提示词中，首次调用后自动提升
+        - register_deferred() 完全隐藏，通过 ToolSearch 发现后注入
         """
-        # 移除已存在的同名工具
+        # 移除已存在的同名工具（所有池）
         self._schemas = [s for s in self._schemas if s["function"]["name"] != name]
         self._deferred = [s for s in self._deferred if s["function"]["name"] != name]
         self._injected_tools = [s for s in self._injected_tools
@@ -110,15 +113,51 @@ class ToolRegistry:
         })
         self._handlers[name] = handler
 
+    def register_compact(self, name: str, schema: dict, handler: ToolHandler):
+        """注册一个紧凑工具。
+
+        紧凑工具不会占用 LLM 调用的 tools 参数（节省 token）。
+        其名称和一行描述会出现在 system prompt 中。
+        当 LLM 首次调用该工具时，系统自动注入其完整 schema（self-promote）。
+
+        Args:
+            name: 工具名
+            schema: OpenAI Function Call 格式完整 schema
+            handler: 处理函数
+        """
+        # 从所有池中移除
+        self._schemas = [s for s in self._schemas if s["function"]["name"] != name]
+        self._injected_tools = [s for s in self._injected_tools
+                                if s["function"]["name"] != name]
+        self._deferred = [s for s in self._deferred
+                          if s["schema"]["function"]["name"] != name]
+
+        full_schema = {
+            "type": "function",
+            "function": {
+                "name": name,
+                **schema,
+            },
+        }
+        self._compact.append(full_schema)
+        self._handlers[name] = handler
+
     def unregister(self, name: str) -> bool:
         """注销一个工具。"""
-        old_count = len(self._schemas)
+        old_count = len(self._schemas) + len(self._compact) + len(self._injected_tools)
         self._schemas = [s for s in self._schemas if s["function"]["name"] != name]
+        self._compact = [s for s in self._compact if s["function"]["name"] != name]
+        self._injected_tools = [s for s in self._injected_tools
+                                if s["function"]["name"] != name]
         self._handlers.pop(name, None)
-        return len(self._schemas) < old_count
+        return (len(self._schemas) + len(self._compact) + len(self._injected_tools)) < old_count
 
     def get_schemas(self) -> list[dict]:
-        """获取所有对 LLM 可见的工具 schema（核心工具 + 已通过 ToolSearch 注入的工具）。"""
+        """获取所有对 LLM 可见的工具 schema。
+
+        只包含：核心工具（始终全量）+ 已注入工具（compact 提升 + ToolSearch 延迟发现）。
+        紧凑工具不在此列——它们在 system prompt 中只有一行描述。
+        """
         core = list(self._schemas)
         injected = list(self._injected_tools)
         return core + injected
@@ -128,6 +167,29 @@ class ToolRegistry:
         names = [s["function"]["name"] for s in self._schemas]
         names += [s["function"]["name"] for s in self._injected_tools]
         return names
+
+    def get_compact_tools_description(self) -> list[tuple[str, str]]:
+        """获取紧凑工具的名称和描述列表（用于 system prompt 文本描述）。
+
+        Returns:
+            [(name, description), ...]
+        """
+        return [(s["function"]["name"], s["function"].get("description", ""))
+                for s in self._compact]
+
+    def _promote_compact_tool(self, name: str) -> bool:
+        """将紧凑工具提升为注入工具（首次调用后自动触发）。
+
+        返回 True 如果是首次提升（compact → injected）。
+        """
+        for s in self._compact:
+            if s["function"]["name"] == name:
+                # 检查是否已注入
+                if any(t["function"]["name"] == name for t in self._injected_tools):
+                    return False
+                self._injected_tools.append(s)
+                return True
+        return False
 
     def inject_tool(self, name: str) -> bool:
         """将一个延迟加载工具注入到当前 session 的可见工具列表中。
@@ -243,6 +305,9 @@ class ToolRegistry:
         if fn_name not in self._handlers:
             return {"success": False, "output": f"未知工具: {fn_name}"}
 
+        # 紧凑工具自动提升：首次调用时注入完整 schema（下轮 LLM 调用就能看到参数）
+        promoted = self._promote_compact_tool(fn_name)
+
         try:
             result = self._handlers[fn_name](args)
             # 保证返回格式
@@ -265,22 +330,24 @@ class ToolRegistry:
     # ── 核心工具注册 ──────────────────────────────────────────────
 
     def _register_core_tools(self):
-        """注册夸父的核心工具集 + 延迟加载工具。"""
-        # ── 核心工具（始终对 LLM 可见） ──
+        """注册夸父的核心工具集 + 紧凑工具 + 延迟加载工具。"""
+        # ── L0 核心工具（始终全量 schema 对 LLM 可见）──
         self.register("terminal", self._term_schema(), self._handle_terminal)
-        self.register("read_file", self._read_schema(), self._handle_read_file)
-        self.register("write_file", self._write_schema(), self._handle_write_file)
-        self.register("patch", self._patch_schema(), self._handle_patch)
-        self.register("search_files", self._search_schema(), self._handle_search_files)
         self.register("finish", self._finish_schema(), self._handle_finish)
 
+        # ── L1 紧凑工具（仅名称+描述在提示词中，首次调用后自动提升）──
+        self.register_compact("read_file", self._read_schema(), self._handle_read_file)
+        self.register_compact("write_file", self._write_schema(), self._handle_write_file)
+        self.register_compact("patch", self._patch_schema(), self._handle_patch)
+        self.register_compact("search_files", self._search_schema(), self._handle_search_files)
+
         # 白板模式工具
-        self.register("finish_step", self._finish_step_schema(), self._handle_finish_step)
-        self.register("whiteboard_read", self._whiteboard_read_schema(), self._handle_whiteboard_read)
-        self.register("whiteboard_write", self._whiteboard_write_schema(), self._handle_whiteboard_write)
+        self.register_compact("finish_step", self._finish_step_schema(), self._handle_finish_step)
+        self.register_compact("whiteboard_read", self._whiteboard_read_schema(), self._handle_whiteboard_read)
+        self.register_compact("whiteboard_write", self._whiteboard_write_schema(), self._handle_whiteboard_write)
 
         # Microcompact: 读取已存储的工具完整结果
-        self.register("read_tool_result", self._read_tool_result_schema(), self._handle_read_tool_result)
+        self.register_compact("read_tool_result", self._read_tool_result_schema(), self._handle_read_tool_result)
 
         # ── 元工具 ──
         # ToolSearch: LLM 通过它发现延迟加载工具

@@ -289,6 +289,7 @@ class AgentLoop:
         )
 
         # 3. 工具说明
+        # L0 核心工具（始终全量 schema 对 LLM 可见）
         core_tools = []
         for tool_def in self.tools.get_schemas()[:10]:
             fn = tool_def["function"]
@@ -297,11 +298,20 @@ class AgentLoop:
             desc = fn["description"].split("。")[0]
             core_tools.append(f"- {fn['name']}: {desc}")
 
-        tools_content = "你的工具分为两类：\n\n"
-        tools_content += "### 核心工具（始终可用）\n"
-        tools_content += "以下工具随时可用，直接通过 function_call 调用：\n"
+        # L1 紧凑工具（仅提示词中描述，无 schema 参数，首次调用后自动提升）
+        compact_tools = []
+        for name, desc in self.tools.get_compact_tools_description():
+            short_desc = desc.split("。")[0]
+            compact_tools.append(f"- {name}: {short_desc}")
+
+        tools_content = "## 可用工具\n\n"
+        tools_content += "### 核心工具（总是可用，直接 function_call 调用）\n"
         tools_content += "\n".join(core_tools) + "\n\n"
-        tools_content += "### 隐藏工具（需要主动发现）\n"
+        if compact_tools:
+            tools_content += "### 常用工具（仅名称和用途说明，无参数描述）\n"
+            tools_content += "以下工具可直接调用——首次调用时系统会自动补充参数信息：\n"
+            tools_content += "\n".join(compact_tools) + "\n\n"
+        tools_content += "### 隐藏工具（需要先发现）\n"
         tools_content += "需要搜索网页、抓取内容等额外功能时，使用 tool_search 元工具：\n\n"
         tools_content += "1. 调用 tool_search(query=...) 搜索想要的工具\n"
         tools_content += "2. 系统匹配并激活最相关的隐藏工具\n"
