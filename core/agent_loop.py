@@ -991,14 +991,6 @@ class AgentLoop:
                         perm = pretooluse_check(fn_name, args_dict,
                                                  {"task": task[:200], "turn": turn_count})
 
-                        # 触发权限审批通知（terminal_prompt 也同时推飞书，让中台用户可见）
-                        # terminal_prompt 返回后已处理完毕（阻塞等待），但用户可能看不到终端输出
-                        if self.on_approval_request and perm["approach"] == "terminal_prompt":
-                            try:
-                                self.on_approval_request(fn_name, args_dict, "terminal")
-                            except Exception as e:
-                                self._log(f"⚠️ 审批通知推送失败: {e}")
-
                         # 触发 on_permission_check 钩子
                         if self.hooks_enabled:
                             trigger_async("on_permission_check", {
@@ -1018,7 +1010,7 @@ class AgentLoop:
 
                             self._log(msg)
 
-                            # 触发审批通知回调（如飞书推送）——包含 terminal_prompt 和 pending_approval
+                            # 触发审批通知回调（如飞书推送）
                             if self.on_approval_request and perm["approach"] == "pending_approval":
                                 try:
                                     self.on_approval_request(fn_name, args_dict, perm.get("req_id", "?"))
