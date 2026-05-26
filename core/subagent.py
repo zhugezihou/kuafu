@@ -17,6 +17,7 @@ import yaml
 import logging
 import uuid
 import subprocess
+import threading
 from pathlib import Path
 from typing import Optional, Any
 from dataclasses import dataclass, field
@@ -273,16 +274,28 @@ def handle_delegate(args: dict) -> dict:
         except Exception as e:
             logger.warning(f"⚠️ 记忆注入失败: {e}")
 
-    # 检查并发上限
+    # 检查并发上限——排队等待模式
     global _active_subagents
-    with _delegate_lock:
-        if _active_subagents >= MAX_CONCURRENT:
+    _queue_waited = 0
+    while True:
+        with _delegate_lock:
+            if _active_subagents < MAX_CONCURRENT:
+                _active_subagents += 1
+                break
+        # 并发满：等待并提示
+        _queue_waited += 1
+        if _queue_waited == 1:
+            logger.info(f"⏳ 并发子 Agent 已满（{_active_subagents}/{MAX_CONCURRENT}），排队等待中...")
+        elif _queue_waited % 6 == 0:  # 每 60 秒提示一次
+            logger.info(f"⏳ 仍在等待子 Agent 插槽（已等待 {_queue_waited * 10} 秒）")
+        if _queue_waited > 60:  # 最长等 600 秒（10 分钟）
             _cleanup_worktree(worktree_path, worktree_branch)
+            logger.warning(f"⚠️ 等待子 Agent 插槽超时（{_queue_waited * 10} 秒），放弃委派")
             return {
                 "success": False,
-                "output": f"已达到最大并发子 Agent 数 ({MAX_CONCURRENT})，请等待当前子 Agent 完成后重试",
+                "output": f"等待子 Agent 插槽超时（{_queue_waited * 10} 秒），当前并发 {_active_subagents}/{MAX_CONCURRENT}，请稍后重试",
             }
-        _active_subagents += 1
+        time.sleep(10)
 
     try:
         # ── P2-1: 侧链隔离 — 创建独立会话转录文件 ──
@@ -327,7 +340,25 @@ def handle_delegate(args: dict) -> dict:
         prompt = "\n\n".join(prompt_parts)
 
         start = time.time()
-        result = sub_loop.run(prompt)
+        # ⏳ 心跳日志：子 Agent 执行期间每 10 秒输出一次进度
+        _heartbeat_stop = threading.Event()
+
+        def _heartbeat_log():
+            tick = 0
+            while not _heartbeat_stop.wait(10):
+                tick += 1
+                elapsed = time.time() - start
+                logger.info(f"⏳ 子 Agent 执行中...（已等待 {elapsed:.0f} 秒）")
+
+        _hb_thread = threading.Thread(target=_heartbeat_log, daemon=True)
+        _hb_thread.start()
+
+        try:
+            result = sub_loop.run(prompt)
+        finally:
+            _heartbeat_stop.set()
+            _hb_thread.join(timeout=2)
+
         duration = round(time.time() - start, 2)
         task_id = f"sub_{int(start * 1000)}"
 

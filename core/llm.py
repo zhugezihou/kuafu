@@ -16,6 +16,7 @@ import json
 import os
 import time
 import re
+import threading
 from pathlib import Path
 from typing import Optional
 import urllib.request
@@ -148,9 +149,31 @@ class LLMClient:
                     method="POST",
                 )
 
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                    raw = resp.read()
-                    result = json.loads(raw.decode("utf-8", errors="replace"))
+                # ⏳ 长等待日志：单次请求超过 30 秒时输出进度
+                _req_start = time.time()
+                _logged = False
+
+                def _long_wait_log():
+                    nonlocal _logged
+                    while True:
+                        elapsed = time.time() - _req_start
+                        if elapsed >= 30 and not _logged:
+                            _logged = True
+                            logger.info(f"⏳ LLM API 请求已等待 {elapsed:.0f} 秒（timeout={self.timeout}）")
+                        time.sleep(10)
+
+                _lw_thread = threading.Thread(target=_long_wait_log, daemon=True)
+                _lw_thread.start()
+
+                try:
+                    with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                        raw = resp.read()
+                finally:
+                    if _logged:
+                        logger.info(f"⏳ LLM API 请求完成（耗时 {time.time() - _req_start:.1f} 秒）")
+                    _req_start = None  # 标记监控线程退出
+
+                result = json.loads(raw.decode("utf-8", errors="replace"))
 
                 choice = result.get("choices", [{}])[0]
                 message = choice.get("message", {})

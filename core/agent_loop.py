@@ -11,6 +11,7 @@
 
 import json
 import time
+import threading
 from pathlib import Path
 from typing import Optional, Callable
 
@@ -759,18 +760,50 @@ class AgentLoop:
         messages.append({"role": "system", "content": system_prompt})
 
         # ── 复杂 skill 预处理：检测并委派子 Agent ──
-        complex_delegation_result = self._try_delegate_complex_skills(task)
-        if complex_delegation_result:
-            self._log(f"🧩 复杂 skill 委派完成：{complex_delegation_result['summary'][:100]}")
-            # 将委派结果注入 user message，让 LLM 知晓并继续执行
-            delegation_note = (
-                f"[子任务执行结果]\n"
-                f"以下子任务已由独立的子 Agent 自动完成：\n"
-                f"{complex_delegation_result['summary']}\n\n"
-                f"请基于此结果继续执行后续步骤（如有）并完成最终输出。"
-            )
-            messages.append({"role": "user", "content": delegation_note})
-            self.sessions.append_message(self.current_session_id, "user", delegation_note)
+        # P0: 异步委派——后台执行，主 loop 每轮轮询
+        from core.subagent import handle_delegate
+        from core.skill_resolver import (
+            match_skills, resolve_skill_execution, build_delegation_prompt,
+            increment_usage, record_usage,
+        )
+        self._delegation_result = None  # 异步子 Agent 结果
+        self._delegation_thread = None
+
+        matched = match_skills(task)
+        complex_skills = None
+        if matched:
+            _simple, complex_skills = resolve_skill_execution(matched)
+
+        if complex_skills:
+            top_skill = complex_skills[0]
+            self._log(f"🧩 检测到复杂 skill: {top_skill['name']} → 后台委派子 Agent")
+            sub_prompt = build_delegation_prompt(top_skill, task)
+            _skill_name = top_skill['name']
+
+            def _async_delegate():
+                try:
+                    result = handle_delegate({"goal": sub_prompt, "context": ""})
+                    if result.get("success"):
+                        self._log(f"✅ 复杂 skill '{_skill_name}' 委派成功 ({result.get('duration', 0):.1f}s)")
+                        self._delegation_result = {
+                            "skill": _skill_name,
+                            "summary": result.get("summary", "")[:500],
+                            "details": result.get("output", "")[:1000],
+                        }
+                    else:
+                        self._log(f"⚠️ 复杂 skill '{_skill_name}' 委派失败: {result.get('output', '')[:100]}")
+                        self._delegation_result = {"skill": _skill_name, "error": result.get("output", "")[:200]}
+                    increment_usage(_skill_name)
+                    record_usage(_skill_name, task, result.get("success", False), result.get("duration", 0))
+                except Exception as e:
+                    self._log(f"⚠️ 复杂 skill 委派异常: {e}")
+                    self._delegation_result = {"skill": _skill_name, "error": str(e)[:200]}
+
+            self._delegation_thread = threading.Thread(target=_async_delegate, daemon=True)
+            self._delegation_thread.start()
+            self._log("📌 子 Agent 后台运行中，主 Agent 继续执行...结果会在就绪后自动注入")
+        else:
+            self._delegation_result = None
 
         messages.append({"role": "user", "content": task})
         self.sessions.append_message(self.current_session_id, "user", task)
@@ -794,6 +827,29 @@ class AgentLoop:
                         "content": reminders,
                     })
                     self._log(f"💡 System Reminder: {reminders[:80]}...")
+
+            # ── 检查异步子 Agent 结果：主循环中轮询 ──
+            if hasattr(self, '_delegation_thread') and self._delegation_thread and self._delegation_thread.is_alive():
+                self._log("⏳ 子 Agent 仍在执行中，主循环继续执行其他任务...")
+            elif hasattr(self, '_delegation_result') and self._delegation_result and \
+                 not any("[$子任务执行结果]" in (m.get("content") or "") for m in messages):
+                # 子 Agent 已完成且尚未注入结果
+                result = self._delegation_result
+                if "error" not in result:
+                    delegation_note = (
+                        f"[$子任务执行结果] 以下子任务已由独立的子 Agent 自动完成：\n"
+                        f"{result['summary']}\n\n"
+                        f"请基于此结果继续执行后续步骤（如有）并完成最终输出。"
+                    )
+                else:
+                    delegation_note = (
+                        f"[$子任务执行结果] 子 Agent 执行失败：{result['error']}\n"
+                        f"请直接尝试完成原始任务。"
+                    )
+                messages.append({"role": "user", "content": delegation_note})
+                self.sessions.append_message(self.current_session_id, "user", delegation_note)
+                self._log(f"📥 子 Agent 结果已注入（{result.get('skill', 'unknown')}）")
+                self._delegation_result = None  # 避免重复注入
 
             self._log(f"🤔 第 {turn_count}/{self.max_turns} 轮 — LLM 思考中...")
 
