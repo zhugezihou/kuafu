@@ -83,6 +83,9 @@ def load_identity_statement() -> str:
     return "你是夸父（Kuafu），一个自我进化的 AI agent。"
 
 
+_BOOTUP_LOGGED = False  # 模块级 flag：首次初始化的启动日志只打印一次
+
+
 class AgentLoop:
     """Agent 执行循环。
 
@@ -105,6 +108,9 @@ class AgentLoop:
         max_turns: int = 20,
         on_step: Optional[Callable[[str], None]] = None,
     ):
+        global _BOOTUP_LOGGED
+        self._bootup = not _BOOTUP_LOGGED
+        _BOOTUP_LOGGED = True
         self.llm = llm or LLMClient()
         self.memory = memory or MemoryAPI()
         self.evolution = evolution or EvolutionEngine(memory=memory, llm=self.llm)
@@ -174,7 +180,8 @@ class AgentLoop:
         self.hooks_enabled = True
         try:
             init_hooks()
-            self._log("🔌 Hook 事件系统就绪")
+            if self._bootup:
+                self._log("🔌 Hook 事件系统就绪")
         except Exception as e:
             self._log(f"⚠️ Hook 系统初始化失败: {e}")
 
@@ -192,7 +199,8 @@ class AgentLoop:
             from core.subagent import get_delegate_schema, handle_delegate
             schema = get_delegate_schema()
             self.tools.register("delegate_task", schema, handle_delegate)
-            self._log("🧩 子 Agent 系统就绪: delegate_task 工具已注册")
+            if self._bootup:
+                self._log("🧩 子 Agent 系统就绪: delegate_task 工具已注册")
         except Exception as e:
             self._log(f"⚠️ 子 Agent 系统注册失败: {e}")
 
@@ -247,7 +255,8 @@ class AgentLoop:
                 except Exception as e:
                     return {"success": False, "output": f"回滚失败: {e}"}
             self.tools.register("skill_rollback", schema, handler)
-            self._log("↩️ 技能回滚工具已注册: skill_rollback")
+            if self._bootup:
+                self._log("↩️ 技能回滚工具已注册: skill_rollback")
         except Exception as e:
             self._log(f"⚠️ skill_rollback 注册失败: {e}")
 
@@ -267,7 +276,8 @@ class AgentLoop:
                     "description": desc,
                     "parameters": params,
                 }, lambda args, _n=name: mem_api.handle_tool_call(_n, args))
-            self._log(f"🧠 记忆工具就绪: {', '.join(s['name'] for s in schemas)}")
+            if self._bootup:
+                self._log(f"🧠 记忆工具就绪: {', '.join(s['name'] for s in schemas)}")
         except Exception as e:
             self._log(f"⚠️ 记忆工具注册失败: {e}")
 
