@@ -1003,6 +1003,8 @@ class AgentLoop:
                                 msg = f"🛡️ {fn_name} 被 Deny 规则拒绝: {perm['reason']}"
                             elif perm["approach"] == "auto_reject":
                                 msg = f"⛔ {fn_name} 被自动拒绝: {perm['reason']}"
+                            elif perm["approach"] == "terminal_prompt":
+                                msg = f"⛔ 终端审批拒绝: {perm['reason']}"
                             else:
                                 msg = f"🟡 {fn_name} 待审批 (ID: {perm.get('req_id', '?')})"
 

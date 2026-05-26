@@ -31,6 +31,7 @@ core/approval.py — Permission System（审批 + 权限 + Deny 优先规则）
 import json
 import time
 import logging
+import sys
 from pathlib import Path
 from typing import Optional, Any
 from dataclasses import dataclass, asdict
@@ -41,6 +42,20 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 APPROVALS_DIR = ROOT_DIR / "memory" / "approvals"
 DENY_RULES_PATH = ROOT_DIR / "memory" / "deny_rules.json"
 AUTO_MODE_PATH = ROOT_DIR / "memory" / "auto_mode_history.json"
+
+
+def _is_interactive() -> bool:
+    """判断当前是否在交互式终端中运行。"""
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _get_approval_timeout() -> int:
+    """获取审批超时秒数（优先从配置读取，默认 300s）。"""
+    try:
+        from core.config import APPROVAL_TIMEOUT
+        return APPROVAL_TIMEOUT
+    except (ImportError, AttributeError):
+        return 300
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -475,23 +490,41 @@ class ApprovalManager:
         if tool == "terminal":
             title = f"终端: {args.get('command', '')[:60]}"
         detail = json.dumps(args, ensure_ascii=False, indent=2)[:500]
-        req_id = ApprovalManager.submit(
-            title=title,
-            detail=detail,
-            risk=risk,
-            tool=tool,
-            args_snapshot=json.dumps(args, ensure_ascii=False),
-            context_type=f"check_permission_{tool}",
-        )
 
-        return {
-            "allowed": None,  # 待人工决策
-            "reason": f"🟡 需要审批 (ID: {req_id})",
-            "approach": "pending_approval",
-            "rule_id": None,
-            "req_id": req_id,
-            "auto": False,
-        }
+        # 交互终端 → 阻塞等待用户 y/N 决策
+        # 非交互模式（cron/webhook/后台）→ 写审批文件静默等待
+        if _is_interactive():
+            allowed = ApprovalManager.terminal_prompt(
+                title=title,
+                detail=detail,
+                risk=risk,
+                timeout=_get_approval_timeout(),
+            )
+            return {
+                "allowed": allowed,
+                "reason": f"{'✅' if allowed else '⛔'} 终端审批: {title}",
+                "approach": "terminal_prompt",
+                "rule_id": None,
+                "req_id": None,
+                "auto": False,
+            }
+        else:
+            req_id = ApprovalManager.submit(
+                title=title,
+                detail=detail,
+                risk=risk,
+                tool=tool,
+                args_snapshot=json.dumps(args, ensure_ascii=False),
+                context_type=f"check_permission_{tool}",
+            )
+            return {
+                "allowed": None,  # 待人工决策
+                "reason": f"🟡 需要审批 (ID: {req_id})",
+                "approach": "pending_approval",
+                "rule_id": None,
+                "req_id": req_id,
+                "auto": False,
+            }
 
     # ── 提交审批 ──────────────────────────────────────────────────
 
