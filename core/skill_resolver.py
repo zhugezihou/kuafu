@@ -24,6 +24,21 @@ COMPLETION_LOG = ROOT_DIR / "logs" / "skill_usage.jsonl"
 # 技能模板：匹配关键词 → 技能名
 SKILL_TRIGGERS = {}
 
+# ── 复杂技能判定阈值 ──
+COMPLEX_STEP_THRESHOLD = 5
+COMPLEX_TOOL_CATEGORIES = {"terminal", "browser", "web_search", "file", "code"}
+
+
+def _count_tool_categories(steps: list[str]) -> int:
+    """统计步骤中涉及的工具类别数量。"""
+    seen = set()
+    for step in steps:
+        step_lower = step.lower()
+        for cat in COMPLEX_TOOL_CATEGORIES:
+            if cat in step_lower:
+                seen.add(cat)
+    return len(seen)
+
 
 def _load_triggers() -> dict:
     """懒加载技能触发词表。"""
@@ -285,3 +300,103 @@ def increment_usage(skill_name: str):
                 return
         except Exception:
             pass
+
+
+# ── 分层执行：简单 vs 复杂 skill ───────────────────────────────────
+
+
+def is_complex_skill(skill: dict) -> bool:
+    """判断一个 skill 是否需要委派子 Agent 执行。
+
+    判定标准（满足任一即为复杂）：
+    1. 步骤数 >= COMPLEX_STEP_THRESHOLD (5)
+    2. 步骤涉及 >= 3 种工具类别（跨领域）
+    3. 步骤中包含 'delegate'/'委派'/'子任务'/'并行' 等关键词
+    """
+    steps = skill.get("steps", [])
+
+    # 标准1：步骤数 >= 5
+    if len(steps) >= COMPLEX_STEP_THRESHOLD:
+        return True
+
+    # 标准2：跨领域工具 >= 3
+    if _count_tool_categories(steps) >= 3:
+        return True
+
+    # 标准3：包含委派/并行关键词
+    complex_kw = ["delegate", "委派", "子任务", "并行", "子 agent", "sub-agent"]
+    step_text = " ".join(steps).lower()
+    for kw in complex_kw:
+        if kw in step_text:
+            return True
+
+    return False
+
+
+def is_simple_skill(skill: dict) -> bool:
+    """判断一个 skill 是否为简单 skill（可直接由 LLM 执行）。"""
+    return not is_complex_skill(skill)
+
+
+def resolve_skill_execution(matched_skills: list[dict]) -> tuple[list[dict], list[dict]]:
+    """将匹配的 skill 分为简单和复杂两组。
+
+    Args:
+        matched_skills: match_skills() 返回的技能列表
+
+    Returns:
+        (simple_skills: list[dict], complex_skills: list[dict])
+        - simple_skills → 注入 system prompt
+        - complex_skills → 委派子 Agent 执行
+    """
+    simple = []
+    complex_s = []
+
+    for skill in matched_skills:
+        if is_complex_skill(skill):
+            complex_s.append(skill)
+        else:
+            simple.append(skill)
+
+    return simple, complex_s
+
+
+def build_delegation_prompt(skill: dict, user_task: str) -> str:
+    """为复杂 skill 构建委派子 Agent 执行的 prompt。
+
+    Args:
+        skill: 技能的完整信息 dict
+        user_task: 用户原始任务
+
+    Returns:
+        给子 Agent 的完整执行 prompt
+    """
+    parts = [f"## 任务：{user_task}"]
+    parts.append("")
+
+    if skill.get("description"):
+        parts.append(f"### 执行方式（参考技能：{skill['name']}）")
+        parts.append(skill["description"])
+        parts.append("")
+
+    if skill.get("steps"):
+        parts.append("### 步骤指引")
+        for i, step in enumerate(skill["steps"], 1):
+            parts.append(f"{i}. {step}")
+        parts.append("")
+
+    if skill.get("pitfalls"):
+        parts.append("### 注意事项")
+        for pitfall in skill["pitfalls"]:
+            parts.append(f"- ⚠️ {pitfall}")
+        parts.append("")
+
+    if skill.get("quality_rules"):
+        parts.append("### 质量标准")
+        import json as _json
+        parts.append(_json.dumps(skill["quality_rules"], ensure_ascii=False, indent=2))
+
+    parts.append("---")
+    parts.append("完成任务后，请用 finish() 工具返回结果和摘要。")
+
+    return "\n".join(parts)

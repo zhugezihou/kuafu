@@ -315,15 +315,22 @@ class AgentLoop:
                     parts.append(f"  {icon.get(qr['severity'], '⚪')} [{qr['severity']}] {qr['rule']}")
                 parts.append("")
 
-            # 技能匹配 + 注入（完整步骤 + 使用计数）
+            # 技能匹配 + 注入 —— 分层执行：简单→注入prompt，复杂→委派子Agent
+            from core.skill_resolver import (
+                match_skills, resolve_skill_execution, increment_usage
+            )
             matched = match_skills(task)
             if matched:
-                parts.append("## 相关技能")
-                parts.append("以下技能与你当前任务相关：")
-                parts.append("")
-                for skill in matched[:2]:
-                    increment_usage(skill['name'])  # 追踪使用
-                    parts.append(f"### {skill['name']}")
+                simple_skills, complex_skills = resolve_skill_execution(matched)
+
+                # 注入简单技能到 system prompt
+                if simple_skills:
+                    parts.append("## 相关技能")
+                    parts.append("以下技能与你当前任务相关：")
+                    parts.append("")
+                    for skill in simple_skills[:2]:
+                        increment_usage(skill['name'])  # 追踪使用
+                        parts.append(f"### {skill['name']}")
                     if skill.get("description"):
                         parts.append(f"{skill['description']}")
                     if skill.get("steps"):
@@ -393,6 +400,67 @@ class AgentLoop:
         if self.on_step:
             self.on_step(text)
 
+    def _try_delegate_complex_skills(self, task: str) -> Optional[dict]:
+        """检测复杂 skill 并委派子 Agent 执行。
+
+        当任务匹配的 skill 中包含复杂 skill（步骤>=5 或跨领域工具>=3），
+        直接在任务正式执行前委派子 Agent 完成。
+
+        Args:
+            task: 用户任务文本
+
+        Returns:
+            委派结果 dict（包含 summary），若无复杂 skill 或委派失败返回 None
+        """
+        try:
+            from core.skill_resolver import (
+                match_skills, resolve_skill_execution, build_delegation_prompt
+            )
+
+            matched = match_skills(task)
+            if not matched:
+                return None
+
+            simple_skills, complex_skills = resolve_skill_execution(matched)
+            if not complex_skills:
+                return None
+
+            # 对第一个最匹配的复杂 skill 执行委派
+            top_skill = complex_skills[0]
+            self._log(f"🧩 检测到复杂 skill: {top_skill['name']} ({len(top_skill.get('steps', []))} 步) → 委派子 Agent")
+
+            # 构建子 Agent prompt
+            sub_prompt = build_delegation_prompt(top_skill, task)
+
+            # 使用子 Agent 执行
+            from core.subagent import handle_delegate
+            result = handle_delegate({
+                "goal": sub_prompt,
+                "context": "",
+            })
+
+            # 记录使用
+            from core.skill_resolver import increment_usage, record_usage
+            increment_usage(top_skill['name'])
+            record_usage(top_skill['name'], task, result.get("success", False), result.get("duration", 0))
+
+            if result.get("success"):
+                self._log(f"✅ 复杂 skill '{top_skill['name']}' 委派成功 ({result.get('duration', 0):.1f}s)")
+                return {
+                    "skill": top_skill['name'],
+                    "summary": result.get("summary", "")[:500],
+                    "details": result.get("output", "")[:1000],
+                }
+            else:
+                self._log(f"⚠️ 复杂 skill '{top_skill['name']}' 委派失败: {result.get('output', '')[:100]}")
+                return None
+
+        except Exception as e:
+            self._log(f"⚠️ 复杂 skill 委派异常: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
     def run(self, task: str) -> dict:
         """执行一次完整任务。
 
@@ -420,6 +488,20 @@ class AgentLoop:
         # System prompt（含技能注入）
         system_prompt = self.build_system_prompt(task)
         messages.append({"role": "system", "content": system_prompt})
+
+        # ── 复杂 skill 预处理：检测并委派子 Agent ──
+        complex_delegation_result = self._try_delegate_complex_skills(task)
+        if complex_delegation_result:
+            self._log(f"🧩 复杂 skill 委派完成：{complex_delegation_result['summary'][:100]}")
+            # 将委派结果注入 user message，让 LLM 知晓并继续执行
+            delegation_note = (
+                f"[子任务执行结果]\n"
+                f"以下子任务已由独立的子 Agent 自动完成：\n"
+                f"{complex_delegation_result['summary']}\n\n"
+                f"请基于此结果继续执行后续步骤（如有）并完成最终输出。"
+            )
+            messages.append({"role": "user", "content": delegation_note})
+            self.sessions.append_message(self.current_session_id, "user", delegation_note)
 
         messages.append({"role": "user", "content": task})
         self.sessions.append_message(self.current_session_id, "user", task)
