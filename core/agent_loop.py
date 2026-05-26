@@ -22,6 +22,7 @@ from core.tool_registry import ToolRegistry
 from core.session_store import SessionStore
 from core.context_compress import ContextCompressor, LocalSummarizer, ToolResultStore, ContextCollapse, CollapseResult
 from core.budget_allocator import BudgetAllocator, BudgetSnapshot, BudgetPolicy
+from core.prompt_template import PromptManager, Section
 from core.safety import SafetyLayer
 from core.skill_resolver import discover_skills, match_skills, inject_skills_to_prompt, increment_usage, record_usage
 from core.whiteboard import Whiteboard, Decomposer, Step, WhiteboardExecutor
@@ -256,95 +257,103 @@ class AgentLoop:
             self.mcp_bridge = None
 
     def build_system_prompt(self, task: str = "") -> str:
-        """组装精简版系统 prompt。
+        """组装结构化 system prompt（PromptTemplate 实现）。
 
-        目标：用最少的 tokens 传递关键约束。
-        结构：身份 → 核心规则 → 工具(精简) → 输出格式+执行规则 → 进化状态 → 记忆 → 配置 → 质量标准+技能(按需) → 自我认知(一行)
+        使用 PromptManager 将 prompt 拆分为独立 section 组合。
+        每个 section 有 ID、标题、条件、budget_tag，支持条件注入。
         """
-        parts = []
+        pm = PromptManager(task)
 
         # 1. 身份声明
-        parts.append(load_identity_statement())
-        parts.append("")
+        pm.add_section(
+            section_id="identity",
+            title="",
+            content=load_identity_statement(),
+            order=0,
+            budget_tag="system",
+        )
 
-        # 2. 核心规则 — 从 strategy/ 加载，降级到默认
-        parts.append("## 核心规则")
+        # 2. 核心规则
         rules = get_rules()
-        for rule in rules:
-            parts.append(f"- {rule}")
-        parts.append("")
+        rules_content = "\n".join(f"- {rule}" for rule in rules)
+        pm.add_section(
+            section_id="rules",
+            title="核心规则",
+            content=rules_content,
+            order=1,
+            budget_tag="system",
+        )
 
         # 3. 工具说明
-        parts.append("## 可用工具")
-        parts.append("你的工具分为两类：")
-        parts.append("")
-        parts.append("### 核心工具（始终可用）")
-        parts.append("以下工具随时可用，直接通过 function_call 调用：")
+        core_tools = []
         for tool_def in self.tools.get_schemas()[:10]:
             fn = tool_def["function"]
             if fn["name"] == "tool_search":
-                continue  # 单独说明
+                continue
             desc = fn["description"].split("。")[0]
-            parts.append(f"- {fn['name']}: {desc}")
-        parts.append("")
+            core_tools.append(f"- {fn['name']}: {desc}")
 
-        # ToolSearch 特殊说明
-        parts.append("### 隐藏工具（需要主动发现）")
-        parts.append("如果你需要搜索网页、抓取内容、查询 GitHub 等额外的功能，当前的核心工具可能不够用。")
-        parts.append("这时你可以使用 tool_search 元工具来发现更多隐藏工具：")
-        parts.append("")
-        parts.append("1. 调用 tool_search(query=...) 搜索想要的工具")
-        parts.append("2. 系统会匹配并自动激活最相关的隐藏工具")
-        parts.append("3. 激活后你就可以直接调用这些工具了")
-        parts.append("")
-        parts.append("例如：你需要搜索互联网，先调用 tool_search(query='搜索互联网')")
-        parts.append("系统会激活 web_search 等工具供你使用。")
-        parts.append("")
-        parts.append("完成任务后，调用 finish() 工具结束。")
-        parts.append("")
+        tools_content = "你的工具分为两类：\n\n"
+        tools_content += "### 核心工具（始终可用）\n"
+        tools_content += "以下工具随时可用，直接通过 function_call 调用：\n"
+        tools_content += "\n".join(core_tools) + "\n\n"
+        tools_content += "### 隐藏工具（需要主动发现）\n"
+        tools_content += "需要搜索网页、抓取内容等额外功能时，使用 tool_search 元工具：\n\n"
+        tools_content += "1. 调用 tool_search(query=...) 搜索想要的工具\n"
+        tools_content += "2. 系统匹配并激活最相关的隐藏工具\n"
+        tools_content += "3. 激活后直接调用\n\n"
+        tools_content += "完成任务后，调用 finish() 工具结束。"
 
-        # 4. 输出格式 + 执行规则（方向三：一步思考+一步执行）
-        parts.append("## 输出格式")
-        parts.append("- 你的回复是直接对用户说的话，不是系统日志或任务报告")
-        parts.append("- 如果用户问问题，直接回答内容本身，不要说'已回答'、'已介绍'、'已完成'这类")
-        parts.append("")
-        parts.append("## 执行规则")
-        parts.append("- 一次只做一个工具调用：先思考下一步做什么，调用一个工具，等结果回来后再思考下一步")
-        parts.append("- 不要同时调用多个工具。单步执行，每步只做一件事")
-        parts.append("- 每步 tool 调用前先输出简短思考（一句话说清这一步要做什么）")
-        parts.append("- 工具结果返回后，先判断结果是否足够，再决定下一步还是 finish")
-        parts.append("")
+        pm.add_section(
+            section_id="tools",
+            title="可用工具",
+            content=tools_content,
+            order=2,
+            budget_tag="system",
+        )
 
-        # 5. 进化状态（精简版）
+        # 4. 输出格式 + 执行规则
+        format_content = "- 回复直接对用户说话，不是日志或报告\n"
+        format_content += "- 如果用户问问题，直接回答，不要说'已回答'这类\n\n"
+        format_content += "## 执行规则\n"
+        format_content += "- 一次只做一个工具调用\n"
+        format_content += "- 不要同时调用多个工具\n"
+        format_content += "- 每步 tool 调用前先输出简短思考\n"
+        format_content += "- 工具结果返回后，判断是否足够再决定下一步"
+
+        pm.add_section(
+            section_id="format",
+            title="输出格式",
+            content=format_content,
+            order=3,
+            budget_tag="system",
+        )
+
+        # 5. 进化状态（条件注入）
         stats = self.evolution.get_evolution_stats()
         total = stats['total_evolutions']
         if total > 0:
-            parts.append(f"## 进化状态")
-            parts.append(f"- 已进化 {total} 次")
-            parts.append("")
+            pm.add_section(
+                section_id="evolution",
+                title="进化状态",
+                content=f"- 已进化 {total} 次",
+                order=4,
+                budget_tag="system",
+            )
 
-        # 6. 历史记忆 — 直接召回最近记忆（仅当有具体查询时）
-        # 注：recall("") 在 file 模式下返回最新 N 条，但 Python "" in text 恒 True
-        # 导致全部是 P2 空闲决策垃圾，不注入空的召回。
-        # recent = self.memory.recall("", limit=3)
-        # if recent:
-        #     for m in recent[-2:]:
-        #         parts.append(f"- {m.get('key', '?')}: {m.get('content', '')[:100]}")
-
-    
-        # 7. 当前模型配置（精简）
+        # 6. 配置
         if self.llm:
-            parts.append(f"## 配置")
-            parts.append(f"- 后端: {self.llm.backend} | 模型: {self.llm.model}")
-            parts.append("")
+            config_content = f"- 后端: {self.llm.backend} | 模型: {self.llm.model}"
+            pm.add_section(
+                section_id="config",
+                title="配置",
+                content=config_content,
+                order=5,
+                budget_tag="system",
+            )
 
-        # 8. 用户偏好 — 已合并到自我认知模块，此处不再单独注入
-        #     （见下方 ## 自我认知 区块）
-
-        # 9. 可用技能 — 根据任务自动匹配最相关的技能
-        #    同时注入该任务类型的质量标准（来自 strategy/quality.yaml）
+        # 7. 任务相关：质量标准 + 技能（条件注入）
         if task:
-            # 探测任务类型：匹配关键词任务类型
             task_lower = task.lower()
             task_type = "generic"
             for tt in ["coding", "research", "file_operation"]:
@@ -352,82 +361,92 @@ class AgentLoop:
                     task_type = tt
                     break
 
-            # 注入质量标准（如果有）
+            # 质量标准
             quality_rules = get_quality(task_type.replace("file_operation", "file_op")
                                         .replace("generic", "code"))
             if quality_rules:
-                parts.append("## 质量标准")
-                parts.append("完成此任务时请注意以下标准：")
-                parts.append("")
+                quality_items = []
                 for qr in quality_rules:
                     icon = {"required": "🔴", "warning": "🟡", "optional": "🟢"}
-                    parts.append(f"  {icon.get(qr['severity'], '⚪')} [{qr['severity']}] {qr['rule']}")
-                parts.append("")
+                    quality_items.append(
+                        f"  {icon.get(qr['severity'], '⚪')} [{qr['severity']}] {qr['rule']}"
+                    )
+                pm.add_section(
+                    section_id="quality",
+                    title="质量标准",
+                    content="完成此任务时请注意以下标准：\n" + "\n".join(quality_items),
+                    order=6,
+                    budget_tag="system",
+                )
 
-            # 技能匹配 + 注入 —— 分层执行：简单→注入prompt，复杂→委派子Agent
+            # 技能匹配
             from core.skill_resolver import (
                 match_skills, resolve_skill_execution, increment_usage
             )
             matched = match_skills(task)
             if matched:
                 simple_skills, complex_skills = resolve_skill_execution(matched)
-
-                # 注入简单技能到 system prompt
                 if simple_skills:
-                    parts.append("## 相关技能")
-                    parts.append("以下技能与你当前任务相关：")
-                    parts.append("")
+                    skill_parts = []
                     for skill in simple_skills[:2]:
-                        increment_usage(skill['name'])  # 追踪使用
-                        parts.append(f"### {skill['name']}")
-                    if skill.get("description"):
-                        parts.append(f"{skill['description']}")
-                    if skill.get("steps"):
-                        parts.append("**步骤：**")
-                        for i, step in enumerate(skill["steps"], 1):
-                            parts.append(f"  {i}. {step}")
-                    if skill.get("pitfalls"):
-                        parts.append("**注意事项：**")
-                        for pitfall in skill["pitfalls"]:
-                            parts.append(f"  ⚠️ {pitfall}")
-                    parts.append("")
-                parts.append("技能仅供参考，不必完全照做。根据实际情况决定如何执行。")
-                parts.append("")
+                        increment_usage(skill['name'])
+                        skill_parts.append(f"### {skill['name']}")
+                        if skill.get("description"):
+                            skill_parts.append(str(skill['description']))
+                        if skill.get("steps"):
+                            skill_parts.append("**步骤：**")
+                            for i, step in enumerate(skill["steps"], 1):
+                                skill_parts.append(f"  {i}. {step}")
+                        if skill.get("pitfalls"):
+                            skill_parts.append("**注意事项：**")
+                            for p in skill["pitfalls"]:
+                                skill_parts.append(f"  ⚠️ {p}")
+                    skill_parts.append("技能仅供参考，不必完全照做。")
 
-            # ── 新增：错误→skill 关联注入 ───────────────────────
-            # 如果任务文本包含已知错误关键词，注入关联的 skill
+                    pm.add_section(
+                        section_id="skills",
+                        title="相关技能",
+                        content="\n".join(skill_parts),
+                        order=7,
+                        budget_tag="skills",
+                    )
+
+            # 错误关联技能
             try:
                 err_skill = self.evolution.evolution_state.get_skill_for_error(task)
                 if err_skill:
-                    # 从 skills/ 目录读取该 skill 的描述和步骤
                     import yaml
                     skills_dir = Path(__file__).resolve().parent.parent / "skills"
                     for yf in skills_dir.glob("*.yaml"):
                         with open(yf, "r", encoding="utf-8") as f:
                             sd = yaml.safe_load(f)
                         if sd and sd.get("name") == err_skill:
-                            parts.append("## ⚡ 错误关联技能（系统检测到已知错误模式）")
-                            parts.append(f"### {err_skill}")
+                            err_parts = [f"### {err_skill}"]
                             if sd.get("description"):
-                                parts.append(f"{sd['description']}")
+                                err_parts.append(str(sd['description']))
                             if sd.get("steps"):
-                                parts.append("**步骤：**")
+                                err_parts.append("**步骤：**")
                                 for i, step in enumerate(sd["steps"], 1):
-                                    parts.append(f"  {i}. {step}")
+                                    err_parts.append(f"  {i}. {step}")
                             if sd.get("pitfalls"):
-                                parts.append("**注意事项：**")
-                                for pitfall in sd["pitfalls"]:
-                                    parts.append(f"  ⚠️ {pitfall}")
-                            parts.append("")
-                            parts.append("该技能因检测到已知错误模式而自动加载。建议优先参考。")
-                            parts.append("")
+                                err_parts.append("**注意事项：**")
+                                for p in sd["pitfalls"]:
+                                    err_parts.append(f"  ⚠️ {p}")
+                            err_parts.append("该技能因检测到已知错误模式而自动加载。")
+
+                            pm.add_section(
+                                section_id="error_skill",
+                                title="⚡ 错误关联技能",
+                                content="\n".join(err_parts),
+                                order=8,
+                                budget_tag="skills",
+                            )
                             break
             except Exception:
-                pass  # 错误关联为非关键功能
+                pass
 
-        # ── 自我认知（精简版） ──────────────────────────────────
+        # 8. 自我认知
         try:
-            parts.append("## 自我认知")
             all_skills = discover_skills()
             skills_count = len(all_skills) if all_skills else 0
             prefs_path = ROOT_DIR / "memory" / "user_prefs.json"
@@ -437,12 +456,20 @@ class AgentLoop:
                     pref_count = len(json.loads(prefs_path.read_text(encoding="utf-8")))
                 except Exception:
                     pass
-            parts.append(f"📚 {skills_count} 技能 | 👤 {pref_count} 用户偏好 | ⚡ {total} 次进化")
-            parts.append("")
+            pm.add_section(
+                section_id="self_awareness",
+                title="自我认知",
+                content=f"📚 {skills_count} 技能 | 👤 {pref_count} 用户偏好 | ⚡ {total} 次进化",
+                order=99,  # 最后
+                budget_tag="system",
+            )
         except Exception:
             pass
 
-        return "\n".join(parts)
+        # 组装
+        prompt = pm.assemble()
+
+        return prompt
 
     def _log(self, text: str):
         """记录步骤（或通过回调通知）。"""
