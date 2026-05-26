@@ -1046,7 +1046,7 @@ class ContextCollapse:
         return "\n".join(parts)
 
     def _keyword_summary(self, messages: list[dict]) -> str:
-        """基于关键字的摘要回退方案。"""
+        "基于关键字的摘要回退方案。"
         rounds = []
         for m in messages:
             role = m.get("role", "")
@@ -1066,3 +1066,120 @@ class ContextCollapse:
         if len(text) > 800:
             return text[:800] + "..."
         return text
+
+
+# ═══════════════════════════════════════════════════════════════════
+# P0-1: BudgetReduction (廉价层管线)
+# ═══════════════════════════════════════════════════════════════════
+
+# 各类工具结果的"安全截断长度"（字符数）
+# 超过此长度的结果会被就地裁剪，保留前缀+摘要句式
+BUDGET_REDUCTION_LIMITS = {
+    "default": 3000,         # 通用工具
+    "search": 5000,          # web_search 结果列表可能很长但结构稀疏
+    "read_file": 5000,       # 读文件内容
+    "terminal": 4000,        # 终端输出
+    "web_fetch": 8000,       # 网页抓取全文
+    "web_extract": 8000,     # 网页提取
+    "list_dir": 2000,        # 目录列表
+    "git_log": 3000,         # git log 输出
+}
+
+
+def budget_reduce_output(
+    content: str,
+    tool_name: str = "",
+    hard_limit: int = 8000,
+) -> str:
+    """P0-1: 在工具结果进入上下文前就地裁剪超大输出。
+
+    策略（非破坏性，不丢关键信息）：
+    1. 超长内容 → 保留头部 + 尾部，中间替换为统计摘要
+    2. 结构化数据（JSON 数组）→ 保留前 N 条 + 元素计数
+    3. 代码/日志 → 保留开头关键部分
+
+    Claude Code 参考：Budget Reduction 是 5 层管线中的第 1 层，
+    唯一"零 token 成本"的压缩操作。
+    """
+    if not content or len(content) < 2000:
+        return content  # 小结果不处理
+
+    limit = BUDGET_REDUCTION_LIMITS.get(tool_name, BUDGET_REDUCTION_LIMITS["default"])
+    limit = min(limit, hard_limit)  # 不超过硬上限
+
+    if len(content) <= limit:
+        return content
+
+    # ── 检测 JSON 数组 ─────────────────────────────────────────
+    stripped = content.strip()
+    if stripped.startswith("[") and stripped.endswith("]"):
+        try:
+            data = json.loads(stripped)
+            if isinstance(data, list) and len(data) > 20:
+                # 保留前 N 条 + 统计信息
+                keep = max(10, limit // 500)
+                head = json.dumps(data[:keep], ensure_ascii=False, indent=2)
+                return (
+                    f"{head}\n\n"
+                    f"[BudgetReduction: JSON 数组共 {len(data)} 条，此处仅展示前 {keep} 条。"
+                    f"原长 {len(content)} 字，已压缩 {len(data) - keep} 条]"
+                )
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # ── 检测 JSON 对象（如 web_search 返回） ──────────────────
+    if stripped.startswith("{"):
+        try:
+            data = json.loads(stripped)
+            # 遍历查找大字符串字段
+            return _reduce_json_object(data, limit)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # ── 普通文本：保留头 + 尾 + 中间摘要 ──────────────────────
+    head_chars = limit // 2
+    tail_chars = min(limit // 3, 1000)
+    original_len = len(content)
+
+    head = content[:head_chars]
+    tail = content[-tail_chars:] if tail_chars > 0 else ""
+
+    # 估算行数
+    lines = content.count("\\n") + 1
+
+    return (
+        f"{head}\n\n"
+        f"[BudgetReduction: 原输出 {original_len} 字 / ~{lines} 行，"
+        f"此处展示头部 {head_chars} 字 + 尾部 {tail_chars} 字。"
+        f"原始完整结果在执行日志中可查]\n\n"
+        f"{tail}"
+    )
+
+
+def _reduce_json_object(data: dict, limit: int) -> str:
+    """递归缩减 JSON 对象中的超大字段。"""
+    def _walk(v, depth=0):
+        if depth > 3:
+            return str(v)[:200] if isinstance(v, str) else v
+        if isinstance(v, dict):
+            result = {}
+            for k, val in v.items():
+                val_str = str(val)
+                if len(val_str) > 1000 and isinstance(val, str):
+                    result[k] = val_str[:500] + f" [...truncated, orig {len(val_str)} chars]"
+                elif isinstance(val, (dict, list)):
+                    result[k] = _walk(val, depth + 1)
+                else:
+                    result[k] = val
+            return result
+        if isinstance(v, list):
+            if len(v) > 15:
+                return _walk(v[:15], depth) + [f"...({len(v) - 15} more items)"]
+            return [_walk(item, depth + 1) for item in v]
+        return v
+
+    reduced = _walk(data)
+    result = json.dumps(reduced, ensure_ascii=False, indent=2)
+    if len(result) > limit:
+        return result[:limit] + f"\n[...truncated, original output was {len(json.dumps(data, ensure_ascii=False))} chars]"
+    return result

@@ -20,7 +20,7 @@ from core.evolution import EvolutionEngine
 from core.observer import Observer
 from core.tool_registry import ToolRegistry
 from core.session_store import SessionStore
-from core.context_compress import ContextCompressor, LocalSummarizer, ToolResultStore, ContextCollapse, CollapseResult
+from core.context_compress import ContextCompressor, LocalSummarizer, ToolResultStore, ContextCollapse, CollapseResult, budget_reduce_output
 from core.budget_allocator import BudgetAllocator, BudgetSnapshot, BudgetPolicy
 from core.prompt_template import PromptManager, Section
 from core.safety import SafetyLayer
@@ -977,6 +977,19 @@ class AgentLoop:
                     else:
                         safe_output_for_context = safe_output
 
+                    # ── P0-1: BudgetReduction（零 token 成本裁剪） ──────────────
+                    # Microcompact 未命中（非结构化的超大纯文本），做就地裁剪
+                    _budget_reduced = budget_reduce_output(
+                        safe_output_for_context,
+                        tool_name=fn_name,
+                    )
+                    if _budget_reduced != safe_output_for_context:
+                        self._log(
+                            f"⚡ BudgetReduction: {fn_name} 结果 "
+                            f"{len(safe_output_for_context)} → {len(_budget_reduced)} chars"
+                        )
+                        safe_output_for_context = _budget_reduced
+
                     # Observer：跟踪工具调用
                     tool_result_for_obs = {
                         "success": tool_result.get("success", False),
@@ -1036,24 +1049,49 @@ class AgentLoop:
                             "content": f"[工具 {fn_name} 的结果被过滤（判定无贡献），原长 {len(safe_output)} 字符]",
                         })
 
-                    # ── P1-1: PostToolUse 自动压缩 ────────────────────────────
-                    # 每个工具结果追加到 messages 后立即检查 token 预算
-                    # 超阈值则自动触发压缩（避免链式工具调用累积过量）
+                    # ── P0-2: 渐进式 PostToolUse 压缩管线 ────────────────────────
+                    # Claude Code 参考：5-stage 渐进管线，从零成本到高成本
+                    # 第 1 层：BudgetReduction — 已在结果进入 messages 前完成
+                    # 第 2 层：Snip — clean_old_tool_results（零 token 成本）
+                    # 第 3 层：LLM 摘要 — 只有前两层还不够才触发
                     post_tool_tokens = self.compressor._count_tokens(messages)
                     if post_tool_tokens > self.compressor.max_context_tokens * 0.85:
-                        self._log(f"📏 PostToolUse 自动压缩: {post_tool_tokens}/{self.compressor.max_context_tokens} tokens")
-                        ctx_result = self.compressor.compress_with_local_llm(messages)
-                        if ctx_result.messages_removed > 0:
-                            system_msgs = [m for m in messages if m.get("role") == "system"]
-                            recent_non_system = [m for m in messages if m.get("role") != "system"]
-                            keep_count = min(self.compressor.keep_recent_rounds * 4, len(recent_non_system))
-                            recent_msgs = recent_non_system[-keep_count:] if keep_count > 0 else []
-                            messages = system_msgs + [{
-                                "role": "system",
-                                "content": f"【上下文压缩】以下是对旧对话的摘要，请基于此继续当前任务：\n{ctx_result.summary}",
-                            }] + recent_msgs
-                            self._log(f"✅ PostToolUse 压缩完成: {ctx_result.compression_ratio*100:.0f}% 缩减 "
-                                      f"({ctx_result.original_tokens}→{ctx_result.compressed_tokens} tokens)")
+                        self._log(
+                            f"📏 PostToolUse 管线: {post_tool_tokens}/"
+                            f"{self.compressor.max_context_tokens} tokens"
+                        )
+
+                        # ── 第 2 层：Snip（零成本裁剪旧工具结果） ──
+                        snip_msgs, snip_saved = self.compressor.clean_old_tool_results(
+                            messages, max_rounds=4, keep_summary_chars=100
+                        )
+                        snip_tokens = self.compressor._count_tokens(snip_msgs)
+                        self._log(
+                            f"🔧 Snip: 节省 ~{snip_saved} tokens "
+                            f"(now {snip_tokens}/{self.compressor.max_context_tokens})"
+                        )
+
+                        # Snip 后 recheck
+                        if snip_tokens <= self.compressor.max_context_tokens * 0.85:
+                            messages = snip_msgs
+                            self._log(f"✅ Snip 足够，无需 LLM 压缩")
+                        else:
+                            # ── 第 3 层：LLM 摘要（兜底） ──
+                            self._log(f"🧠 Snip 不够，触发 LLM 摘要兜底")
+                            ctx_result = self.compressor.compress_with_local_llm(messages)
+                            if ctx_result.messages_removed > 0:
+                                system_msgs = [m for m in messages if m.get("role") == "system"]
+                                recent_non_system = [m for m in messages if m.get("role") != "system"]
+                                keep_count = min(self.compressor.keep_recent_rounds * 4, len(recent_non_system))
+                                recent_msgs = recent_non_system[-keep_count:] if keep_count > 0 else []
+                                messages = system_msgs + [{
+                                    "role": "system",
+                                    "content": f"【上下文压缩】以下是对旧对话的摘要，请基于此继续当前任务：\\n{ctx_result.summary}",
+                                }] + recent_msgs
+                                self._log(
+                                    f"✅ LLM 压缩完成: {ctx_result.compression_ratio*100:.0f}% 缩减 "
+                                    f"({ctx_result.original_tokens}→{ctx_result.compressed_tokens} tokens)"
+                                )
 
                     self.sessions.append_message(
                         self.current_session_id, "tool",
