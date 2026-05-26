@@ -615,19 +615,31 @@ class KuafuAgent:
 
     def _inject_approval_notifier(self, loop: AgentLoop) -> None:
         """注入审批通知回调到 AgentLoop。"""
-        if self._feishu_bot is None:
-            return  # 飞书未配置，不注入
-
         def _notify(tool_name: str, args: dict, req_id: str):
-            msg = (
-                f"🔐 终端审批请求\n"
-                f"工具: {tool_name}\n"
-                f"参数: {json.dumps(args, ensure_ascii=False, indent=2)[:200]}\n"
-                f"审批ID: {req_id}\n"
-                f"---\n"
-                f"请回复同意或拒绝"
-            )
-            self._feishu_bot.send_text(msg)
+            # 终端醒目提示（无论飞书是否可用，都打印到终端日志）
+            cmd_info = ""
+            if tool_name == "terminal":
+                cmd_info = f" 命令: {args.get('command', '')[:80]}"
+            print(f"\n{'='*55}", flush=True)
+            print(f"  🔐 审批请求已提交", flush=True)
+            print(f"  工具: {tool_name}{cmd_info}", flush=True)
+            print(f"  审批ID: {req_id}", flush=True)
+            if self._feishu_bot is not None:
+                print(f"  已推送到飞书，请查看审批", flush=True)
+            else:
+                print(f"  请在终端确认（回到终端窗口查看）", flush=True)
+            print(f"{'='*55}\n", flush=True)
+            # 飞书推送（如有配置）
+            if self._feishu_bot is not None:
+                msg = (
+                    f"🔐 审批请求\n"
+                    f"工具: {tool_name}\n"
+                    f"参数: {json.dumps(args, ensure_ascii=False, indent=2)[:200]}\n"
+                    f"审批ID: {req_id}\n"
+                    f"---\n"
+                    f"请回复同意或拒绝"
+                )
+                self._feishu_bot.send_text(msg)
 
         loop.on_approval_request = _notify
 

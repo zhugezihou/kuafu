@@ -517,6 +517,13 @@ class ApprovalManager:
                 args_snapshot=json.dumps(args, ensure_ascii=False),
                 context_type=f"check_permission_{tool}",
             )
+            # 非交互模式也在终端打印提示（日志中可见）
+            print(f"\n{'='*55}", flush=True)
+            print(f"  🔐 审批请求已提交 (ID: {req_id})", flush=True)
+            print(f"  工具: {title}", flush=True)
+            print(f"  风险: {risk.upper()}", flush=True)
+            print(f"  请在飞书查看并审批", flush=True)
+            print(f"{'='*55}\n", flush=True)
             return {
                 "allowed": None,  # 待人工决策
                 "reason": f"🟡 需要审批 (ID: {req_id})",
