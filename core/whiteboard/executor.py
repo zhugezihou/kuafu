@@ -256,7 +256,7 @@ class WhiteboardExecutor:
         )
 
         # 获取工具
-        tool_schemas = self.tools.get_schemas()
+        # 注意：whiteboard 分步执行也使用动态工具注入
 
         # 调用 LLM
         messages = [
@@ -265,7 +265,7 @@ class WhiteboardExecutor:
         ]
 
         try:
-            response = self.llm.chat(messages, tools=tool_schemas)
+            response = self.llm.chat(messages, tools=self.tools.get_schemas())
 
             if not response["success"]:
                 return {

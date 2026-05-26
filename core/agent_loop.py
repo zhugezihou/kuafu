@@ -245,11 +245,29 @@ class AgentLoop:
 
         # 3. 工具说明
         parts.append("## 可用工具")
-        parts.append("你有以下工具可用，通过 function_call 调用：")
-        for tool_def in self.tools.get_schemas()[:8]:  # 只展示前8个，剩余由 schema 自动补充
+        parts.append("你的工具分为两类：")
+        parts.append("")
+        parts.append("### 核心工具（始终可用）")
+        parts.append("以下工具随时可用，直接通过 function_call 调用：")
+        for tool_def in self.tools.get_schemas()[:10]:
             fn = tool_def["function"]
+            if fn["name"] == "tool_search":
+                continue  # 单独说明
             desc = fn["description"].split("。")[0]
             parts.append(f"- {fn['name']}: {desc}")
+        parts.append("")
+
+        # ToolSearch 特殊说明
+        parts.append("### 隐藏工具（需要主动发现）")
+        parts.append("如果你需要搜索网页、抓取内容、查询 GitHub 等额外的功能，当前的核心工具可能不够用。")
+        parts.append("这时你可以使用 tool_search 元工具来发现更多隐藏工具：")
+        parts.append("")
+        parts.append("1. 调用 tool_search(query=...) 搜索想要的工具")
+        parts.append("2. 系统会匹配并自动激活最相关的隐藏工具")
+        parts.append("3. 激活后你就可以直接调用这些工具了")
+        parts.append("")
+        parts.append("例如：你需要搜索互联网，先调用 tool_search(query='搜索互联网')")
+        parts.append("系统会激活 web_search 等工具供你使用。")
         parts.append("")
         parts.append("完成任务后，调用 finish() 工具结束。")
         parts.append("")
@@ -506,9 +524,6 @@ class AgentLoop:
         messages.append({"role": "user", "content": task})
         self.sessions.append_message(self.current_session_id, "user", task)
 
-        # 获取工具 schema
-        tool_schemas = self.tools.get_schemas()
-
         # 执行循环
         for turn in range(self.max_turns):
             turn_count = turn + 1
@@ -535,7 +550,7 @@ class AgentLoop:
                         self._log(f"📝 摘要: {result.summary[:150]}...")
 
             # 调用 LLM
-            response = self.llm.chat(messages, tools=tool_schemas)
+            response = self.llm.chat(messages, tools=self.tools.get_schemas())
 
             # ── LLM 调用失败处理 ─────────────────────────────────
             if not response["success"]:
@@ -559,7 +574,7 @@ class AgentLoop:
                             }] + recent_msgs
                             self._log(f"✅ 紧急压缩完成: {summary.original_tokens}→{summary.compressed_tokens} tokens")
                             # 重新调用 LLM
-                            response = self.llm.chat(messages, tools=tool_schemas)
+                            response = self.llm.chat(messages, tools=self.tools.get_schemas())
                             if response["success"]:
                                 # 压缩后调用成功，继续正常流程
                                 pass
@@ -576,7 +591,7 @@ class AgentLoop:
                             keep_tokens = self.compressor._count_tokens(keep)
                             self._log(f"   {original_tokens} → {keep_tokens} tokens")
                             messages = keep
-                            response = self.llm.chat(messages, tools=tool_schemas)
+                            response = self.llm.chat(messages, tools=self.tools.get_schemas())
                             if not response["success"]:
                                 errors.append(response.get("error", "截断后 LLM 仍然失败"))
                                 break
@@ -585,7 +600,7 @@ class AgentLoop:
                         # 尝试去掉记忆和技能相关消息
                         if len(system_msgs) > 1:
                             messages = [system_msgs[0]] + recent_msgs  # 只保留第一条 system
-                            response = self.llm.chat(messages, tools=tool_schemas)
+                            response = self.llm.chat(messages, tools=self.tools.get_schemas())
                         if not response["success"]:
                             errors.append(error_msg)
                             break
@@ -1306,8 +1321,6 @@ class AgentLoop:
         ]
         self.sessions.append_message(self.current_session_id, "user", task)
 
-        tool_schemas = self.tools.get_schemas()
-
         # 4. 执行白板循环（所有步骤在同一 session 中完成）
         for turn in range(self.max_turns):
             self._log(f"🤔 白板第 {turn + 1}/{self.max_turns} 轮 — LLM 思考中...")
@@ -1325,7 +1338,7 @@ class AgentLoop:
                     }] + recent
 
             # 调用 LLM
-            response = self.llm.chat(messages, tools=tool_schemas)
+            response = self.llm.chat(messages, tools=self.tools.get_schemas())
             if not response["success"]:
                 error_msg = response.get("error", "LLM 调用失败")
                 errors.append(error_msg)

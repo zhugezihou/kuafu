@@ -38,25 +38,35 @@ ToolHandler = Callable[[dict], dict]
 
 
 class ToolRegistry:
-    """工具注册中心。管理所有可用工具的定义和执行。"""
+    """工具注册中心。管理所有可用工具的定义和执行。
+
+    核心设计：
+    - 核心工具（~10 个）：终端、文件读写、搜索、finish 等 — 始终暴露给 LLM
+    - 延迟加载工具（deferred）：搜索引擎、MCP、GitHub 等 — 通过 ToolSearch 元工具发现后动态注入
+    - 注入工具（injected）：ToolSearch 匹配后临时注入到下一轮 LLM 调用的工具
+    """
 
     def __init__(self):
-        self._schemas: list[dict] = []     # OpenAI Function Call 格式 schema
-        self._handlers: dict[str, ToolHandler] = {}  # name -> handler
+        self._schemas: list[dict] = []     # 核心工具 schema（始终对 LLM 可见）
+        self._handlers: dict[str, ToolHandler] = {}  # 所有工具的 handler（core + deferred）
+        self._deferred: list[dict] = []     # 延迟加载工具定义（含 keywords 用于搜索）
+        self._injected_tools: list[dict] = []  # 当前 session 已通过 ToolSearch 激活的延迟工具
         self._register_core_tools()
 
     # ── 注册 API ───────────────────────────────────────────────────
 
     def register(self, name: str, schema: dict, handler: ToolHandler):
-        """注册一个工具。
+        """注册核心工具（始终对 LLM 可见）。
 
-        Args:
-            name: 工具名（用于 function_call）
-            schema: OpenAI Function Call 格式的 schema dict（包含 description, parameters 等）
-            handler: 处理函数，接受 args dict，返回 {"success": bool, "output": str, ...}
+        与 register_deferred() 的区别：
+        - register() 的工具会出现在 get_schemas() 中，LLM 永远能看到
+        - register_deferred() 的工具藏在延迟池里，通过 ToolSearch 发现后注入
         """
         # 移除已存在的同名工具
         self._schemas = [s for s in self._schemas if s["function"]["name"] != name]
+        self._deferred = [s for s in self._deferred if s["function"]["name"] != name]
+        self._injected_tools = [s for s in self._injected_tools
+                                if s["function"]["name"] != name]
         full_schema = {
             "type": "function",
             "function": {
@@ -67,6 +77,39 @@ class ToolRegistry:
         self._schemas.append(full_schema)
         self._handlers[name] = handler
 
+    def register_deferred(self, name: str, schema: dict, handler: ToolHandler,
+                          keywords: list[str] = None):
+        """注册一个延迟加载工具。
+
+        该工具不会出现在 LLM 的默认工具列表中。
+        LLM 需要通过 ToolSearch 元工具搜索关键词来激活它。
+
+        Args:
+            name: 工具名
+            schema: OpenAI Function Call 格式 schema
+            handler: 处理函数
+            keywords: 搜索关键词列表（如 ["web", "search", "google", "duckduckgo"]）
+                      用于 ToolSearch 的模糊匹配
+        """
+        # 从核心工具移除（如果已存在）
+        self._schemas = [s for s in self._schemas if s["function"]["name"] != name]
+        self._injected_tools = [s for s in self._injected_tools
+                                if s["function"]["name"] != name]
+
+        full_schema = {
+            "type": "function",
+            "function": {
+                "name": name,
+                **schema,
+            },
+        }
+        self._deferred.append({
+            "schema": full_schema,
+            "keywords": [kw.lower() for kw in (keywords or [])],
+            "description": schema.get("description", ""),
+        })
+        self._handlers[name] = handler
+
     def unregister(self, name: str) -> bool:
         """注销一个工具。"""
         old_count = len(self._schemas)
@@ -75,8 +118,103 @@ class ToolRegistry:
         return len(self._schemas) < old_count
 
     def get_schemas(self) -> list[dict]:
-        """获取全部工具定义（OpenAI Function Call 格式）。"""
-        return list(self._schemas)
+        """获取所有对 LLM 可见的工具 schema（核心工具 + 已通过 ToolSearch 注入的工具）。"""
+        core = list(self._schemas)
+        injected = list(self._injected_tools)
+        return core + injected
+
+    def get_active_tools_names(self) -> list[str]:
+        """获取所有对 LLM 可见的工具名列表（用于日志/诊断）。"""
+        names = [s["function"]["name"] for s in self._schemas]
+        names += [s["function"]["name"] for s in self._injected_tools]
+        return names
+
+    def inject_tool(self, name: str) -> bool:
+        """将一个延迟加载工具注入到当前 session 的可见工具列表中。
+
+        LLM 下次调用时就能看到并调用这个工具。
+        如果工具不在延迟池中，返回 False。
+        """
+        for entry in self._deferred:
+            if entry["schema"]["function"]["name"] == name:
+                # 已注入则跳过
+                if any(s["function"]["name"] == name for s in self._injected_tools):
+                    return True
+                self._injected_tools.append(entry["schema"])
+                return True
+        return False
+
+    def _search_deferred_tools(self, query: str, max_results: int = 5) -> list[dict]:
+        """在延迟工具池中搜索匹配 query 的工具。
+
+        匹配策略（按优先级）：
+        1. 工具名包含 query 中的词 → 最高分
+        2. keywords 包含 query 中的词 → 中等分
+        3. description 包含 query 中的词 → 低分
+
+        Returns:
+            [{"name": str, "description": str, "keywords": list[str], "score": int}, ...]
+        """
+        # 分词：空格/逗号分隔 + 中文连续文本按2-4字滑动窗口分词 + 英文子串提取
+        raw_words = [w.lower() for w in re.split(r"[,\s]+", query) if len(w) > 1]
+        query_words = list(raw_words)
+        for rw in raw_words:
+            if all('\u4e00' <= c <= '\u9fff' for c in rw):
+                for length in [2, 3, 4]:
+                    for i in range(len(rw) - length + 1):
+                        seg = rw[i:i+length]
+                        if seg not in query_words:
+                            query_words.append(seg)
+            else:
+                # 混合词（如 "github仓库"）：提取其中连续英文字母子串
+                eng_segs = set(re.findall(r'[a-z]{3,}', rw))
+                for seg in eng_segs:
+                    if seg not in query_words:
+                        query_words.append(seg)
+
+        if not query_words:
+            return []
+
+        scored = []
+        for entry in self._deferred:
+            name = entry["schema"]["function"]["name"]
+            desc = entry["description"].lower()
+            kws = entry["keywords"]
+            score = 0
+            for qw in query_words:
+                if qw in name.lower():
+                    score += 10
+                if qw in kws:
+                    score += 5
+                if qw in desc:
+                    score += 1
+            if score > 0:
+                scored.append({
+                    "name": name,
+                    "description": entry["description"],
+                    "keywords": kws,
+                    "score": score,
+                })
+
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        return scored[:max_results]
+
+    @staticmethod
+    def _tool_search_schema() -> dict:
+        return {
+            "description": "搜索额外工具。如果你觉得当前工具不够用，用这个搜索更多可用的隐藏工具。"
+                           "输入自然语言描述你想要的功能，系统会匹配并激活最相关的工具。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "描述你想要的功能，如 '搜索互联网'、'搜索GitHub仓库'、'抓取网页内容'",
+                    },
+                },
+                "required": ["query"],
+            },
+        }
 
     def execute(self, tool_call: dict) -> dict:
         """执行一个工具调用。
@@ -127,26 +265,56 @@ class ToolRegistry:
     # ── 核心工具注册 ──────────────────────────────────────────────
 
     def _register_core_tools(self):
-        """注册夸父的核心工具集。"""
+        """注册夸父的核心工具集 + 延迟加载工具。"""
+        # ── 核心工具（始终对 LLM 可见） ──
         self.register("terminal", self._term_schema(), self._handle_terminal)
         self.register("read_file", self._read_schema(), self._handle_read_file)
         self.register("write_file", self._write_schema(), self._handle_write_file)
         self.register("patch", self._patch_schema(), self._handle_patch)
         self.register("search_files", self._search_schema(), self._handle_search_files)
-        self.register("web_search", self._web_search_schema(), self._handle_web_search)
-        self.register("web_fetch", self._web_fetch_schema(), self._handle_web_fetch)
-        self.register("github_search", self._github_search_schema(), self._handle_github_search)
-        self.register("github_get_repo", self._github_get_repo_schema(), self._handle_github_get_repo)
-        self.register("tavily_search", self._tavily_search_schema(), self._handle_tavily_search)
         self.register("finish", self._finish_schema(), self._handle_finish)
-
-        # Microcompact: 读取已存储的工具完整结果
-        self.register("read_tool_result", self._read_tool_result_schema(), self._handle_read_tool_result)
 
         # 白板模式工具
         self.register("finish_step", self._finish_step_schema(), self._handle_finish_step)
         self.register("whiteboard_read", self._whiteboard_read_schema(), self._handle_whiteboard_read)
         self.register("whiteboard_write", self._whiteboard_write_schema(), self._handle_whiteboard_write)
+
+        # Microcompact: 读取已存储的工具完整结果
+        self.register("read_tool_result", self._read_tool_result_schema(), self._handle_read_tool_result)
+
+        # ── 元工具 ──
+        # ToolSearch: LLM 通过它发现延迟加载工具
+        self._register_tool_search()
+
+        # ── 延迟加载工具（对 LLM 隐藏，通过 ToolSearch 发现） ──
+        self.register_deferred("web_search", self._web_search_schema(), self._handle_web_search,
+                               keywords=["web", "search", "internet", "google", "bing", "baidu",
+                                         "duckduckgo", "网页搜索", "互联网"])
+        self.register_deferred("web_fetch", self._web_fetch_schema(), self._handle_web_fetch,
+                               keywords=["web", "fetch", "crawl", "scrape", "extract", "url",
+                                         "网页抓取", "爬取", "提取网页", "http"])
+        self.register_deferred("tavily_search", self._tavily_search_schema(), self._handle_tavily_search,
+                               keywords=["tavily", "deep search", "research", "ai search",
+                                         "深度搜索", "研究"])
+        self.register_deferred("github_search", self._github_search_schema(), self._handle_github_search,
+                               keywords=["github", "git", "code search", "repository",
+                                         "开源仓库", "代码搜索"])
+        self.register_deferred("github_get_repo", self._github_get_repo_schema(), self._handle_github_get_repo,
+                               keywords=["github", "git", "repository", "repo info",
+                                         "仓库信息", "repo详情"])
+
+    def _register_tool_search(self):
+        """注册 ToolSearch 元工具（始终对 LLM 可见的隐藏工具发现入口）。"""
+        schema = self._tool_search_schema()
+        full_schema = {
+            "type": "function",
+            "function": {
+                "name": "tool_search",
+                **schema,
+            },
+        }
+        self._schemas.append(full_schema)
+        self._handlers["tool_search"] = self._handle_tool_search
 
     # ── Schema 定义 ────────────────────────────────────────────────
 
@@ -1146,3 +1314,37 @@ class ToolRegistry:
             return {"success": True, "output": result}
         except Exception as e:
             return {"success": False, "output": f"读取工具结果失败: {e}"}
+
+    # ---- tool_search (Deferred Tool Loading) ----
+
+    def _handle_tool_search(self, args: dict) -> dict:
+        """ToolSearch 元工具 handler：搜索延迟加载工具并注入到当前 session。"""
+        query = args.get("query", "")
+        if not query:
+            return {"success": False, "output": "query 不能为空"}
+
+        results = self._search_deferred_tools(query)
+        if not results:
+            return {
+                "success": True,
+                "output": f"未找到与 '{query}' 匹配的隐藏工具。"
+                          f"请尝试其他关键词。当前可用核心工具：{', '.join(self.get_active_tools_names())}",
+            }
+
+        # 自动将找到的工具注入到当前 session
+        injected_names = []
+        for tool in results:
+            if self.inject_tool(tool["name"]):
+                injected_names.append(tool["name"])
+
+        output_lines = [
+            f"🔍 已找到并激活以下隐藏工具（输入 '{query}'）：",
+        ]
+        for tool in results:
+            output_lines.append(f"  • {tool['name']}: {tool['description']}")
+        if injected_names:
+            output_lines.append("")
+            output_lines.append(f"已注入当前 session: {', '.join(injected_names)}")
+            output_lines.append("你现在可以直接调用这些工具了。")
+
+        return {"success": True, "output": "\n".join(output_lines)}
