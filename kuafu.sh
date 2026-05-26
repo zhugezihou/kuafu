@@ -30,6 +30,7 @@ fi
 
 # 2. 运行夸父
 source "$KUAFFU_DIR/venv/bin/activate"
+export PYTHONPATH="$KUAFFU_DIR${PYTHONPATH:+:$PYTHONPATH}"
 if [ $# -eq 0 ]; then
     # 无参数 → 交互模式
     exec python -m core.main
