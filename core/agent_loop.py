@@ -311,14 +311,17 @@ class AgentLoop:
             budget_tag="system",
         )
 
-        # ── 2. 当前日期 ──
+        # ── 2. 当前日期与时间 ──
         from datetime import datetime
         now = datetime.now()
         date_cn = f"{now.year}年{now.month}月{now.day}日"
+        time_str = now.strftime("%H:%M")
+        dow = ['一','二','三','四','五','六','日'][now.weekday()]
         pm.add_section(
             section_id="current_datetime",
             title="",
-            content=f"当前日期: {date_cn} 星期{['一','二','三','四','五','六','日'][now.weekday()]}",
+            content=f"当前日期: {date_cn} 星期{dow} {time_str}\n"
+                    f"【重要】纯时间计算（如\"X小时后是几点\"）直接在脑中推理即可，无需调用任何工具。",
             order=1,
             budget_tag="system",
         )
