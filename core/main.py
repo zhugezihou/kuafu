@@ -517,10 +517,19 @@ class KuafuAgent:
         # 进化回调
         evolution_event = result.get("evolution")
         if evolution_event:
+            # evolution_event 可能是 dict（来自新管道 run_pipeline）或 EvolutionEvent 对象（旧路径）
+            if isinstance(evolution_event, dict):
+                level = evolution_event.get("evolution_mode", "info") or "info"
+                action = evolution_event.get("reason", "未知")
+                evo_level = "skill" if evolution_event.get("skill_written") else "info"
+            else:
+                level = getattr(evolution_event, "level", "info")
+                action = getattr(evolution_event, "action", "未知")
+                evo_level = level
             self.memory.remember(
-                key=f"evolution:L{evolution_event.level}:conv:{self._task_count}",
-                content=f"L{evolution_event.level} 进化: {evolution_event.action}",
-                tags=["evolution", f"L{evolution_event.level}"],
+                key=f"evolution:L{evo_level}:conv:{self._task_count}",
+                content=f"L{evo_level} 进化: {action}",
+                tags=["evolution", f"L{evo_level}"],
             )
 
         return result

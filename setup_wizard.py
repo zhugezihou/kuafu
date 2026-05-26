@@ -210,12 +210,12 @@ def test_connection(backend: str, api_key: str) -> bool:
         from core.llm import LLMClient
 
         if backend == "local":
-            client = LLMClient(backend="local", timeout=15)
+            client = LLMClient(backend="local", timeout=300)
         else:
             if not api_key:
                 print_err("API Key 不能为空")
                 return False
-            client = LLMClient(backend="cloud", api_key=api_key, timeout=15)
+            client = LLMClient(backend="cloud", api_key=api_key, timeout=300)
 
         print_info("发送测试请求...")
         result = client.chat([
