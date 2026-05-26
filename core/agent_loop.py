@@ -17,6 +17,7 @@ from typing import Optional, Callable
 from core.llm import LLMClient
 from core.memory_api import MemoryAPI
 from core.evolution import EvolutionEngine
+from core.observer import Observer
 from core.tool_registry import ToolRegistry
 from core.session_store import SessionStore
 from core.context_compress import ContextCompressor, LocalSummarizer
@@ -132,6 +133,13 @@ class AgentLoop:
         # 记忆维护计数器（每 10 轮触发一次去重/过期清理/合并）
         self._mem_maintenance_counter = 0
 
+        # Observer：运行时工具调用跟踪
+        self._observer = Observer()
+        self.evolution.register_observer(self._observer)
+
+        # 注册 skill_rollback 工具
+        self._register_skill_rollback()
+
     def _register_delegate_tool(self):
         """注册 delegate_task 工具（子 Agent 系统）。"""
         try:
@@ -141,6 +149,58 @@ class AgentLoop:
             self._log("🧩 子 Agent 系统就绪: delegate_task 工具已注册")
         except Exception as e:
             self._log(f"⚠️ 子 Agent 注册失败: {e}")
+
+    def _register_skill_rollback(self):
+        """注册 skill_rollback 工具（回滚最后一条 skill 进化）。"""
+        try:
+            schema = {
+                "description": "回滚最后一条 skill 进化。如果用户对技能输出不满意，调用此工具恢复到上一个版本。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "skill_name": {
+                            "type": "string",
+                            "description": "要回滚的 skill 名称。留空则回滚最近一次进化。"
+                        }
+                    },
+                    "required": []
+                }
+            }
+            def handler(args: dict) -> dict:
+                try:
+                    skill = args.get("skill_name", "")
+                    result = self.evolution.evolution_state.undo_last_evolution(
+                        skill if skill else None
+                    )
+                    if not skill:
+                        # 没传 skill_name：回滚最近一次 skill 进化
+                        # 找 skills 列表中最后写入的那个
+                        skills_data = getattr(self.evolution.evolution_state, '_data', {}).get("skills", {})
+                        last_skill = None
+                        last_time = 0
+                        for sname, sentry in skills_data.items():
+                            lw = sentry.get("last_written", 0)
+                            if lw > last_time:
+                                last_time = lw
+                                last_skill = sname
+                        if last_skill:
+                            result = self.evolution.evolution_state.undo_last_evolution(last_skill)
+
+                    if result:
+                        msg = (
+                            f"回滚 skill '{result.get('rolled_back_skill', skill)}': "
+                            f"版本 v{result.get('rolled_back_v')} → v{result.get('restored_to_v')}"
+                        )
+                        self._log(f"↩️ {msg}")
+                        return {"success": True, "output": msg}
+                    else:
+                        return {"success": False, "output": "无可回滚的版本（仅一个版本或无 skill 存在）"}
+                except Exception as e:
+                    return {"success": False, "output": f"回滚失败: {e}"}
+            self.tools.register("skill_rollback", schema, handler)
+            self._log("↩️ 技能回滚工具已注册: skill_rollback")
+        except Exception as e:
+            self._log(f"⚠️ skill_rollback 注册失败: {e}")
 
     def _init_mcp(self):
         """初始化 MCP 桥接，加载配置并注册工具。"""
@@ -274,6 +334,37 @@ class AgentLoop:
                     parts.append("")
                 parts.append("技能仅供参考，不必完全照做。根据实际情况决定如何执行。")
                 parts.append("")
+
+            # ── 新增：错误→skill 关联注入 ───────────────────────
+            # 如果任务文本包含已知错误关键词，注入关联的 skill
+            try:
+                err_skill = self.evolution.evolution_state.get_skill_for_error(task)
+                if err_skill:
+                    # 从 skills/ 目录读取该 skill 的描述和步骤
+                    import yaml
+                    skills_dir = Path(__file__).resolve().parent.parent / "skills"
+                    for yf in skills_dir.glob("*.yaml"):
+                        with open(yf, "r", encoding="utf-8") as f:
+                            sd = yaml.safe_load(f)
+                        if sd and sd.get("name") == err_skill:
+                            parts.append("## ⚡ 错误关联技能（系统检测到已知错误模式）")
+                            parts.append(f"### {err_skill}")
+                            if sd.get("description"):
+                                parts.append(f"{sd['description']}")
+                            if sd.get("steps"):
+                                parts.append("**步骤：**")
+                                for i, step in enumerate(sd["steps"], 1):
+                                    parts.append(f"  {i}. {step}")
+                            if sd.get("pitfalls"):
+                                parts.append("**注意事项：**")
+                                for pitfall in sd["pitfalls"]:
+                                    parts.append(f"  ⚠️ {pitfall}")
+                            parts.append("")
+                            parts.append("该技能因检测到已知错误模式而自动加载。建议优先参考。")
+                            parts.append("")
+                            break
+            except Exception:
+                pass  # 错误关联为非关键功能
 
         # ── 自我认知（精简版） ──────────────────────────────────
         try:
@@ -479,6 +570,17 @@ class AgentLoop:
                     raw_output = str(tool_result.get("output", "(无输出)"))
                     safe_output = SafetyLayer.sanitize_text(raw_output)
 
+                    # Observer：跟踪工具调用
+                    tool_result_for_obs = {
+                        "success": tool_result.get("success", False),
+                        "output": safe_output[:500],
+                    }
+                    self._observer.on_tool_call(
+                        fn_name,
+                        tc.get("function", {}).get("arguments", {}),
+                        tool_result_for_obs,
+                    )
+
                     # ── 工具结果过滤：让 LLM 快速判断结果是否有贡献 ──
                     # 条件：结果超过 200 字符 且 工具调用成功 且 非错误
                     should_keep = True
@@ -582,27 +684,8 @@ class AgentLoop:
         # 用户偏好学习
         self._learn_user_preferences(task_result, task)
 
-        # P1 主动学习信号检测
-        try:
-            from autonomous.learner import Learner
-            if not hasattr(self, '_learner'):
-                self._learner = Learner(
-                    llm_chat_fn=self.llm.chat,
-                    memory_remember_fn=self.memory.remember,
-                    memory_recall_fn=self.memory.recall if hasattr(self.memory, 'recall') else None,
-                )
-            learning_signals = self._learner.detect(task_result, task, messages)
-            if learning_signals:
-                self._log(f"📡 检测到 {len(learning_signals)} 个学习信号")
-        except ImportError:
-            pass  # learner.py 不存在时不阻塞
-        except Exception as e:
-            self._log(f"⚠️ 学习信号检测异常: {e}")
-
-        # 进化评估
-        evolution_event = self.evolution.evaluate_and_evolve(task_result)
-        if evolution_event:
-            task_result["evolution"] = evolution_event
+        # ── 三阶段进化管道（Observer → EvolutionState → Judge → SkillWriter）──
+        self._run_evolution_pipeline(task_result, task, messages)
 
         # 质量评分
         quality = self._quality_score(task_result, messages)
@@ -627,6 +710,112 @@ class AgentLoop:
                 self._log(f"记忆维护异常: {e}")
 
         return task_result
+
+    # ── 三阶段进化管道 ────────────────────────────────────────────────
+
+    def _run_evolution_pipeline(self, task_result: dict, task: str, messages: list) -> None:
+        """三阶段进化管道（Observer → EvolutionState → Judge → SkillWriter）。
+
+        替换旧的 P1 Learner + EvolutionEngine 两条独立调用链。
+        只做 1 次 LLM 调用（当 Observer 信号表明"可能有价值"时）。
+        """
+        try:
+            task_type = task_result.get("task_type", "generic")
+            errors = task_result.get("errors", [])
+            success = task_result.get("success", False)
+
+            # 从 Observer 获取运行时摘要 + errors
+            # 构造一个精简的 task_result dict 喂给 on_task_complete
+            obs_task_result = {
+                "success": success,
+                "task_type": task_type,
+                "errors": errors,
+                "result": task_result.get("result", ""),
+                "duration": task_result.get("duration", 0.0),
+                "tool_calls": task_result.get("tool_calls", 0),
+            }
+            obs = self._observer.on_task_complete(obs_task_result, user_input=task)
+
+            # 后验注入：user_correction 和 errors 已在 on_task_complete 中由 Observer 自己检测
+            # 但 agent_loop 的 _detect_user_correction 使用 messages 更精确，覆盖之
+            if self._detect_user_correction(messages):
+                obs.has_user_correction = True
+
+            # 注入进化状态信息
+            try:
+                obs.is_novel_task = self.evolution.evolution_state.is_novel(task_type)
+                obs.is_repeated_failure = self.evolution.evolution_state.is_repeated_failure(task_type)
+                obs.task_type_history = self.evolution.evolution_state.get_task_type_count(task_type)
+                if errors:
+                    obs.has_unknown_error = any(
+                        self.evolution.evolution_state.is_unknown_error(e) for e in errors
+                    )
+            except Exception:
+                pass  # 进化状态信息非关键
+
+            # 运行三阶段管道
+            evo_result = self.evolution.run_pipeline(obs, task_type)
+
+            # 记录进化结果
+            task_result["evolution"] = evo_result or {}
+
+            # ── 新增：质量评分持久化 ────────────────────────────
+            # 如果进化管道产生了 skill（Judge 决定值得学），
+            # 将 _quality_score 的评分持久化到 skill 版本链
+            try:
+                if evo_result and evo_result.get("skill_written"):
+                    skill_name = evo_result.get("skill_name", "")
+                    if skill_name:
+                        # 已经调用了 _quality_score，从 task_result 取
+                        quality = task_result.get("quality", {})
+                        qscore = quality.get("score", 7)
+                        # 归一化到 0-1
+                        norm_score = max(0.0, min(1.0, qscore / 10.0))
+                        self.evolution.evolution_state.record_skill_quality(
+                            skill_name, norm_score
+                        )
+            except Exception:
+                pass
+
+            # ── 新增：evolution_mode 通知 ───────────────────────
+            # 根据 pipeline 中 Judge 的 evolution_mode 做不同反应
+            try:
+                if evo_result and evo_result.get("evolution_mode"):
+                    mode = evo_result["evolution_mode"]
+                    skill_name = evo_result.get("skill_name", "")
+                    if mode == "CAPTURED":
+                        self._log(f"🧬 新技能捕获: {skill_name}（首次发现）")
+                    elif mode == "FIX":
+                        self._log(f"🔧 技能修复: {skill_name}（覆盖旧版本）")
+                    elif mode == "DERIVED":
+                        self._log(f"🌿 技能衍生: {skill_name}（派生新版本）")
+            except Exception:
+                pass
+
+            # 健康检查
+            health = self.evolution.evolution_state.health_check()
+            if health:
+                self._log(f"⚠️ 进化健康: {health}")
+
+        except Exception as e:
+            self._log(f"⚠️ 进化管道异常: {e}")
+
+    def _detect_user_correction(self, messages: list) -> bool:
+        """从对话中检测用户纠正信号。
+
+        关键词：别、不对、错了、重新、改成、注意、但是+不、不用这样
+        """
+        correction_markers = [
+            "别", "不对", "错了", "不是", "重新", "改成",
+            "注意", "但是不", "不用这样", "不是这样",
+        ]
+        for m in messages:
+            if m.get("role") == "user":
+                content = m.get("content", "")
+                for marker in correction_markers:
+                    if marker in content:
+                        return True
+        return False
 
     def _self_check(self, task_result: dict, messages: list, start: float) -> None:
         """任务完成后自检。"""
@@ -1155,9 +1344,7 @@ class AgentLoop:
         self._self_check(task_result, messages, start)
         self._learn_user_preferences(task_result, task)
 
-        evolution_event = self.evolution.evaluate_and_evolve(task_result)
-        if evolution_event:
-            task_result["evolution"] = evolution_event
+        self._run_evolution_pipeline(task_result, task, messages)
 
         quality = self._quality_score(task_result, messages)
         task_result["quality"] = quality

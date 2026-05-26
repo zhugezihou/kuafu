@@ -1,0 +1,20 @@
+name: "AI 模型参数配置技能"
+description: "解析并解释 AI 模型生成参数（如 max_tokens）及 Token 计算规则"
+task_type: generic
+keywords:
+  - "generic"
+  - "max_tokens"
+  - "token 定义"
+  - "字数限制"
+steps:
+  - "识别用户关于模型参数或 Token 概念的提问意图"
+  - "明确解释 Token 作为文本处理基本单位的定义"
+  - "分别说明英文单词拆分与中文字符的 Token 对应关系"
+  - "指出标点符号和空格也单独计为 1 个 Token 的规则"
+  - "结合具体示例演示 Token 计数方法以辅助理解"
+pitfalls:
+  - "避免混淆字符数与 Token 数的区别"
+  - "提醒用户不同语言在 Token 化上存在差异"
+usage_count: 0
+created_at: 1779714347
+source: kuafu_impromptu_evolution

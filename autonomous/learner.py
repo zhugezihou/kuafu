@@ -1,27 +1,17 @@
 """
-autonomous/learner.py — P1 主动学习信号检测模块
+autonomous/learner.py — [已废弃] 旧 P1 主动学习信号检测模块
 
-职责：
-在执行完每轮任务后，检测5种学习信号，将可学习的经验写入记忆，
-供后续的 Reviewer 复盘和夸父自身参考。
+⚠️ 自 v0.4.0 起，本模块已被 core/ 中的三阶段进化管道取代：
+  Observer → EvolutionState → Judge → SkillWriter
 
-核心原则：
-- 不修改 core/ 任何文件（仅通过注入的回调读取内存数据 + 写入记忆）
-- 轻量级：每次检测 < 5次 LLM 调用（通常 1-2 次），且只在有信号时调用
-- 增量：只处理新产生的数据
-- 不阻塞主流程：异常时静默失败
+功能已迁移至：
+  - 运行时追踪 → core/observer.py
+  - 状态管理 → core/evolution_state.py
+  - LLM 判断+提取 → core/judge.py
+  - 技能写入 → core/evolution.py (EvolutionEngine.run_pipeline)
 
-5 种学习信号：
-1. 重复失败 (repeat_failure) — 同一任务类型连续失败 >= 2 次
-2. 未知错误 (unknown_error) — 错误信息不在已知错误库中
-3. 知识缺口 (knowledge_gap) — 任务中频繁出错/重试某个操作
-4. 用户纠正 (user_correction) — 用户输入包含纠正/指导
-5. 新模式发现 (new_pattern) — 找到新的有效解决方案
-
-信号分类：
-- S：安全，自动学，不打扰用户
-- A：重要，需要写入记忆并通知用户
-- B：常规，仅写入记忆
+本文件保留仅为兼容旧代码引用，新代码应直接使用三阶段管道。
+如需恢复旧行为，删除本注释块即可。
 """
 
 import json

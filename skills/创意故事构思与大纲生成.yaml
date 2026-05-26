@@ -1,0 +1,20 @@
+name: 创意故事构思与大纲生成
+description: 从coding类任务中自动提取的技能
+task_type: coding
+keywords:
+- coding
+steps:
+- 写小说
+- 故事构思
+- 大纲设计
+- 角色设定
+- 情节规划
+- 确认用户偏好的题材与故事核心主题
+- 设计主角背景、能力及多世轮回等独特设定
+- 规划关键情节节点与冲突发展节奏
+- 构建世界观规则及配角关系网
+- 输出包含章节安排的完整故事大纲
+pitfalls: null
+usage_count: 2
+created_at: 1779715939
+source: kuafu_impromptu_evolution

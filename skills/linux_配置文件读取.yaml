@@ -1,18 +1,18 @@
-name: "Linux 配置文件读取"
-description: "从file_operation类任务中自动提取的技能"
+name: Linux 配置文件读取
+description: 从file_operation类任务中自动提取的技能
 task_type: file_operation
 keywords:
-  - "file_operation"
+- file_operation
 steps:
-  - "读取配置"
-  - "文件不存在"
-  - "cat 命令失败"
-  - "使用 ls 命令检查目标文件及目录是否存在"
-  - "确认文件路径拼写无误且权限允许读取"
-  - "若文件缺失先创建或修正路径后再读取"
-  - "再次执行读取命令验证内容输出是否成功"
-  - "注意相对路径在终端中可能解析为错误位置"
-pitfalls:
-usage_count: 0
+- 读取配置
+- 文件不存在
+- cat 命令失败
+- 使用 ls 命令检查目标文件及目录是否存在
+- 确认文件路径拼写无误且权限允许读取
+- 若文件缺失先创建或修正路径后再读取
+- 再次执行读取命令验证内容输出是否成功
+- 注意相对路径在终端中可能解析为错误位置
+pitfalls: null
+usage_count: 1
 created_at: 1779634833
 source: kuafu_impromptu_evolution

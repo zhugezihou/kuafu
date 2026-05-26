@@ -5,14 +5,10 @@
 - severity: optional
   rule: 有单元测试
 - severity: warning
-  rule: '参考历史教训: 「generic」连续 3 次失败'
+  rule: '参考 skills/ 目录下已有的自动提取技能（D 方案进化产物）'
 - severity: warning
-  rule: '参考历史教训: 「generic」类型任务成功 5 次'
-- severity: warning
-  rule: '参考历史教训: 「fail_test_5」连续 3 次失败'
+  rule: '检查 memory/.evolution_state.json 中该任务类型的连续失败记录'
 - severity: required
-  rule: 执行 「generic」连续 3 次失败 类任务前先检查前置条件和错误边界
+  rule: 执行前检查 .evolution_state.json 中该类型的已知错误和失败率
 - severity: optional
-  rule: 遇到 「generic」类型任务成功 5 次 类任务时参考以往成功的工作流
-- severity: required
-  rule: 执行 「generic」连续 4 次失败 类任务前先检查前置条件和错误边界
+  rule: 遇到复杂任务时参考 skills/ 中匹配的技能文件
