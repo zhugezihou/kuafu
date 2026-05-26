@@ -156,6 +156,10 @@ class AgentLoop:
         # 记忆维护计数器（每 10 轮触发一次去重/过期清理/合并）
         self._mem_maintenance_counter = 0
 
+        # EvolutionEngine：自我进化（任务结束时判断是否生成技能）
+        from core.evolution_engine import EvolutionEngine
+        self.evolution_engine = EvolutionEngine(root_dir=ROOT_DIR)
+
         # Observer：运行时工具调用跟踪
         self._observer = Observer()
         self.evolution.register_observer(self._observer)
