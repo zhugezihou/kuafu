@@ -175,32 +175,6 @@ def ask_api_key(backend: str) -> str:
     return api_key
 
 
-def ask_hindsight() -> tuple:
-    """Hindsight 记忆系统（可选）"""
-    print_step(3, "记忆系统（可选）")
-
-    print_info("Hindsight 是夸父的语义记忆系统，支持向量搜索和实体图谱")
-    print_info("不使用 Hindsight: 使用本地 JSON 文件存储（关键词匹配）")
-
-    if RICH_AVAILABLE:
-        use_hindsight = Confirm.ask("\n  启用 Hindsight 云端记忆?", default=False)
-    else:
-        resp = input("\n  启用 Hindsight? (y/N): ").strip().lower()
-        use_hindsight = resp == "y"
-
-    if not use_hindsight:
-        return "", ""
-
-    if RICH_AVAILABLE:
-        api_key = Prompt.ask("  Hindsight API Key", password=True)
-        bank_id = Prompt.ask("  Bank ID", default="default")
-    else:
-        print("  Hindsight API Key: ", end="")
-        api_key = input().strip()
-        bank_id = input("  Bank ID (默认: default): ").strip() or "default"
-
-    return api_key, bank_id
-
 
 def test_connection(backend: str, api_key: str) -> bool:
     """测试 LLM 连接"""
@@ -235,7 +209,7 @@ def test_connection(backend: str, api_key: str) -> bool:
         return False
 
 
-def save_config(backend: str, api_key: str, hindsight_key: str, hindsight_bank: str):
+def save_config(backend: str, api_key: str):
     """保存 .env 配置"""
     print_step(5, "保存配置")
 
@@ -265,12 +239,6 @@ def save_config(backend: str, api_key: str, hindsight_key: str, hindsight_bank: 
 
     if backend == "cloud":
         set_var("KUAFFU_BASE_URL", "https://api.deepseek.com")
-
-    # Hindsight
-    if hindsight_key:
-        set_var("HINDSIGHT_API_KEY", hindsight_key)
-    if hindsight_bank:
-        set_var("HINDSIGHT_BANK_ID", hindsight_bank)
 
     with open(DOT_ENV, "w", encoding="utf-8") as f:
         f.write("\n".join(config_lines) + "\n")
@@ -344,10 +312,7 @@ def main():
         # 2. API Key
         api_key = ask_api_key(backend)
 
-        # 3. Hindsight（可选）
-        h_key, h_bank = ask_hindsight()
-
-        # 4. 测试连接
+        # 3. 测试连接
         test_ok = test_connection(backend, api_key)
 
         if not test_ok:
@@ -361,8 +326,7 @@ def main():
                 return
 
         # 5. 保存
-        save_config(backend, api_key, h_key, h_bank)
-
+        save_config(backend, api_key)
         # 6. 本地模式额外检查
         if backend == "local":
             check_local_prerequisites()

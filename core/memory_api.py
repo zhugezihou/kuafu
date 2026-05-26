@@ -1,16 +1,7 @@
-"""
-memory_api.py — 夸父记忆系统
+"""memory_api.py — 夸父记忆系统
 
-支持两种后端模式（通过 KUAFU_MEMORY_MODE 环境变量选择）:
-  - 'file' (默认): 本地 JSON 文件存储，零依赖
-  - 'hindsight': 对接 Hindsight Cloud API，语义搜索 + 知识图谱
-
-Hindsight 模式需要配置:
-  - HINDSIGHT_API_KEY: API key
-  - HINDSIGHT_BANK_ID: 记忆库 ID (默认: kuafu)
-  - HINDSIGHT_API_URL: API 地址 (默认: https://api.hindsight.vectorize.io)
-
-核心原则：零新增 Python 依赖，仅用 urllib 和 json 标准库。
+本地 JSON 文件记忆存储，零新依赖。
+支持去重、TTL 过期、自动清理、LLM 摘要合并。
 
 v0.4 新增:
   - 写入去重（关键词 overlap > 60% 视为重复，跳过或覆盖旧值）
@@ -50,8 +41,6 @@ def _get_llm_client():
 DEFAULT_MEMORY_DIR = Path(__file__).resolve().parent.parent / "memory"
 DEFAULT_TASKS_DIR = DEFAULT_MEMORY_DIR / "tasks"
 
-# Hindsight Cloud API 默认地址
-DEFAULT_HINDSIGHT_API_URL = "https://api.hindsight.vectorize.io"
 
 # v0.4 记忆管理默认值（会被 memory_config.yaml 覆盖）
 DEFAULT_TTL_DAYS = 30                     # 默认过期天数
@@ -125,44 +114,6 @@ def _get_env_or_dotenv(key: str, default: str = "") -> str:
             except OSError:
                 continue
     return default
-
-
-def _hindsight_request(
-    method: str,
-    path: str,
-    body: Optional[dict] = None,
-    api_key: Optional[str] = None,
-    base_url: str = DEFAULT_HINDSIGHT_API_URL,
-    timeout: int = 60,
-) -> dict:
-    """向 Hindsight Cloud API 发送 HTTP 请求 (urllib, 零依赖)
-
-    返回解析后的 JSON dict。
-    请求失败时抛出 RuntimeError，附带服务器返回的错误信息。
-    """
-    url = f"{base_url.rstrip('/')}{path}"
-    data = json.dumps(body).encode("utf-8") if body else None
-
-    req = urllib.request.Request(url, data=data, method=method)
-    req.add_header("Content-Type", "application/json")
-    req.add_header("Accept", "application/json")
-    if api_key:
-        req.add_header("Authorization", f"Bearer {api_key}")
-
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        detail = ""
-        try:
-            detail = e.read().decode("utf-8")
-        except Exception:
-            pass
-        raise RuntimeError(f"Hindsight API error {e.code}: {detail}")
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"Hindsight API unreachable: {e.reason}")
-    except Exception as e:
-        raise RuntimeError(f"Hindsight request failed: {e}")
 
 
 def _keyword_overlap_ratio(text1: str, text2: str) -> float:
@@ -574,118 +525,6 @@ class FileMemoryBackend:
         }
 
 
-# ── Hindsight 后端 ────────────────────────────────────────────────────
-
-class HindsightMemoryBackend:
-    """Hindsight Cloud API 记忆后端 — 语义搜索 + 知识图谱"""
-
-    def __init__(
-        self,
-        api_key: Optional[str] = None,
-        bank_id: str = "kuafu",
-        api_url: str = DEFAULT_HINDSIGHT_API_URL,
-        timeout: int = 60,
-    ):
-        self.api_key = api_key or _get_env_or_dotenv("HINDSIGHT_API_KEY", "")
-        self.bank_id = _get_env_or_dotenv("HINDSIGHT_BANK_ID", bank_id)
-        self.api_url = _get_env_or_dotenv("HINDSIGHT_API_URL", api_url)
-        self.timeout = timeout
-        self._ready = bool(self.api_key)
-
-    def _check_ready(self):
-        if not self._ready:
-            raise RuntimeError(
-                "Hindsight API key 未配置。请设置 HINDSIGHT_API_KEY 环境变量，"
-                "或使用 file 模式（KUAFU_MEMORY_MODE=file）。"
-            )
-
-    def store(self, content: str, context: str = "", source: str = "") -> str:
-        """存记忆到 Hindsight"""
-        self._check_ready()
-        body = {
-            "items": [{"content": content, "context": context}],
-        }
-        if source:
-            body["items"][0]["metadata"] = {"source": source}
-        try:
-            resp = _hindsight_request(
-                "POST",
-                f"/v1/default/banks/{self.bank_id}/memories",
-                body,
-                api_key=self.api_key,
-                base_url=self.api_url,
-                timeout=self.timeout,
-            )
-            return resp.get("status", "ok")
-        except RuntimeError as e:
-            return f"hindsight_store_error: {e}"
-
-    def search(self, query: str, limit: int = 5) -> list[dict]:
-        """语义搜索记忆"""
-        self._check_ready()
-        body = {
-            "query": query,
-            "budget": "mid",
-            "max_tokens": 4096,
-        }
-        try:
-            resp = _hindsight_request(
-                "POST",
-                f"/v1/default/banks/{self.bank_id}/memories/recall",
-                body,
-                api_key=self.api_key,
-                base_url=self.api_url,
-                timeout=self.timeout,
-            )
-            results = resp.get("results", [])
-            return [
-                {
-                    "id": r.get("id", ""),
-                    "content": r.get("text", ""),
-                    "score": r.get("score", 0),
-                }
-                for r in results[:limit]
-            ]
-        except RuntimeError as e:
-            return [{"content": f"hindsight_search_error: {e}", "score": 0}]
-
-    def reflect(self, query: str) -> str:
-        """综合推理"""
-        self._check_ready()
-        body = {
-            "query": query,
-            "budget": "low",
-        }
-        try:
-            resp = _hindsight_request(
-                "POST",
-                f"/v1/default/banks/{self.bank_id}/reflect",
-                body,
-                api_key=self.api_key,
-                base_url=self.api_url,
-                timeout=self.timeout,
-            )
-            return resp.get("text", "没有相关记忆。")
-        except RuntimeError as e:
-            return f"hindsight_reflect_error: {e}"
-
-    def store_batch(self, items: list[dict]) -> str:
-        """批量存储"""
-        self._check_ready()
-        body = {"items": items}
-        try:
-            resp = _hindsight_request(
-                "POST",
-                f"/v1/default/banks/{self.bank_id}/memories",
-                body,
-                api_key=self.api_key,
-                base_url=self.api_url,
-                timeout=self.timeout,
-            )
-            return resp.get("status", "ok")
-        except RuntimeError as e:
-            return f"hindsight_batch_error: {e}"
-
 
 # ── MemoryAPI 接口（统一入口） ────────────────────────────────────────
 
@@ -701,43 +540,18 @@ class MemoryAPI:
 
     def __init__(self, mode: Optional[str] = None, memory_dir: Optional[Path] = None):
         self._file_backend = FileMemoryBackend(memory_dir)
-        self._hindsight_backend: Optional[HindsightMemoryBackend] = None
 
         mode = mode or _get_env_or_dotenv("KUAFU_MEMORY_MODE", "file")
         self._mode = mode.lower()
 
-        if self._mode == "hindsight":
-            try:
-                self._hindsight_backend = HindsightMemoryBackend()
-                if not self._hindsight_backend._ready:
-                    print("[MemoryAPI] Hindsight API key 未配置，回退到 file 模式")
-                    self._mode = "file"
-            except Exception as e:
-                print(f"[MemoryAPI] Hindsight 初始化失败: {e}，回退到 file 模式")
-                self._mode = "file"
-
-        # ── 持久化钩子（Hindsight 专用） ─────────────────────────────
-        self._hindsight_remember = self._null_hook
-        self._hindsight_recall = self._null_hook
-        if self._mode == "hindsight":
-            self._hindsight_remember = self._hindsight_remember_impl
-            self._hindsight_recall = self._hindsight_recall_impl
+        # 非 file 模式回退到 file
+        if self._mode != "file":
+            print(f"[MemoryAPI] 不支持的模式 '{self._mode}'，回退到 file 模式")
+            self._mode = "file"
 
     @property
     def mode(self) -> str:
         return self._mode
-
-    @staticmethod
-    def _null_hook(*args, **kwargs):
-        return None
-
-    def _hindsight_remember_impl(self, content: str, context: str = ""):
-        """Hindsight 存储钩子，被 agent_loop 调用"""
-        self._hindsight_backend.store(content, context=context)
-
-    def _hindsight_recall_impl(self, query: str) -> list[dict]:
-        """Hindsight 检索钩子"""
-        return self._hindsight_backend.search(query)
 
     # ── 公开接口（统一存储/搜索/推理） ──────────────────────────────
 
@@ -776,17 +590,7 @@ class MemoryAPI:
             "stats": stats,
         }
 
-    def hindsight_store(self, content: str, context: str = "") -> None:
-        """显式调用 Hindsight 存储（仅在 hindsight 模式下有效）"""
-        self._hindsight_remember(content, context)
-
-    def hindsight_recall(self, query: str) -> list[dict]:
-        """显式调用 Hindsight 检索"""
-        return self._hindsight_recall(query)
-
     def store_batch(self, items: list[dict]) -> str:
-        if self._hindsight_backend and self._mode == "hindsight":
-            return self._hindsight_backend.store_batch(items)
         results = []
         for item in items:
             mem_id = self._file_backend.store(
@@ -833,9 +637,6 @@ class MemoryAPI:
                            include_search: str = "") -> str:
         """构建注入到 system prompt 的记忆块。
 
-        对 file 后端：搜索最近记忆 + 按需检索。
-        对 hindsight 后端：使用 hindsight_recall 检索。
-
         Args:
             budget_ratio: 预算比例（0.0~1.0），来自 BudgetAllocator
             include_search: 可选的关键词，触发按需检索
@@ -845,23 +646,7 @@ class MemoryAPI:
         """
         parts = []
 
-        if self._mode == "hindsight" and self._hindsight_backend:
-            try:
-                results = self._hindsight_backend.search(
-                    include_search if include_search else "记忆",
-                    limit=3,
-                )
-                if results:
-                    lines = ["=== 相关记忆 ==="]
-                    for r in results:
-                        c = r.get("content", "")[:200]
-                        if c:
-                            lines.append(f"  • {c}")
-                    parts.append('\n'.join(lines))
-            except Exception as e:
-                logger.warning(f"[MemoryAPI] hindsight 检索失败: {e}")
-
-        # file 模式：搜索最近记忆 + 按需检索
+        # 搜索最近记忆 + 按需检索
         try:
             recent = self._file_backend.search(
                 include_search if include_search else "",
@@ -897,7 +682,7 @@ class MemoryAPI:
             },
             {
                 "name": "memory_search",
-                "description": "搜索历史记忆。支持语义搜索（hindsight 模式）或关键词搜索（file 模式）。",
+                "description": "搜索历史记忆。支持关键词搜索。",
                 "parameters": {
                     "type": "object",
                     "properties": {
