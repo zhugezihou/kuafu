@@ -15,6 +15,7 @@ import json
 import time
 import yaml
 import logging
+import uuid
 from pathlib import Path
 from typing import Optional, Any
 from dataclasses import dataclass, field
@@ -27,6 +28,10 @@ TIMEOUT = 300
 
 # P1-2: 子 Agent Profile 目录
 SUBAGENT_PROFILES_DIR = Path(__file__).resolve().parent.parent / "subagent_profiles"
+
+# P2-1: 侧链隔离 — 子 Agent 完整对话转录写磁盘
+SIDECHAIN_DIR = Path(__file__).resolve().parent.parent / "sidechain_data" / "transcripts"
+SIDECHAIN_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def load_skill_profile(name: str) -> Optional[dict[str, Any]]:
@@ -170,6 +175,11 @@ def handle_delegate(args: dict) -> dict:
         _active_subagents += 1
 
     try:
+        # ── P2-1: 侧链隔离 — 创建独立会话转录文件 ──
+        sidechain_id = uuid.uuid4().hex[:12]
+        sidechain_path = SIDECHAIN_DIR / f"{sidechain_id}.jsonl"
+        sidechain_messages: list[dict] = []
+
         # 创建隔离的 ToolRegistry
         from core.tool_registry import ToolRegistry
         sub_tools = ToolRegistry()
@@ -189,6 +199,14 @@ def handle_delegate(args: dict) -> dict:
         # 跳过 MCP 加载（子 Agent 不需要外部工具绑定）
         sub_loop.mcp_bridge = None
 
+        # ── P2-1: 转录所有子 Agent 的对话到侧链文件 ──
+        original_log = sub_loop._log
+        def _transcript_log(text: str):
+            """拦截日志，同时写入侧链转录。"""
+            original_log(text)
+            sidechain_messages.append({"type": "log", "text": text, "time": time.time()})
+        sub_loop._log = _transcript_log
+
         # 组装提示
         prompt = goal
         if context:
@@ -203,33 +221,49 @@ def handle_delegate(args: dict) -> dict:
         duration = round(time.time() - start, 2)
         task_id = f"sub_{int(start * 1000)}"
 
-        raw_output = result.get("result", "") or ""
-        raw_summary = result.get("result", "") or ""
+        # ── P2-1: 写入侧链转录文件（完整对话历史） ──
+        # 侧链文件只写磁盘，父 Agent 永不接触
+        try:
+            sidechain_record = {
+                "sidechain_id": sidechain_id,
+                "task_id": task_id,
+                "goal": goal[:200],
+                "context": context[:500] if context else "",
+                "success": result.get("success", False),
+                "turns": result.get("turns", 0),
+                "duration": duration,
+                "messages": sidechain_messages,
+                "result": result.get("result", "")[:500],
+            }
+            with open(sidechain_path, "w", encoding="utf-8") as f:
+                f.write(json.dumps(sidechain_record, ensure_ascii=False, default=str))
+            logger.info(f"📜 侧链转录已保存: {sidechain_path}")
+        except Exception as e:
+            logger.warning(f"侧链转录写入失败: {e}")
+            sidechain_path = None
 
-        # ── P0-2: 子 Agent 输出智能压缩 ──
-        # 父 Agent 上下文是宝贵的，子 Agent 的输出必须压缩到 1K tokens 以内
-        MAX_OUTPUT_CHARS = 1600  # ≈ 1K tokens
+        raw_output = result.get("result", "") or ""
+
+        # ── P2-2: 强制只返摘要（sidechain 隔离） ──
+        # Claude Code 设计启示：子 Agent 的完整对话永远不进父上下文
+        # 父 Agent 只收到摘要 + 可选的侧链文件引用
         MAX_SUMMARY_CHARS = 800  # ≈ 500 tokens
 
-        # output 截断保护
-        if len(raw_output) > MAX_OUTPUT_CHARS:
-            output = raw_output[:MAX_OUTPUT_CHARS]
-            if len(raw_output) > MAX_OUTPUT_CHARS + 100:
-                output += f"\n\n[... 完整输出过长，已截断至 {MAX_OUTPUT_CHARS} chars (原 {len(raw_output)} chars)]"
-        else:
-            output = raw_output
+        # 用子 Agent 的结果做摘要（原始结果先给摘要器，不再放全量 output 回父上下文）
+        summary = _summarize_result(raw_output, max_chars=MAX_SUMMARY_CHARS)
 
-        # summary 做智能摘要（优先用本地 LLM）
-        summary = _summarize_result(raw_summary, max_chars=MAX_SUMMARY_CHARS)
-
-        return {
+        # 返回：只有 summary，没有全量 output
+        ret = {
             "success": result.get("success", False),
-            "output": output,
             "summary": summary,
             "turns": result.get("turns", 0),
             "duration": duration,
             "task_id": task_id,
         }
+        # 可选：附带侧链文件引用（供日志调试）
+        if sidechain_path:
+            ret["_sidechain"] = str(sidechain_path)
+        return ret
 
     except Exception as e:
         return {"success": False, "output": f"子 Agent 执行异常: {e}"}

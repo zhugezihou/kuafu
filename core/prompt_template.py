@@ -381,3 +381,70 @@ class PromptCache:
             if rendered:
                 parts.append(rendered)
         return "\n".join(parts)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# P1-8: System Reminders — 轻量级动态上下文
+# ─────────────────────────────────────────────────────────────────────
+
+def build_reminders(
+    turn_context: str = "",
+    task: str = "",
+    turn_count: int = 0,
+    last_tool_results: Optional[list[str]] = None,
+    memory_hints: Optional[list[str]] = None,
+) -> str:
+    """构建短提醒列表，每次用户消息前注入。
+
+    Claude Code 设计启示（Section 7.1 ）:
+    - 每次用户消息前注入 1-3 条简短、聚焦的「系统提醒」
+    - 比完整 system prompt 刷新更轻量，更精准
+    - 可承载：当前进度提示、工具使用约定、记忆线索
+    - 提醒必须足够短（<1-2 句话），否则会稀释核心 system prompt
+
+    Args:
+        turn_context: 当前轮到时的上下文描述
+        task: 原始任务描述
+        turn_count: 当前轮次（0-based）
+        last_tool_results: 上轮工具结果关键词（可选）
+        memory_hints: 记忆提示词（可选）
+
+    Returns:
+        格式化的提醒字符串，空字符串表示无提醒。
+        单条提醒不超过 80 字符，不超过 3 条。
+    """
+    reminders: list[str] = []
+
+    # ── 轮次提醒：高轮次时提示聚焦 ──
+    if turn_count > 5:
+        reminders.append("注意：已进行多轮对话，聚焦当前任务，不要回顾已完成步骤。")
+
+    # ── 工具结果提醒：上轮工具有失败或大结果时 ──
+    if last_tool_results:
+        fail_keywords = ["失败", "错误", "error", "fail", "error", "timeout"]
+        has_failure = any(
+            any(kw in result.lower() for kw in fail_keywords)
+            for result in last_tool_results
+        )
+        if has_failure:
+            reminders.append("上轮工具有失败，检查错误信息并尝试修复。")
+
+    # ── 记忆提示：由外部传入，不自动生成 ──
+    if memory_hints:
+        for hint in memory_hints[:2]:
+            if len(hint) < 60:
+                reminders.append(hint)
+
+    # ── 任务类型提醒 ──
+    if task:
+        task_lower = task.lower()
+        if "git" in task_lower or "commit" in task_lower or "push" in task_lower:
+            reminders.append("Git 操作后记得检查状态确认成功。")
+        elif "deploy" in task_lower or "发布" in task_lower:
+            reminders.append("部署前检查配置，部署后验证服务可用。")
+
+    # 限制 3 条
+    if not reminders:
+        return ""
+
+    return "\n".join(f"> 提醒: {r}" for r in reminders[:3])

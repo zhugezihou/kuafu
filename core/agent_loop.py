@@ -22,7 +22,7 @@ from core.tool_registry import ToolRegistry
 from core.session_store import SessionStore
 from core.context_compress import ContextCompressor, LocalSummarizer, ToolResultStore, ContextCollapse, CollapseResult, budget_reduce_output
 from core.budget_allocator import BudgetAllocator, BudgetSnapshot, BudgetPolicy
-from core.prompt_template import PromptManager, PromptCache, Section
+from core.prompt_template import PromptManager, PromptCache, Section, build_reminders
 from core.safety import SafetyLayer
 from core.skill_resolver import discover_skills, match_skills, inject_skills_to_prompt, increment_usage, record_usage
 from core.whiteboard import Whiteboard, Decomposer, Step, WhiteboardExecutor
@@ -747,8 +747,24 @@ class AgentLoop:
         self.sessions.append_message(self.current_session_id, "user", task)
 
         # 执行循环
+        last_tool_results: list[str] = []
         for turn in range(self.max_turns):
             turn_count = turn + 1
+
+            # ── System Reminders: 第 2 轮起，每次用户消息前注入 1-3 条提醒 ──
+            if turn > 0:
+                reminders = build_reminders(
+                    task=task,
+                    turn_count=turn,
+                    last_tool_results=last_tool_results if last_tool_results else None,
+                )
+                if reminders:
+                    # 插入为 system 消息（不占用 user/assistant 位置）
+                    messages.append({
+                        "role": "system",
+                        "content": reminders,
+                    })
+                    self._log(f"💡 System Reminder: {reminders[:80]}...")
 
             self._log(f"🤔 第 {turn_count}/{self.max_turns} 轮 — LLM 思考中...")
 
@@ -1142,6 +1158,8 @@ class AgentLoop:
                     if not tool_result["success"]:
                         err = f"工具 {fn_name} 失败: {safe_output[:200]}"
                         errors.append(err)
+                        # 记录失败的工具结果供下一轮 System Reminders 使用
+                        last_tool_results.append(f"{fn_name}:fail:{safe_output[:80]}")
                         # 触发 on_tool_error 钩子（异步）
                         if self.hooks_enabled:
                             trigger_async("on_tool_error", {
