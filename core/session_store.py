@@ -14,6 +14,7 @@
 """
 
 import json
+import logging
 import sqlite3
 import time
 from dataclasses import dataclass, field, asdict
@@ -23,6 +24,8 @@ from typing import Optional
 MEMORY_DIR = Path(__file__).resolve().parent.parent / "memory"
 SESSION_DB = MEMORY_DIR / "sessions.db"
 SESSION_JSONL_DIR = MEMORY_DIR / "sessions_jsonl"  # 非破坏性压缩的原始消息存储
+
+logger = logging.getLogger("kuafu.session_store")
 
 # token 估算：中文约 1.5 字符/token，英文约 4 字符/token
 # Qwen3.5-9B 实测中文约 1.69 chars/token，取安全值 1.6
@@ -473,3 +476,123 @@ class SessionStore:
 
     def __del__(self):
         self.close()
+
+    # ── P1-3: 会话 Fork ────────────────────────────────────────────
+
+    def fork_session(self, src_session_id: str, title: str = "",
+                     include_history: bool = True, max_tokens: int = 6000) -> Optional[str]:
+        """从现有会话 fork 出一个新子会话。
+
+        将源会话的上下文注入新会话作为「历史背景」，
+        新会话可以在此基础上继续对话而不影响源会话。
+
+        Args:
+            src_session_id: 源会话 ID
+            title: 新会话标题
+            include_history: 是否注入源会话历史
+            max_tokens: 注入历史的最大 token 数
+
+        Returns:
+            新会话 ID，或 None（源不存在时）
+        """
+        src = self.get_session(src_session_id)
+        if not src:
+            logger.warning(f"fork_session: 源会话 {src_session_id} 不存在")
+            return None
+
+        # 创建新会话
+        if not title:
+            title = f"[fork] {src.title}"
+        new_id = self.create_session(title=title)
+
+        if include_history:
+            # 从源会话获取历史消息（不含 system，含截断）
+            history = self.get_history_messages(src_session_id, max_tokens=max_tokens)
+            if history:
+                # 注入历史背景作为第一条系统消息
+                history_text = "\n".join(
+                    f"## {m['role']}: {m['content'][:500]}"
+                    for m in history[-20:]  # 最多 20 条
+                )
+                fork_context = (
+                    f"[会话历史] 以下内容来自父会话「{src.title}」({src_session_id})：\n"
+                    f"{history_text}\n\n"
+                    f"[提示] 你正在父会话的基础上继续工作。请优先参考以上历史上下文。"
+                )
+                self.append_message(new_id, "system", fork_context)
+
+        return new_id
+
+    def resume_context(self, src_session_id: str, max_tokens: int = 4000) -> Optional[str]:
+        """从历史会话恢复上下文（压缩版）。
+
+        生成一段「上下文简报」注入到当前会话，比 fork 更轻量：
+        - 不创建新会话
+        - 只返回一段可被注入 system prompt 的文本
+        - 保留源会话的关键决策、Pin 标记、白板信息
+
+        Args:
+            src_session_id: 源会话 ID
+            max_tokens: 简报最大 token 数
+
+        Returns:
+            上下文简报文本，或 None
+        """
+        src = self.get_session(src_session_id)
+        if not src:
+            return None
+
+        # 获取所有消息
+        messages = self.get_messages(src_session_id, max_tokens=max_tokens)
+        if not messages:
+            return None
+
+        # 提取关键信息
+        parts = []
+        parts.append(f"📋 会话简报：{src.title} ({src_session_id})")
+        parts.append(f"   {src.message_count} 条消息 · {src.total_tokens} tokens")
+
+        # 提取 system prompt 中的白板/决策
+        for m in messages:
+            if m["role"] == "system" and any(kw in (m.get("content") or "")
+                                            for kw in ["白板", "决策", "决定", "方案", "已确定"]):
+                content = str(m.get("content", ""))[:400]
+                parts.append(f"\n📝 决策记录：\n{content}")
+                break
+
+        # 提取包含 [PIN] / [KEEP] 标记的消息
+        pinned = []
+        for m in messages:
+            content = str(m.get("content", ""))
+            if "[PIN]" in content or "[KEEP]" in content or "[保留]" in content:
+                pinned.append(content[:200])
+        if pinned:
+            parts.append(f"\n📌 关键信息（{len(pinned)} 条 Pin 记录）：")
+            for p in pinned[-5:]:  # 最多 5 条
+                parts.append(f"   • {p.replace('[PIN]', '').replace('[KEEP]', '').strip()[:100]}")
+
+        # 提取最近 user-assistant 交互作为上下文
+        user_msgs = [(i, m) for i, m in enumerate(messages) if m["role"] == "user"]
+        if user_msgs:
+            parts.append(f"\n💬 最后 {min(3, len(user_msgs))} 轮对话：")
+            for idx, m in user_msgs[-3:]:
+                content = str(m.get("content", ""))[:200]
+                parts.append(f"   🧑 {content}")
+
+        return "\n".join(parts)
+
+    def find_related_sessions(self, query: str, limit: int = 5) -> list[Session]:
+        """找到与查询相关的会话（用于推荐 resume 目标）。
+
+        先用内容搜索找匹配，再用关键词匹配标题。
+        """
+        results = self.search_sessions(query, limit=limit)
+        # 补充：按更新时间排序
+        all_sessions = self.list_sessions(limit=limit * 2)
+        existing_ids = {s.id for s in results}
+        for s in all_sessions:
+            if s.id not in existing_ids:
+                results.append(s)
+            if len(results) >= limit:
+                break
+        return results[:limit]

@@ -286,7 +286,10 @@ class KuafuAgent:
 
         return "\n".join(parts)
 
-    def run(self, task: str, mode: str = "standard") -> dict:
+    def run(self, task: str, mode: str = "standard",
+            resume_from: Optional[str] = None,
+            resume_mode: str = "brief",
+            resume_max_tokens: int = 4000) -> dict:
         """执行一次任务。
         
         支持两种模式：
@@ -296,6 +299,13 @@ class KuafuAgent:
         如果用户输入的是问候/寒暄，直接回复，不进入 agent 循环。
         
         使用 AgentLoop 驱动完整的 LLM + 工具执行循环。
+
+        Args:
+            task: 用户任务
+            mode: "standard" 或 "whiteboard"
+            resume_from: 可选，从指定会话 ID 恢复
+            resume_mode: "brief" / "fork" / "full"
+            resume_max_tokens: 恢复数据最大 token 数
 
         Returns:
             {
@@ -356,7 +366,12 @@ class KuafuAgent:
         if mode == "whiteboard":
             result = loop.run_whiteboard(task)
         else:
-            result = loop.run(task)
+            result = loop.run(
+                task,
+                resume_from=resume_from,
+                resume_mode=resume_mode,
+                resume_max_tokens=resume_max_tokens,
+            )
 
         # 补充元信息
         # 使用 agent_loop 内部检测的 task_type（更准确）

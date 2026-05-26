@@ -588,8 +588,20 @@ class AgentLoop:
             traceback.print_exc()
             return None
 
-    def run(self, task: str) -> dict:
+    def run(self, task: str,
+            resume_from: Optional[str] = None,
+            resume_mode: str = "brief",  # "brief" | "fork" | "full"
+            resume_max_tokens: int = 4000) -> dict:
         """执行一次完整任务。
+
+        Args:
+            task: 用户任务描述
+            resume_from: 可选。从指定会话 ID 恢复上下文
+            resume_mode: 恢复模式
+                - "brief"（默认）：注入上下文简报
+                - "fork"：fork 出子会话继续
+                - "full"：直接从原会话继续（不创建新会话）
+            resume_max_tokens: 恢复数据的最大 token 数
 
         Returns:
             {
@@ -616,11 +628,41 @@ class AgentLoop:
                 "task_type": detect_task_type(task),
             })
 
-        # 创建新会话
-        self.current_session_id = self.sessions.create_session(title=task[:50])
+        # ── 会话初始化（创建 / resume / fork） ──────────────────
+        if resume_from and resume_mode == "full":
+            # 全量恢复：直接使用原会话
+            self.current_session_id = resume_from
+            # 加载历史消息
+            history = self.sessions.get_messages(resume_from, max_tokens=0)
+            if history:
+                messages = history[:]
+                self._log(f"📋 从会话 {resume_from} 全量恢复 ({len(history)} 条消息)")
+            else:
+                self.current_session_id = self.sessions.create_session(title=task[:50])
+        elif resume_from and resume_mode == "fork":
+            # Fork 模式：创建子会话并注入历史
+            fork_id = self.sessions.fork_session(
+                resume_from, title=task[:50], max_tokens=resume_max_tokens
+            )
+            if fork_id:
+                self.current_session_id = fork_id
+                self._log(f"🍴 从 {resume_from} fork 出新会话 {fork_id}")
+            else:
+                self.current_session_id = self.sessions.create_session(title=task[:50])
+        else:
+            # 普通模式：创建新会话
+            self.current_session_id = self.sessions.create_session(title=task[:50])
 
         # System prompt（含技能注入）
         system_prompt = self.build_system_prompt(task)
+
+        # ── Resume brief 模式：在 system prompt 尾部注入上下文简报 ──
+        if resume_from and resume_mode == "brief":
+            brief = self.sessions.resume_context(resume_from, max_tokens=resume_max_tokens)
+            if brief:
+                system_prompt += f"\n\n## 上下文简报（来自历史会话 {resume_from}）\n{brief}"
+                self._log(f"📋 已注入会话 {resume_from} 的上下文简报")
+
         messages.append({"role": "system", "content": system_prompt})
 
         # ── 复杂 skill 预处理：检测并委派子 Agent ──
