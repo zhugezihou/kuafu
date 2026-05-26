@@ -45,8 +45,16 @@ AUTO_MODE_PATH = ROOT_DIR / "memory" / "auto_mode_history.json"
 
 
 def _is_interactive() -> bool:
-    """判断当前是否在交互式终端中运行。"""
-    return sys.stdin.isatty() and sys.stdout.isatty()
+    """判断当前是否在交互式终端中运行。
+
+    检查顺序：
+    1. 环境变量 KUAFFU_INTERACTIVE=1 强制交互（kuafu.sh 启动时自动设置）
+    2. TTY 检测
+    """
+    return (
+        os.environ.get("KUAFFU_INTERACTIVE") == "1"
+        or (sys.stdin.isatty() and sys.stdout.isatty())
+    )
 
 
 def _get_approval_timeout() -> int:

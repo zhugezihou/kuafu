@@ -31,6 +31,8 @@ fi
 # 2. 运行夸父
 source "$KUAFFU_DIR/venv/bin/activate"
 export PYTHONPATH="$KUAFFU_DIR${PYTHONPATH:+:$PYTHONPATH}"
+# 标记为交互模式（审批系统依赖此判断）
+export KUAFFU_INTERACTIVE=1
 if [ $# -eq 0 ]; then
     # 无参数 → 交互模式
     exec python -m core.main
