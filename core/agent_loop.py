@@ -21,6 +21,7 @@ from core.observer import Observer
 from core.tool_registry import ToolRegistry
 from core.session_store import SessionStore
 from core.context_compress import ContextCompressor, LocalSummarizer, ToolResultStore, ContextCollapse, CollapseResult
+from core.budget_allocator import BudgetAllocator, BudgetSnapshot, BudgetPolicy
 from core.safety import SafetyLayer
 from core.skill_resolver import discover_skills, match_skills, inject_skills_to_prompt, increment_usage, record_usage
 from core.whiteboard import Whiteboard, Decomposer, Step, WhiteboardExecutor
@@ -121,6 +122,16 @@ class AgentLoop:
             keep_recent_rounds=5,
             summarizer=LocalSummarizer(),
         )
+
+        # Budget Allocator: Token 预算分配器
+        local_backend = getattr(self.llm, 'backend', 'cloud') == 'local'
+        ctx_threshold = 28000 if local_backend else 12000
+        self.budget_allocator = BudgetAllocator(
+            policy=BudgetPolicy(total_budget=ctx_threshold),
+            on_critical=self._on_budget_critical,
+            on_warning=self._on_budget_warning,
+        )
+        self._budget_scan_count = 0  # 预算扫描计数器
 
         # Microcompact: 大型工具结果 → 磁盘存储
         self.tool_result_store = ToolResultStore()
@@ -438,6 +449,25 @@ class AgentLoop:
         if self.on_step:
             self.on_step(text)
 
+    def _on_budget_warning(self, snapshot, critical_categories):
+        """预算预警回调：当某类别达到 warning 阈值时触发。"""
+        self._log(f"⚠️ Budget Warning: {', '.join(critical_categories)} "
+                  f"({snapshot.total_used}/{snapshot.total_budget} tokens)")
+
+    def _on_budget_critical(self, snapshot, critical_categories):
+        """预算危险回调：当某类别达到 critical/over 阈值时触发。"""
+        self._log(f"🚨 Budget Critical: {', '.join(critical_categories)} "
+                  f"({snapshot.total_used}/{snapshot.total_budget} tokens)")
+        # 自动触发 Hook 事件
+        try:
+            from core.hooks import trigger_async
+            trigger_async("on_budget_critical", {
+                "snapshot": snapshot.to_dict(),
+                "critical": critical_categories,
+            })
+        except Exception:
+            pass
+
     def _try_delegate_complex_skills(self, task: str) -> Optional[dict]:
         """检测复杂 skill 并委派子 Agent 执行。
 
@@ -575,6 +605,21 @@ class AgentLoop:
                     self._log(f"✅ 压缩完成: {result.compression_ratio*100:.0f}% 缩减 ({result.original_tokens}→{result.compressed_tokens} tokens)")
                     if result.summary:
                         self._log(f"📝 摘要: {result.summary[:150]}...")
+
+            # Budget Allocator 扫描：每次 LLM 调用前检查预算
+            self._budget_scan_count += 1
+            budget_snapshot = self.budget_allocator.scan(messages)
+            budget_actions = self.budget_allocator.get_actions(budget_snapshot)
+            if budget_actions:
+                for action in budget_actions:
+                    if action.action_type == "collapse" and action.severity in ("critical", "over"):
+                        self._log(f"📏 Budget 驱动压缩: {action.description}")
+                        # 由 ContextCollapse 接管——让 LLM 调用的错误处理去触发 collapse
+                        # 这里只做日志记录，实际 collapse 在 LLM 返回 400 时触发
+                    elif action.action_type == "microcompact" and action.severity == "warning":
+                        self._log(f"📦 Budget 提示: {action.description}")
+                    elif action.action_type == "compress" and action.severity == "warning":
+                        self._log(f"📏 Budget 预警压缩: {action.description}")
 
             # 调用 LLM
             response = self.llm.chat(messages, tools=self.tools.get_schemas())
@@ -785,7 +830,21 @@ class AgentLoop:
                     safe_output = SafetyLayer.sanitize_text(raw_output)
 
                     # ── Microcompact：大工具结果 → 磁盘摘要 ──
-                    if ToolResultStore.should_compact(safe_output):
+                    # Budget Aware：如果 TOOLS 预算超限，降低 microcompact 阈值
+                    budget_tools_alert = False
+                    if self._budget_scan_count > 0:
+                        last_snap = self.budget_allocator._last_snapshot
+                        if last_snap:
+                            tools_usage = last_snap.categories.get("tools")
+                            if tools_usage and tools_usage.status in ("warning", "critical", "over"):
+                                budget_tools_alert = True
+
+                    should_microcompact = (
+                        ToolResultStore.should_compact(safe_output)
+                        or (budget_tools_alert and len(safe_output) > 800)  # 预算预警时阈值从2000降到800
+                    )
+
+                    if should_microcompact:
                         meta = self.tool_result_store.store(fn_name, safe_output)
                         compact_text = meta["compact"]
                         # 写磁盘后，放更紧凑的占位进上下文
@@ -1525,7 +1584,8 @@ class AgentLoop:
                         tool_result = self.tools.execute(tc)
                         safe_output = str(tool_result.get("output", "(无输出)"))
                         # ── Microcompact ──
-                        if ToolResultStore.should_compact(safe_output):
+                        should_mcompact = ToolResultStore.should_compact(safe_output)
+                        if should_mcompact:
                             meta = self.tool_result_store.store(fn_name, safe_output)
                             context_output = meta["compact"]
                             self._log(f"📦 Microcompact 白板: {fn_name} 结果 {len(safe_output)} chars → 磁盘")
@@ -1550,7 +1610,8 @@ class AgentLoop:
 
                     safe_output = str(tool_result.get("output", "(无输出)"))
                     # ── Microcompact ──
-                    if ToolResultStore.should_compact(safe_output):
+                    should_mcompact = ToolResultStore.should_compact(safe_output)
+                    if should_mcompact:
                         meta = self.tool_result_store.store(fn_name, safe_output)
                         context_output = meta["compact"]
                         self._log(f"📦 Microcompact 白板: {fn_name} 结果 {len(safe_output)} chars → 磁盘")
