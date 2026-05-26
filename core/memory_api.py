@@ -27,6 +27,20 @@ import urllib.error
 from pathlib import Path
 from typing import Optional
 
+try:
+    import yaml
+except ImportError:
+    yaml = None  # fallback: 使用内置 json 读 yaml
+
+# 懒加载 LLMClient，避免循环导入
+_LLM_CLIENT = None
+def _get_llm_client():
+    global _LLM_CLIENT
+    if _LLM_CLIENT is None:
+        from core.llm import LLMClient
+        _LLM_CLIENT = LLMClient(backend="cloud", max_tokens=1024, temperature=0.3)
+    return _LLM_CLIENT
+
 
 # ── 配置 ──────────────────────────────────────────────────────────────
 
@@ -36,11 +50,50 @@ DEFAULT_TASKS_DIR = DEFAULT_MEMORY_DIR / "tasks"
 # Hindsight Cloud API 默认地址
 DEFAULT_HINDSIGHT_API_URL = "https://api.hindsight.vectorize.io"
 
-# v0.4 记忆管理默认值
+# v0.4 记忆管理默认值（会被 memory_config.yaml 覆盖）
 DEFAULT_TTL_DAYS = 30                     # 默认过期天数
 DEFAULT_DEDUP_OVERLAP_RATIO = 0.6        # 去重关键词重叠阈值
-DEFAULT_MERGE_THRESHOLD = 5              # 同一 source/context 超此条数触发合并
-MAX_MEMORY_CHARS = 2000                  # 单条记忆最大字符数
+DEFAULT_MERGE_THRESHOLD = 3              # 同一 source/context 超此条数触发合并（v0.4.1 改为 3）
+DEFAULT_MAX_MEMORY_CHARS = 2000           # 单条记忆最大字符数
+DEFAULT_SEARCH_MIN_SCORE = 0.3           # 搜索结果最低相关度
+DEFAULT_CLEANUP_INTERVAL = 10            # 每存储多少条触发一次清理
+DEFAULT_MERGE_USE_LLM = True             # 是否使用 LLM 做摘要合并
+
+
+def _load_memory_config(config_path: Optional[Path] = None) -> dict:
+    """从 memory_config.yaml 加载配置，缺失值使用默认值。"""
+    config = {}
+    path = config_path or (Path(__file__).resolve().parent / "memory_config.yaml")
+    if path.exists():
+        try:
+            if yaml:
+                with open(path, "r", encoding="utf-8") as f:
+                    config = yaml.safe_load(f) or {}
+            else:
+                import json
+                with open(path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+        except Exception as e:
+            print(f"[Memory] 加载 {path} 失败: {e}，使用默认配置")
+    return {
+        "ttl_days": config.get("ttl_days", DEFAULT_TTL_DAYS),
+        "dedup_overlap_ratio": config.get("dedup_overlap_ratio", DEFAULT_DEDUP_OVERLAP_RATIO),
+        "merge_threshold": config.get("merge_threshold", DEFAULT_MERGE_THRESHOLD),
+        "max_memory_chars": config.get("max_memory_chars", DEFAULT_MAX_MEMORY_CHARS),
+        "search_min_score": config.get("search_min_score", DEFAULT_SEARCH_MIN_SCORE),
+        "cleanup_interval": config.get("cleanup_interval", DEFAULT_CLEANUP_INTERVAL),
+        "merge_use_llm": config.get("merge_use_llm", DEFAULT_MERGE_USE_LLM),
+    }
+
+# LLM 摘要合并的系统提示
+MERGE_SYSTEM_PROMPT = """你是一个记忆管理系统。你的任务是将多条关于同一主题的记忆合并为一条简洁的摘要。
+要求：
+1. 保留所有重要事实和关键信息
+2. 去除冗余和重复内容
+3. 保持条理清晰（可以用分段、标号等）
+4. 摘要长度不超过 {max_chars} 个字符
+5. 用第三人称客观描述
+请直接输出合并后的结果，不要加任何前缀或说明。"""
 
 
 # ── 工具函数 ──────────────────────────────────────────────────────────
@@ -151,9 +204,15 @@ class FileMemoryBackend:
         self.tasks_dir.mkdir(parents=True, exist_ok=True)
         self._index_path = self.memory_dir / "index.json"
         self._index = self._load_index()
-        # v0.4 配置
-        self._ttl_days = float(os.environ.get("KUAFU_MEMORY_TTL_DAYS", str(DEFAULT_TTL_DAYS)))
-        self._dedup_ratio = float(os.environ.get("KUAFU_MEMORY_DEDUP_RATIO", str(DEFAULT_DEDUP_OVERLAP_RATIO)))
+        # v0.4.1 从配置文件加载所有配置
+        cfg = _load_memory_config()
+        self._ttl_days = float(os.environ.get("KUAFU_MEMORY_TTL_DAYS", cfg["ttl_days"]))
+        self._dedup_ratio = float(os.environ.get("KUAFU_MEMORY_DEDUP_RATIO", cfg["dedup_overlap_ratio"]))
+        self._merge_threshold = int(os.environ.get("KUAFU_MEMORY_MERGE_THRESHOLD", cfg["merge_threshold"]))
+        self._max_memory_chars = int(os.environ.get("KUAFU_MEMORY_MAX_CHARS", cfg["max_memory_chars"]))
+        self._search_min_score = float(os.environ.get("KUAFU_MEMORY_MIN_SCORE", cfg["search_min_score"]))
+        self._cleanup_interval = int(os.environ.get("KUAFU_MEMORY_CLEANUP_INTERVAL", cfg["cleanup_interval"]))
+        self._merge_use_llm = cfg["merge_use_llm"]
 
     def _load_index(self) -> dict:
         if self._index_path.exists():
@@ -214,10 +273,10 @@ class FileMemoryBackend:
         self._save_index()
         return len(expired_ids)
 
-    def _merge_similar(self) -> int:
-        """合并同一 source/context 下超过阈值的多条记忆。
-        
-        v0.4 新增：将同一主题（相同 source）的旧记忆合并到一个文件。
+    def _llm_merge_similar(self) -> int:
+        """将同一 source/context 下超过阈值的多条记忆合并为一条。
+
+        v0.4.1 升级：使用 LLM 做摘要合并（降级到文本拼接）。
         返回合并（归档）的数量。
         """
         # 按 source 分组
@@ -238,19 +297,31 @@ class FileMemoryBackend:
 
         merged_count = 0
         for key, items in groups.items():
-            if len(items) < DEFAULT_MERGE_THRESHOLD:
+            if len(items) < self._merge_threshold:
                 continue
-            # 保留最新的，合并内容
+            # 按时间排序，最新的在前
             items.sort(key=lambda x: x["entry"].get("timestamp", 0), reverse=True)
             keep = items[0]
             to_archive = items[1:]
-            # 把旧记忆内容合并到最新条目的 content 中
-            merged_lines = [keep["entry"].get("content", "")]
+
+            # 提取所有内容做合并
+            all_contents = [keep["entry"].get("content", "")]
             for old in to_archive:
-                old_content = old["entry"].get("content", "")
-                if old_content and old_content not in merged_lines:
-                    merged_lines.append(old_content)
-            keep["entry"]["content"] = " | ".join(merged_lines)
+                c = old["entry"].get("content", "")
+                if c and c not in all_contents:
+                    all_contents.append(c)
+
+            if self._merge_use_llm and len(all_contents) >= 2:
+                try:
+                    merged = self._llm_summarize(all_contents)
+                    if merged:
+                        keep["entry"]["content"] = merged
+                except Exception:
+                    # LLM 失败，回退到文本拼接
+                    keep["entry"]["content"] = " | ".join(all_contents)
+            else:
+                keep["entry"]["content"] = " | ".join(all_contents)
+
             keep["entry"]["_merged_count"] = len(items)
             keep["entry"]["_merged_at"] = time.time()
             keep["path"].write_text(json.dumps(_clean_surrogates(keep["entry"]), ensure_ascii=False, indent=2))
@@ -263,6 +334,24 @@ class FileMemoryBackend:
         if merged_count > 0:
             self._save_index()
         return merged_count
+
+    def _llm_summarize(self, contents: list[str]) -> str:
+        """调用 LLM 对多条记忆内容做摘要合并。"""
+        if not contents:
+            return ""
+        client = _get_llm_client()
+        items_text = "\n---\n".join(f"[{i+1}] {c}" for i, c in enumerate(contents))
+        messages = [
+            {"role": "system", "content": MERGE_SYSTEM_PROMPT.format(max_chars=self._max_memory_chars)},
+            {"role": "user", "content": f"请将以下 {len(contents)} 条相关记忆合并为一条摘要：\n\n{items_text}"},
+        ]
+        result = client.chat(messages, max_retries=1)
+        if result.get("success"):
+            summary = result["content"].strip()
+            if len(summary) > self._max_memory_chars:
+                summary = summary[:self._max_memory_chars] + "..."
+            return summary
+        return ""
 
     def store(self, content: str, context: str = "", source: str = "") -> str:
         """存储一条记忆，返回记忆 ID。
@@ -294,8 +383,8 @@ class FileMemoryBackend:
             return dup["id"] + "_dedup"
 
         # 截断过长的内容
-        if len(content) > MAX_MEMORY_CHARS:
-            content = content[:MAX_MEMORY_CHARS] + "..."
+        if len(content) > self._max_memory_chars:
+            content = content[:self._max_memory_chars] + "..."
 
         self._index["last_id"] += 1
         mem_id = f"mem_{self._index['last_id']}"
@@ -320,21 +409,27 @@ class FileMemoryBackend:
         })
         self._save_index()
 
-        # 每 10 条新记忆触发一次过期清理
-        if self._index["last_id"] % 10 == 0:
+        # 每 N 条新记忆触发一次维护
+        if self._index["last_id"] % self._cleanup_interval == 0:
             expired = self._delete_expired()
-            merged = self._merge_similar()
+            merged = self._llm_merge_similar()
             if expired or merged:
                 print(f"[Memory] 自动清理: {expired} 过期 + {merged} 合并")
 
         return mem_id
 
     def search(self, query: str, limit: int = 5) -> list[dict]:
-        """简单关键词搜索（FTS5 不可用时的 fallback）
-        
-        v0.4 增强：自动过滤过期记忆。
+        """关键词搜索，带相关性评分和阈值过滤。
+
+        v0.4.1 增强：
+          - 使用关键词匹配率计算相关性分数
+          - 低于 search_min_score 的结果自动丢弃
         """
-        q = query.lower()
+        q_words = set(query.lower().split())
+        # 中文拆 2-gram
+        q_chars = {query[i:i+2] for i in range(len(query)-1)}
+        query_set = q_words | q_chars
+
         results = []
         now = time.time()
         max_age = self._ttl_days * 86400
@@ -353,19 +448,37 @@ class FileMemoryBackend:
                 entry = json.loads(file_path.read_text())
             except (json.JSONDecodeError, OSError):
                 continue
+
             text = (entry.get("content", "") + " " + entry.get("context", "")).lower()
-            if q in text:
-                results.append({
-                    "id": mem_id,
-                    "key": entry.get("source", ""),
-                    "content": entry.get("content", ""),
-                    "context": entry.get("context", ""),
-                    "source": entry.get("source", ""),
-                    "created": entry.get("created", ""),
-                    "score": 1.0,
-                })
-                if len(results) >= limit:
-                    break
+            text_words = set(text.split())
+            text_chars = {text[i:i+2] for i in range(len(text)-1)}
+            text_set = text_words | text_chars
+
+            if not text_set:
+                continue
+
+            intersection = query_set & text_set
+            union = query_set | text_set
+            score = len(intersection) / len(union) if union else 0.0
+
+            # 阈值过滤
+            if score < self._search_min_score:
+                continue
+
+            results.append({
+                "id": mem_id,
+                "key": entry.get("source", ""),
+                "content": entry.get("content", ""),
+                "context": entry.get("context", ""),
+                "source": entry.get("source", ""),
+                "created": entry.get("created", ""),
+                "score": round(score, 4),
+            })
+            if len(results) >= limit:
+                break
+
+        # 按相关性降序排列
+        results.sort(key=lambda x: x["score"], reverse=True)
         return results
 
     def reflect(self, query: str) -> str:
@@ -427,7 +540,7 @@ class FileMemoryBackend:
         v0.4 新增：供 agent_loop 定时调用。
         """
         expired = self._delete_expired()
-        merged = self._merge_similar()
+        merged = self._llm_merge_similar()
         return {
             "expired": expired,
             "merged": merged,

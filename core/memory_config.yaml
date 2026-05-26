@@ -1,0 +1,24 @@
+# memory_config.yaml — 夸父记忆系统配置
+# v0.4 新增：记忆自动管理（去重/过期/合并/阈值过滤）
+
+# ── TTL 过期 ──
+ttl_days: 30                     # 记忆过期天数（默认 30 天）
+cleanup_interval: 10             # 每存储多少条触发一次过期清理
+
+# ── 去重 ──
+dedup_overlap_ratio: 0.6         # 关键词重叠比例大于此值视为重复（0.0-1.0）
+dedup_on_write: true             # 写入前是否去重检查
+dedup_mode: overwrite            # dedup 模式：overwrite（覆盖旧内容）/ skip（跳过写入）
+
+# ── 合并 ──
+merge_threshold: 3               # 同一 source/context 超此条数触发合并（PLAN 要求 3）
+merge_max_chars: 2000            # 合并后单条记忆最大字符数
+merge_use_llm: true              # 是否使用 LLM 做摘要合并（false = 文本拼接回退）
+
+# ── 搜索过滤 ──
+search_min_score: 0.3            # 搜索结果相关性低于此值自动丢弃
+search_default_limit: 5          # 默认搜索返回条数
+
+# ── 存储限制 ──
+max_memory_chars: 2000           # 单条记忆最大字符数（超出截断）
+max_memories_per_source: 50      # 同一 source 最大记忆数（超出后清旧留新）
