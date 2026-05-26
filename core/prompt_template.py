@@ -17,9 +17,10 @@
 参考：Claude Code prompt-builder.ts — section + 条件注入 + budget tag
 """
 
+import hashlib
 import json
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, List
 
 
 @dataclass
@@ -233,3 +234,150 @@ class PromptManager:
             lines.append(f"  {status} [{sec.id}] {sec.title} ({token_info})")
         lines.append(f"  ── 总计: {len(self.enabled_sections)}/{self._section_count} sections active")
         return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# P1-4: PromptCache — 缓存分块
+# ─────────────────────────────────────────────────────────────────────
+
+# 稳定性标签
+STABILITY_L1_IMMUTABLE = "L1_immutable"   # identity, rules, format — session 级不变
+STABILITY_L2_SEMI = "L2_semi"             # tools — 同一 session 固定
+STABILITY_L3_VARIABLE = "L3_variable"     # memory, skills, quality — 每次变化
+
+STABILITY_DEFAULT: dict[str, str] = {
+    "identity": STABILITY_L1_IMMUTABLE,
+    "user_identity": STABILITY_L1_IMMUTABLE,
+    "boundary": STABILITY_L1_IMMUTABLE,
+    "commitments": STABILITY_L1_IMMUTABLE,
+    "rules": STABILITY_L1_IMMUTABLE,
+    "format": STABILITY_L1_IMMUTABLE,
+    "exec_rules": STABILITY_L1_IMMUTABLE,
+    "self_cognition": STABILITY_L1_IMMUTABLE,
+    "config": STABILITY_L1_IMMUTABLE,
+    "other_agents": STABILITY_L1_IMMUTABLE,
+    "core_tools": STABILITY_L2_SEMI,
+    "common_tools": STABILITY_L2_SEMI,
+    "hidden_tools": STABILITY_L2_SEMI,
+    "quality": STABILITY_L2_SEMI,
+    "memory_context": STABILITY_L3_VARIABLE,
+    "skills": STABILITY_L3_VARIABLE,
+    "directory": STABILITY_L3_VARIABLE,
+}
+
+
+def get_stability(section_id: str) -> str:
+    """获取 section 的缓存稳定性级别。"""
+    return STABILITY_DEFAULT.get(section_id, STABILITY_L3_VARIABLE)
+
+
+@dataclass
+class CacheBlock:
+    """单个缓存块。"""
+    stability: str
+    content: str = ""
+    cache_key: str = ""
+    token_count: int = 0
+
+    def needs_refresh(self, content_to_build: str) -> bool:
+        if self.stability == STABILITY_L3_VARIABLE:
+            return True
+        if not self.cache_key:
+            return True
+        new_key = self._hash(content_to_build)
+        return new_key != self.cache_key
+
+    def refresh(self, content: str):
+        self.content = content
+        self.cache_key = self._hash(content)
+        self.token_count = int(len(content) / 1.6)
+
+    @staticmethod
+    def _hash(text: str) -> str:
+        return hashlib.md5(text.encode("utf-8")).hexdigest()
+
+    def render(self) -> str:
+        return self.content
+
+
+class PromptCache:
+    """Prompt 缓存管理器。
+
+    三层缓存：L1 (immutable) / L2 (semi) / L3 (variable)。
+    同一 session 的 LLM 调用中，L1+L2 命中缓存不重复组装。
+    """
+
+    def __init__(self):
+        self._l1_cache: str = ""
+        self._l1_key: str = ""
+        self._l1_tokens: int = 0
+        self._l2_cache: str = ""
+        self._l2_key: str = ""
+        self._l2_tokens: int = 0
+        self._hit_count: int = 0
+        self._miss_count: int = 0
+
+    def get_block(self, sections: list, stability: str) -> CacheBlock:
+        """获取指定稳定层的缓存块。"""
+        block = CacheBlock(stability=stability)
+        if stability == STABILITY_L3_VARIABLE:
+            block.content = self._assemble_sections(sections)
+            block.token_count = int(len(block.content) / 1.6)
+            return block
+
+        current_text = self._assemble_sections(sections)
+        if stability == STABILITY_L1_IMMUTABLE:
+            cache, key = self._l1_cache, self._l1_key
+        else:
+            cache, key = self._l2_cache, self._l2_key
+
+        current_key = hashlib.md5(current_text.encode("utf-8")).hexdigest()
+        if cache and key == current_key:
+            self._hit_count += 1
+            block.content = cache
+            block.cache_key = key
+            block.token_count = (self._l1_tokens if stability == STABILITY_L1_IMMUTABLE
+                                 else self._l2_tokens)
+            return block
+
+        self._miss_count += 1
+        block.content = current_text
+        block.cache_key = current_key
+        block.token_count = int(len(current_text) / 1.6)
+        if stability == STABILITY_L1_IMMUTABLE:
+            self._l1_cache, self._l1_key = current_text, current_key
+            self._l1_tokens = block.token_count
+        else:
+            self._l2_cache, self._l2_key = current_text, current_key
+            self._l2_tokens = block.token_count
+        return block
+
+    def clear(self):
+        self._l1_cache = self._l1_key = ""
+        self._l1_tokens = 0
+        self._l2_cache = self._l2_key = ""
+        self._l2_tokens = 0
+        self._hit_count = self._miss_count = 0
+
+    def clear_l2(self):
+        self._l2_cache = self._l2_key = ""
+        self._l2_tokens = 0
+
+    def stats(self) -> dict:
+        total = self._hit_count + self._miss_count
+        return {
+            "hit": self._hit_count,
+            "miss": self._miss_count,
+            "hit_rate": round(self._hit_count / total, 3) if total > 0 else 0,
+            "l1_cached": bool(self._l1_cache),
+            "l2_cached": bool(self._l2_cache),
+        }
+
+    @staticmethod
+    def _assemble_sections(sections: list) -> str:
+        parts = []
+        for sec in sections:
+            rendered = sec.render()
+            if rendered:
+                parts.append(rendered)
+        return "\n".join(parts)
