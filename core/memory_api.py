@@ -315,6 +315,11 @@ class FileMemoryBackend:
           - 超长内容自动截断
           - 自动触发过期清理（每存储 10 条触发一次 _delete_expired）
         """
+        # 防御：确保 content/context 是字符串（测试可能传入 dict）
+        if not isinstance(content, str):
+            content = str(content)
+        if not isinstance(context, str):
+            context = str(context)
         # 去重检查
         dup = self._find_duplicate(content, context)
         if dup:
