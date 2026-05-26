@@ -237,7 +237,7 @@ class AutoMode:
     }
 
     # 可自动决策的工具（按风险 + 批准率阈值）
-    AUTO_TOOLS_LOW = {"web_search", "search_files", "read_file"}
+    AUTO_TOOLS_LOW = {"web_search", "search_files", "read_file", "memory_store", "memory_search", "memory_reflect"}
     AUTO_TOOLS_MEDIUM = {"feishu_send", "web_scrape"}
 
     @classmethod
