@@ -15,4 +15,6 @@ kuafu.log
 kuafu.pid
 .whiteboard/
 memory/sessions.db
+memory/sessions.db-shm
+memory/sessions.db-wal
 matrix_animation.html

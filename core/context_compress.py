@@ -499,3 +499,198 @@ class ToolResultStore:
                     except Exception:
                         pass
         return ""
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ContextCollapse — 非破坏性上下文投影
+# ══════════════════════════════════════════════════════════════════════
+#
+# 核心思想：
+# 1. 压缩时，将 messages 原始完整副本写入 session JSONL（磁盘）
+# 2. 上下文中的 messages 替换为摘要投影（compact projection）
+# 3. 当 LLM 需要查看被压缩的原始内容时，可调用原始细节读取工具
+#
+# 与 ContextCompressor 的区别：
+# - ContextCompressor: 破坏性压缩——摘要覆盖旧消息，一旦压缩细节不可恢复
+# - ContextCollapse: 非破坏性压缩——原始数据存入磁盘，上下文只存投影
+#                    支持按需还原（delegate_task 可读取 JSONL）
+# =====================================================================
+
+
+@dataclass
+class CollapseResult:
+    """非破坏性压缩的结果。"""
+    original_count: int           # 压缩前的消息条数
+    collapsed_count: int          # 压缩后的消息条数
+    messages_written: int         # 写入磁盘的消息条数
+    summary: str = ""             # LLM 生成的摘要文本
+    tokens_saved: int = 0         # 节省的 token 数
+
+
+class ContextCollapse:
+    """上下文非破坏性压缩器。
+
+    保留原始消息到 JSONL 磁盘文件，仅将上下文中的旧消息替换为摘要投影。
+    支持代理人通过工具读取原始细节（类似 Claude Code 的虚拟投影）。
+    """
+
+    def __init__(
+        self,
+        summarizer: Optional["LocalSummarizer"] = None,
+        keep_recent_rounds: int = 5,
+        summary_prompt: str = "",
+    ):
+        self.summarizer = summarizer or LocalSummarizer()
+        self.keep_recent_rounds = keep_recent_rounds
+        self.summary_prompt = summary_prompt or (
+            "你是一个对话摘要器。请将以下多轮对话内容浓缩为2-3句中文摘要，"
+            "保留关键信息：用户的核心需求、做出的决策、已确认的结果、关键工具调用。"
+            "不要遗漏重要的数值、文件名、路径和代码功能。"
+        )
+
+    def collapse(
+        self,
+        messages: list[dict],
+        session_id: str = "",
+        session_store: Optional[object] = None,
+        force: bool = False,
+        threshold_tokens: int = 10000,
+    ) -> CollapseResult:
+        """对 messages 执行非破坏性压缩。
+
+        1. 检查是否需要压缩（超阈）
+        2. 将原始消息完整写入 session_store JSONL
+        3. 用摘要投影替换上下文中的旧消息
+        4. 新增一个专用工具 'read_collapsed_context' 让 LLM 可查询原始细节
+
+        Returns:
+            CollapseResult
+        """
+        original_count = len(messages)
+
+        # token 估算
+        total_tokens = sum(
+            estimate_tokens(str(m.get("content", "")))
+            for m in messages
+        )
+
+        if not force and total_tokens <= threshold_tokens:
+            return CollapseResult(
+                original_count=original_count,
+                collapsed_count=original_count,
+                messages_written=0,
+                tokens_saved=0,
+            )
+
+        # 分离 system / non-system
+        system_msgs = [m for m in messages if m.get("role") == "system"]
+        non_system = [m for m in messages if m.get("role") != "system"]
+
+        # 保留最近 N 轮的完整消息
+        keep_count = self.keep_recent_rounds * 4  # user+assistant+tool 约 4 msg/round
+        recent_msgs = non_system[-keep_count:] if len(non_system) > keep_count else non_system
+        old_msgs = non_system[:-keep_count] if len(non_system) > keep_count else []
+
+        if not old_msgs:
+            return CollapseResult(
+                original_count=original_count,
+                collapsed_count=original_count,
+                messages_written=0,
+                tokens_saved=0,
+                summary="轮次少，无需压缩",
+            )
+
+        # 写入原始消息到 JSONL ══════════════════════════════════════
+        if session_id and session_store and hasattr(session_store, "save_raw_messages"):
+            session_store.save_raw_messages(session_id, messages)
+            messages_written = len(messages)
+        else:
+            messages_written = 0
+
+        # 生成旧消息的摘要投影 ══════════════════════════════════════
+        summary = self._generate_summary(old_msgs)
+
+        old_tokens = sum(estimate_tokens(str(m.get("content", ""))) for m in old_msgs)
+        new_tokens = estimate_tokens(summary)
+
+        # 构建压缩后的消息列表（系统 + 投影 + 最近完整消息）
+        num_old = len(old_msgs)
+        collapse_note = {
+            "role": "system",
+            "content": (
+                f"【上下文投影】以下 {num_old} 条旧消息已被压缩为摘要以节省上下文。\n"
+                f"原始数据完整保留在磁盘，通过 tool:\n"
+                f"  read_collapsed_context(start=0, max_tokens=2000)\n"
+                f"可按需读取原始细节。\n\n"
+                f"摘要：\n{summary}"
+            ),
+        }
+
+        compressed = system_msgs + [collapse_note] + recent_msgs
+
+        return CollapseResult(
+            original_count=original_count,
+            collapsed_count=len(compressed),
+            messages_written=messages_written,
+            summary=summary,
+            tokens_saved=old_tokens - new_tokens,
+        )
+
+    def _generate_summary(self, messages: list[dict]) -> str:
+        """用本地 LLM 生成旧消息的摘要投影。"""
+        dialogue = self._format_dialogue(messages)
+
+        if len(dialogue) < 300:
+            return dialogue[:600] if len(dialogue) > 600 else dialogue
+
+        try:
+            if self.summarizer and self.summarizer.is_available():
+                return self.summarizer.summarize(dialogue)
+        except Exception:
+            pass
+
+        return self._keyword_summary(messages)
+
+    def _format_dialogue(self, messages: list[dict]) -> str:
+        """将消息格式化为对话文本。"""
+        parts = []
+        for m in messages:
+            role = m.get("role", "")
+            content = m.get("content", "")
+            tool_calls = m.get("tool_calls")
+
+            if role == "user":
+                parts.append(f"用户: {content[:500]}")
+            elif role == "assistant":
+                if tool_calls:
+                    for tc in tool_calls:
+                        fn = tc.get("function", {}).get("name", "?")
+                        parts.append(f"夸父: [调用 {fn}]")
+                elif content:
+                    parts.append(f"夸父: {content[:500]}")
+            elif role == "tool":
+                if content and len(str(content)) > 20:
+                    parts.append(f"  [工具: {str(content)[:200]}]")
+        return "\n".join(parts)
+
+    def _keyword_summary(self, messages: list[dict]) -> str:
+        """基于关键字的摘要回退方案。"""
+        rounds = []
+        for m in messages:
+            role = m.get("role", "")
+            content = m.get("content", "")
+            if role == "user":
+                rounds.append(f"用户: {content[:200]}")
+            elif role == "assistant":
+                tc = m.get("tool_calls")
+                if tc:
+                    rounds.append(f"  调用: {tc[0]['function']['name']}")
+                else:
+                    rounds.append(f"夸父: {content[:200]}")
+            elif role == "tool":
+                if content and len(content) > 20:
+                    rounds.append(f"  结果: {str(content)[:100]}...")
+        text = " | ".join(rounds)
+        if len(text) > 800:
+            return text[:800] + "..."
+        return text

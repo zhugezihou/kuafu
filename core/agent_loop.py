@@ -20,11 +20,13 @@ from core.evolution import EvolutionEngine
 from core.observer import Observer
 from core.tool_registry import ToolRegistry
 from core.session_store import SessionStore
-from core.context_compress import ContextCompressor, LocalSummarizer, ToolResultStore
+from core.context_compress import ContextCompressor, LocalSummarizer, ToolResultStore, ContextCollapse, CollapseResult
 from core.safety import SafetyLayer
 from core.skill_resolver import discover_skills, match_skills, inject_skills_to_prompt, increment_usage, record_usage
 from core.whiteboard import Whiteboard, Decomposer, Step, WhiteboardExecutor
 from core.mcp_bridge import MCPBridge
+from core.approval import pretooluse_check, DenyRules, AutoMode, ApprovalManager
+from core.hooks import trigger, trigger_async, trigger_sync, init_hooks, HOOK_EVENTS
 # 策略/规则加载：优先从 autonomous.strategy_loader 加载，降级到默认值
 try:
     from autonomous.strategy_loader import get_rules as _get_rules
@@ -123,6 +125,12 @@ class AgentLoop:
         # Microcompact: 大型工具结果 → 磁盘存储
         self.tool_result_store = ToolResultStore()
 
+        # ContextCollapse: 非破坏性上下文投影
+        self.collapser = ContextCollapse(
+            summarizer=LocalSummarizer(),
+            keep_recent_rounds=5,
+        )
+
         # 当前会话 ID（由 run() 创建）
         self.current_session_id: Optional[str] = None
 
@@ -142,6 +150,18 @@ class AgentLoop:
 
         # 注册 skill_rollback 工具
         self._register_skill_rollback()
+
+        # ── Hook 事件系统 ──
+        self.hooks_enabled = True
+        try:
+            init_hooks()
+            self._log("🔌 Hook 事件系统就绪")
+        except Exception as e:
+            self._log(f"⚠️ Hook 系统初始化失败: {e}")
+
+        # ── Permission System（PreToolUse 权限检查） ──
+        self.permission_enabled = True  # 设为 False 可完全绕过权限检查
+        self._pretooluse_cache: dict = {}
 
     def _register_delegate_tool(self):
         """注册 delegate_task 工具（子 Agent 系统）。"""
@@ -500,6 +520,13 @@ class AgentLoop:
         final_result = ""
         final_summary = ""
 
+        # ── 触发 on_task_start 钩子（异步） ──
+        if self.hooks_enabled:
+            trigger_async("on_task_start", {
+                "task": task[:200],
+                "task_type": detect_task_type(task),
+            })
+
         # 创建新会话
         self.current_session_id = self.sessions.create_session(title=task[:50])
 
@@ -555,54 +582,73 @@ class AgentLoop:
             # ── LLM 调用失败处理 ─────────────────────────────────
             if not response["success"]:
                 error_msg = response.get("error", "LLM 调用失败")
-                # 上下文超限：尝试压缩后再试一次
+                # 上下文超限：优先尝试非破坏性 ContextCollapse，失败再暴力截断
                 if "exceed" in error_msg.lower() or "context" in error_msg.lower() or "400" in error_msg:
-                    self._log(f"📏 LLM 返回上下文超限错误，尝试强制压缩...")
-                    # 强制压缩（already_compressed=True 跳过 needs_compression 检查）
-                    original_tokens = self.compressor._count_tokens(messages)
-                    # 切掉最后几轮，只保留 system + 最近2轮
-                    system_msgs = [m for m in messages if m.get("role") == "system"]
-                    recent_msgs = [m for m in messages if m.get("role") != "system"][-8:]  # 只保留最近2轮
-                    old_msgs = [m for m in messages if m.get("role") != "system"][:-8]
-                    if old_msgs:
-                        # 用本地 LLM 做智能摘要
-                        summary = self.compressor.compress_with_local_llm(messages)
-                        if summary.messages_removed > 0:
-                            messages = system_msgs + [{
-                                "role": "system",
-                                "content": f"【紧急上下文压缩】以下是对旧对话的摘要，请基于此继续当前任务，不要重新自我介绍：\n{summary.summary}",
-                            }] + recent_msgs
-                            self._log(f"✅ 紧急压缩完成: {summary.original_tokens}→{summary.compressed_tokens} tokens")
-                            # 重新调用 LLM
-                            response = self.llm.chat(messages, tools=self.tools.get_schemas())
-                            if response["success"]:
-                                # 压缩后调用成功，继续正常流程
-                                pass
-                            else:
-                                # 压缩后还是失败，放弃
-                                error_msg = response.get("error", "压缩后 LLM 仍然失败")
-                                errors.append(error_msg)
-                                break
+                    self._log(f"📏 LLM 返回上下文超限错误，尝试非破坏性压缩...")
+
+                    # 第一步：尝试 ContextCollapse（非破坏性投影）
+                    collapse_result = self.collapser.collapse(
+                        messages=messages,
+                        session_id=self.current_session_id or "",
+                    )
+
+                    # 触发 on_context_exceed / on_collapse 钩子（异步）
+                    if self.hooks_enabled:
+                        if collapse_result.collapsed:
+                            trigger_async("on_collapse", {
+                                "task": task[:100],
+                                "before": collapse_result.original_count,
+                                "after": collapse_result.collapsed_count,
+                                "tokens_saved": collapse_result.tokens_saved,
+                                "method": "context_collapse",
+                            })
+                        trigger_async("on_context_exceed", {
+                            "tokens": self.compressor._count_tokens(messages),
+                            "method": "context_collapse" if collapse_result.collapsed else "truncate",
+                            "collapsed": collapse_result.collapsed,
+                            "task": task[:100],
+                        })
+
+                    if collapse_result.collapsed_count < collapse_result.original_count:
+                        # 使用 CollapseResult 重建压缩后的消息列表
+                        summary = collapse_result.summary
+                        system_msgs = [m for m in messages if m.get("role") == "system"]
+                        non_system = [m for m in messages if m.get("role") != "system"]
+                        keep_count = self.collapser.keep_recent_rounds * 4
+                        recent_msgs = non_system[-keep_count:] if len(non_system) > keep_count else non_system
+                        collapse_note = {
+                            "role": "system",
+                            "content": (
+                                f"【上下文投影】以下 {collapse_result.original_count - len(recent_msgs)} 条旧消息已被压缩为摘要。\n"
+                                f"原始数据完整保留在磁盘 session '{self.current_session_id or '?'}' 的 JSONL 中。\n"
+                                f"通过 session_store.get_raw_messages() 可按需读取原始细节。\n\n"
+                                f"摘要：\n{summary}"
+                            ),
+                        }
+                        messages = system_msgs + [collapse_note] + recent_msgs
+                        self._log(f"✅ 非破坏性压缩完成: 节省约 {collapse_result.tokens_saved} tokens")
+                        # 重新调用 LLM
+                        response = self.llm.chat(messages, tools=self.tools.get_schemas())
+                        if response["success"]:
+                            pass
                         else:
-                            # 压缩失败（本地LLM也可能超限），用暴力截断
-                            self._log(f"⚠️ 本地摘要失败，暴力截断至最近2轮")
-                            # 只保留 system + 最新一轮 user + assistant
-                            keep = system_msgs + recent_msgs[-4:]
-                            keep_tokens = self.compressor._count_tokens(keep)
-                            self._log(f"   {original_tokens} → {keep_tokens} tokens")
-                            messages = keep
-                            response = self.llm.chat(messages, tools=self.tools.get_schemas())
-                            if not response["success"]:
-                                errors.append(response.get("error", "截断后 LLM 仍然失败"))
-                                break
-                    else:
-                        # 已经很少轮次了还超限，可能是 system prompt 太大
-                        # 尝试去掉记忆和技能相关消息
-                        if len(system_msgs) > 1:
-                            messages = [system_msgs[0]] + recent_msgs  # 只保留第一条 system
-                            response = self.llm.chat(messages, tools=self.tools.get_schemas())
-                        if not response["success"]:
+                            error_msg = response.get("error", "压缩后 LLM 仍然失败")
                             errors.append(error_msg)
+                            break
+                    else:
+                        # ContextCollapse 不可用（太少轮次），降级到暴力截断
+                        self._log(f"⚠️ ContextCollapse 跳过（轮次少），暴力截断至最近2轮")
+                        # 原有暴力截断逻辑
+                        original_tokens = self.compressor._count_tokens(messages)
+                        system_msgs = [m for m in messages if m.get("role") == "system"]
+                        recent_msgs = [m for m in messages if m.get("role") != "system"][-8:]
+                        keep = system_msgs + recent_msgs
+                        keep_tokens = self.compressor._count_tokens(keep)
+                        self._log(f"   {original_tokens} → {keep_tokens} tokens")
+                        messages = keep
+                        response = self.llm.chat(messages, tools=self.tools.get_schemas())
+                        if not response["success"]:
+                            errors.append(response.get("error", "截断后 LLM 仍然失败"))
                             break
                 else:
                     # 非上下文超限错误，直接放弃
@@ -663,6 +709,74 @@ class AgentLoop:
                         ensure_ascii=False,
                     )[:60]
                     self._log(f"🔧 执行 {fn_name}({arg_preview}...)")
+
+                    # ── PreToolUse: 权限检查（Deny 规则 → 自动模式 → 人工审批） ──
+                    if self.permission_enabled and fn_name not in ("finish", "delegate_task", "skill_rollback"):
+                        args_dict = tc.get("function", {}).get("arguments", {})
+                        # 触发 on_tool_before 钩子（同步，可阻止）
+                        if self.hooks_enabled:
+                            hook_results = trigger_sync("on_tool_before", {
+                                "tool": fn_name,
+                                "args": args_dict,
+                                "task": task[:100],
+                                "turn": turn_count,
+                            })
+                            blocked = any(r.blocked for r in hook_results)
+                            if blocked:
+                                blocked_by = [r.handler_id for r in hook_results if r.blocked]
+                                msg = f"⛔ 工具 {fn_name} 被钩子阻止: {blocked_by}"
+                                self._log(msg)
+                                messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": tc["id"],
+                                    "content": msg,
+                                })
+                                self.sessions.append_message(
+                                    self.current_session_id, "tool", msg[:500],
+                                )
+                                # 触发 on_tool_rejected 钩子
+                                if self.hooks_enabled:
+                                    trigger_async("on_tool_rejected", {
+                                        "tool": fn_name, "reason": "hook_blocked",
+                                        "blocked_by": blocked_by,
+                                    })
+                                continue
+
+                        # Permission System 检查
+                        perm = pretooluse_check(fn_name, args_dict,
+                                                 {"task": task[:200], "turn": turn_count})
+
+                        # 触发 on_permission_check 钩子
+                        if self.hooks_enabled:
+                            trigger_async("on_permission_check", {
+                                "tool": fn_name, "args": args_dict,
+                                "result": perm,
+                            })
+
+                        if not perm["allowed"]:
+                            if perm["approach"] == "deny_rule":
+                                msg = f"🛡️ {fn_name} 被 Deny 规则拒绝: {perm['reason']}"
+                            elif perm["approach"] == "auto_reject":
+                                msg = f"⛔ {fn_name} 被自动拒绝: {perm['reason']}"
+                            else:
+                                msg = f"🟡 {fn_name} 待审批 (ID: {perm.get('req_id', '?')})"
+
+                            self._log(msg)
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc["id"],
+                                "content": msg,
+                            })
+                            self.sessions.append_message(
+                                self.current_session_id, "tool", msg[:500],
+                            )
+                            # 触发 on_tool_rejected 钩子
+                            if self.hooks_enabled:
+                                trigger_async("on_tool_rejected", {
+                                    "tool": fn_name, "reason": perm["approach"],
+                                    "perm_result": perm,
+                                })
+                            continue
 
                     tool_result = self.tools.execute(tc)
 
@@ -747,6 +861,24 @@ class AgentLoop:
                     if not tool_result["success"]:
                         err = f"工具 {fn_name} 失败: {safe_output[:200]}"
                         errors.append(err)
+                        # 触发 on_tool_error 钩子（异步）
+                        if self.hooks_enabled:
+                            trigger_async("on_tool_error", {
+                                "tool": fn_name,
+                                "args": tc.get("function", {}).get("arguments", {}),
+                                "error": safe_output[:500],
+                                "task": task[:100],
+                            })
+                    else:
+                        # 触发 on_tool_after 钩子（异步）
+                        if self.hooks_enabled:
+                            trigger_async("on_tool_after", {
+                                "tool": fn_name,
+                                "args": tc.get("function", {}).get("arguments", {}),
+                                "output_length": len(safe_output),
+                                "task": task[:100],
+                                "turn": turn_count,
+                            })
             else:
                 # 没有 tool_calls — LLM 直接回复了文本
                 final_result = response["content"]
@@ -818,6 +950,17 @@ class AgentLoop:
                     self._log(f"记忆维护: 清理 {result['expired']} 过期 + 合并 {result['merged']} 条")
             except Exception as e:
                 self._log(f"记忆维护异常: {e}")
+
+        # ── 触发 on_task_end 钩子（同步完成，异步发送） ──
+        if self.hooks_enabled:
+            trigger_async("on_task_end", {
+                "task": task[:200],
+                "success": task_result.get("success", False),
+                "turns": task_result.get("turns", 0),
+                "errors": task_result.get("errors", [])[:3],
+                "duration": task_result.get("duration", 0),
+                "result_summary": task_result.get("result", "")[:200],
+            })
 
         return task_result
 

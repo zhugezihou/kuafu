@@ -22,6 +22,7 @@ from typing import Optional
 
 MEMORY_DIR = Path(__file__).resolve().parent.parent / "memory"
 SESSION_DB = MEMORY_DIR / "sessions.db"
+SESSION_JSONL_DIR = MEMORY_DIR / "sessions_jsonl"  # 非破坏性压缩的原始消息存储
 
 # token 估算：中文约 1.5 字符/token，英文约 4 字符/token
 # Qwen3.5-9B 实测中文约 1.69 chars/token，取安全值 1.6
@@ -375,6 +376,94 @@ class SessionStore:
             "total_messages": total_msgs,
             "total_tokens_estimated": total_tokens,
         }
+
+    # ── JSONL 持久化（ContextCollapse 支持）────────────────────────
+
+    def _get_jsonl_path(self, session_id: str) -> Path:
+        """获取 session 对应的 JSONL 文件路径。"""
+        SESSION_JSONL_DIR.mkdir(parents=True, exist_ok=True)
+        safe_id = session_id.replace("/", "_").replace("..", "")
+        return SESSION_JSONL_DIR / f"{safe_id}.jsonl"
+
+    def save_raw_messages(self, session_id: str, messages: list[dict]):
+        """将完整消息列表以 JSONL 格式持久化（覆盖写入），保留原始内容。
+
+        ContextCollapse 写入原始消息的完整副本，之后即使上下文被压缩，
+        也可通过 get_raw_messages() 按需读取原始细节。
+        """
+        path = self._get_jsonl_path(session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            for msg in messages:
+                # 只保存 role + content，不保存 tool_call_id 等 transient 字段
+                record = {
+                    "role": msg.get("role", ""),
+                    "content": msg.get("content", ""),
+                }
+                if msg.get("tool_calls"):
+                    # 保留 tool_calls 摘要（工具名+参数缩略）
+                    tc_infos = []
+                    for tc in msg.get("tool_calls", []):
+                        fn = tc.get("function", {})
+                        tc_infos.append({
+                            "name": fn.get("name", "?"),
+                            "args_preview": str(fn.get("arguments", {}))[:200],
+                        })
+                    record["tool_calls"] = tc_infos
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    def get_raw_messages(self, session_id: str) -> Optional[list[dict]]:
+        """读取 JSONL 中的完整原始消息列表。
+
+        返回与原始 messages 格式兼容的列表：[{role, content, ...}, ...]
+        若文件不存在，返回 None。
+        """
+        path = self._get_jsonl_path(session_id)
+        if not path.exists():
+            return None
+        messages = []
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    msg = json.loads(line)
+                    messages.append(msg)
+                except json.JSONDecodeError:
+                    continue
+        return messages
+
+    def get_raw_messages_since(self, session_id: str, start_index: int = 0,
+                                 max_tokens: int = 3000) -> list[dict]:
+        """从 JSONL 中读取指定范围的原始消息。
+
+        Args:
+            session_id: 会话 ID
+            start_index: 从第几条消息开始（0-indexed）
+            max_tokens: 最多返回多少 token 的数据
+
+        Returns:
+            原始消息列表
+        """
+        all_msgs = self.get_raw_messages(session_id)
+        if not all_msgs:
+            return []
+
+        # 从 start_index 开始
+        selected = all_msgs[start_index:]
+
+        # 按 token 数裁剪
+        total_tokens = 0
+        result = []
+        for msg in selected:
+            tokens = estimate_tokens(str(msg.get("content", "")))
+            if total_tokens + tokens > max_tokens and result:
+                break
+            total_tokens += tokens
+            result.append(msg)
+
+        return result
 
     def close(self):
         """关闭数据库连接。"""

@@ -1,73 +1,396 @@
 """
-core/approval.py — 统一审批管理器。
+core/approval.py — Permission System（审批 + 权限 + Deny 优先规则）
 
 职责：
-夸父在做出 **有副作用的决策前** 通过此模块向用户发起审批请求，
-待用户确认后再执行。
+提供三层安全防护：
+  Layer 1: Deny 优先规则（静态黑名单 — 直接拒绝，不创建审批）
+  Layer 2: 自动模式分类器（根据历史批准率 + 操作类型自动决策）
+  Layer 3: 审批请求（人工确认，原 ApprovalManager 升级版）
+
+权限检查流程：
+  1. PreToolUse → check_permission(tool_name, args, context)
+  2. DenyRules 先查（硬禁止 → 直接拒绝）
+  3. AutoMode 查（自动决策 → 通过/拒绝无需审批）
+  4. 以上都不匹配 → 走人工审批
 
 适用范围：
-- P4 自检清理（删除孤立记忆/去重 rules/清理缓存）
-- L2+ 进化（修改 strategy/ quality.yaml / prompts.yaml）
-- 自我修复（修改核心代码 core/*.py / capabilities/*.py）
-- 策略重写（大幅度改写 strategy/ 内容）
-- 记忆重写（批量修改/删除 memory/ 内容）
+  - P4 自检清理（删除孤立记忆/去重 rules/清理缓存）
+  - L2+ 进化（修改 strategy/ quality.yaml / prompts.yaml）
+  - 自我修复（修改核心代码 core/*.py / capabilities/*.py）
+  - 策略重写（大幅度改写 strategy/ 内容）
+  - 记忆重写（批量修改/删除 memory/ 内容）
+  - PreToolUse 拦截的所有工具调用
 
-不适用（无需审批）：
-- L0/L1 进化（写一条记忆、记录日志，无副作用）
-- 自检 dry-run（只读不修改）
-- 普通任务执行
-
-三种审批模式：
-
-1. **非阻塞提交**（后台线程用）
-   ApprovalManager.submit(title, detail, ...)
-   → 写入 memory/approvals/{id}.json，立即返回
-   → 后台线程继续运行，不等待
-
-2. **终端交互**（夸父对话中用）
-   ApprovalManager.terminal_prompt(title, detail, ...)
-   → 打印报告 + 显示 [y/N] 选项
-   → 返回 True/False
-
-3. **Hermes 飞书审批**（Hermes 侧调用）
-   ApprovalManager.list_pending() → 展示待审批项
-   ApprovalManager.approve(req_id) → 批准
-   ApprovalManager.reject(req_id) → 拒绝
-
-存储路径：memory/approvals/{req_id}.json
+不适用（无需审批/拦截）：
+  - 只读操作（search_files, read_file, web_search）
+  - L0/L1 进化（写一条记忆、记录日志，无副作用）
+  - 自检 dry-run（只读不修改）
+  - 普通任务执行按风险等级判定
 """
 
 import json
 import time
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 from dataclasses import dataclass, asdict
 
 logger = logging.getLogger("kuafu.approval")
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 APPROVALS_DIR = ROOT_DIR / "memory" / "approvals"
+DENY_RULES_PATH = ROOT_DIR / "memory" / "deny_rules.json"
+AUTO_MODE_PATH = ROOT_DIR / "memory" / "auto_mode_history.json"
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Layer 1: Deny 优先规则
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class DenyRule:
+    """一条 Deny 规则。"""
+    id: str
+    tool: str                # 工具名称（支持 * 通配）
+    pattern: str             # 参数匹配模式（正则）
+    reason: str              # 拒绝原因说明
+    created_at: float
+    expires_at: Optional[float] = None  # 过期时间，None 表示永久
+
+
+class DenyRules:
+    """Deny 规则管理器 — 硬阻止列表。
+
+    规则优先级（按顺序检查，命中最先匹配的一条）：
+      1. 精确 tool 名 + 精确参数匹配
+      2. 精确 tool 名 + 模糊参数匹配
+      3. tool 通配 + 精确参数匹配
+      4. tool 通配 + 模糊参数匹配
+    """
+
+    _rules: list[DenyRule] = []
+
+    @classmethod
+    def load(cls) -> list[DenyRule]:
+        """从磁盘加载 Deny 规则。"""
+        if not DENY_RULES_PATH.exists():
+            cls._rules = []
+            return []
+        try:
+            data = json.loads(DENY_RULES_PATH.read_text(encoding="utf-8"))
+            cls._rules = [DenyRule(**r) for r in data]
+            return cls._rules
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            logger.warning(f"Deny 规则加载失败: {e}")
+            cls._rules = []
+            return []
+
+    @classmethod
+    def save(cls):
+        """保存 Deny 规则到磁盘。"""
+        DENY_RULES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        data = [asdict(r) for r in cls._rules]
+        DENY_RULES_PATH.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def add(cls, tool: str, pattern: str, reason: str,
+            expires_at: Optional[float] = None) -> str:
+        """添加一条 Deny 规则。返回规则 ID。"""
+        import hashlib
+        rule_id = f"deny_{int(time.time())}_{abs(hash(tool + pattern)) % 10000:04d}"
+        rule = DenyRule(
+            id=rule_id,
+            tool=tool,
+            pattern=pattern,
+            reason=reason,
+            created_at=time.time(),
+            expires_at=expires_at,
+        )
+        cls._rules.append(rule)
+        cls.save()
+        logger.info(f"🛡️ 添加 Deny 规则 [{rule_id}] {tool}({pattern}) — {reason}")
+        return rule_id
+
+    @classmethod
+    def remove(cls, rule_id: str) -> bool:
+        """移除一条 Deny 规则。"""
+        before = len(cls._rules)
+        cls._rules = [r for r in cls._rules if r.id != rule_id]
+        if len(cls._rules) < before:
+            cls.save()
+            logger.info(f"🗑️ 移除 Deny 规则 {rule_id}")
+            return True
+        return False
+
+    @classmethod
+    def check(cls, tool: str, args: dict) -> Optional[DenyRule]:
+        """检查工具调用是否被 Deny 规则阻止。
+
+        Args:
+            tool: 工具名
+            args: 参数字典
+
+        Returns:
+            匹配的 DenyRule（应阻止），或 None（允许通过）
+        """
+        now = time.time()
+        import re
+
+        for rule in cls._rules[:]:  # 遍历副本
+            # 清理过期规则
+            if rule.expires_at and now > rule.expires_at:
+                cls._rules.remove(rule)
+                cls.save()
+                continue
+
+            # tool 名匹配（支持 * 通配）
+            if rule.tool != "*" and rule.tool != tool:
+                if not (rule.tool.endswith("*") and tool.startswith(rule.tool[:-1])):
+                    continue
+
+            # 参数匹配：检查 args 的 JSON 字符串是否匹配模式
+            arg_str = json.dumps(args, ensure_ascii=False)
+            try:
+                if re.search(rule.pattern, arg_str):
+                    return rule
+            except re.error:
+                # 模式不是正则 → 尝试精确匹配
+                if rule.pattern == arg_str:
+                    return rule
+
+        return None
+
+    @classmethod
+    def list_rules(cls) -> list[DenyRule]:
+        """列出所有有效规则。"""
+        now = time.time()
+        valid = [r for r in cls._rules if not r.expires_at or now < r.expires_at]
+        return valid
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Layer 2: 自动模式分类器
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class AutoDecision:
+    """一条自动决策记录。"""
+    id: str
+    tool: str
+    risk: str            # low / medium / high
+    context_type: str     # 上下文类型描述
+    auto_approved: bool   # True=自动通过, False=自动拒绝
+    confidence: float     # 0.0 ~ 1.0
+    timestamp: float
+    reason: str
+
+
+class AutoMode:
+    """自动模式分类器。
+
+    根据历史数据自动决定是否跳过审批：
+      - 低风险 + 高历史批准率 → 自动通过
+      - 高风险 + 低历史批准率 → 自动拒绝
+      - 模糊 → 留给人工审批
+    """
+
+    _history: list[AutoDecision] = []
+
+    # 风险等级判定（工具名 → 风险）
+    TOOL_RISK_MAP = {
+        # 高风险（需要人工确认）
+        "write_file": "high",
+        "patch": "high",
+        "delete_file": "high",
+        "terminal": "medium",  # 具体看命令
+        "execute_code": "high",
+        "mcp_*": "high",       # MCP 操作默认高风险
+
+        # 中风险
+        "web_scrape": "medium",
+        "web_submit": "medium",
+        "feishu_send": "medium",
+        "feishu_doc_write": "medium",
+
+        # 低风险（只读操作不在此列 — 完全不需要审批）
+        "web_search": "low",
+        "read_file": "low",
+        "search_files": "low",
+    }
+
+    # 可自动决策的工具（按风险 + 批准率阈值）
+    AUTO_TOOLS_LOW = {"web_search", "search_files", "read_file"}
+    AUTO_TOOLS_MEDIUM = {"feishu_send", "web_scrape"}
+
+    @classmethod
+    def load(cls):
+        """从磁盘加载自动决策历史。"""
+        if not AUTO_MODE_PATH.exists():
+            cls._history = []
+            return
+        try:
+            data = json.loads(AUTO_MODE_PATH.read_text(encoding="utf-8"))
+            cls._history = [AutoDecision(**d) for d in data]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            cls._history = []
+
+    @classmethod
+    def save(cls):
+        """保存自动决策历史。"""
+        AUTO_MODE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        data = [asdict(d) for d in cls._history[-100:]]  # 只保留最近 100 条
+        AUTO_MODE_PATH.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def _get_tool_risk(cls, tool: str) -> str:
+        """获取工具的风险等级。"""
+        # 先精确匹配
+        if tool in cls.TOOL_RISK_MAP:
+            return cls.TOOL_RISK_MAP[tool]
+        # 通配匹配
+        for pattern, risk in cls.TOOL_RISK_MAP.items():
+            if pattern.endswith("*") and tool.startswith(pattern[:-1]):
+                return risk
+        # 根据操作类型猜测
+        if tool.startswith("write_") or tool.startswith("delete_") or tool.startswith("patch"):
+            return "high"
+        if tool.startswith("read_") or tool.startswith("search_"):
+            return "low"
+        return "medium"
+
+    @classmethod
+    def _get_approval_rate(cls, tool: str, risk: str) -> float:
+        """计算某工具+风险级别的历史批准率。"""
+        matching = [d for d in cls._history
+                    if d.tool == tool and d.risk == risk]
+        if not matching:
+            return 0.5  # 无历史记录 → 中性
+        approved = sum(1 for d in matching if d.auto_approved)
+        return approved / len(matching)
+
+    @classmethod
+    def should_auto_approve(cls, tool: str, args: dict) -> Optional[bool]:
+        """自动判断是否应通过审批。
+
+        Returns:
+            True = 自动通过
+            False = 自动拒绝
+            None = 无法自动决策（走人工审批）
+        """
+        # 低风险工具直接通过（只读操作）
+        if tool in cls.AUTO_TOOLS_LOW:
+            return True
+
+        # 检查终端命令内容
+        if tool == "terminal":
+            cmd = args.get("command", "")
+            lower_cmd = cmd.lower().strip()
+            # 危险命令 → 自动拒绝
+            if any(danger in lower_cmd for danger in ["rm -rf /", "dd if=", "> /dev/sda", "mkfs", "fdisk"]):
+                cls._record_decision(tool, "high", False, 0.95,
+                                     f"危险命令: {cmd[:50]}")
+                return False
+
+            # 无害命令 → 自动通过
+            if lower_cmd.startswith(("ls", "echo", "cat", "head", "tail", "pwd",
+                                      "which", "type", "pip list", "python -c",
+                                      "git status", "git diff", "git log")):
+                return True
+
+            # 中等风险 → 看历史批准率
+            rate = cls._get_approval_rate(tool, "medium")
+            if rate > 0.8:
+                return True
+            if rate < 0.3:
+                cls._record_decision(tool, "medium", False, 1.0 - rate,
+                                     f"历史批准率{rate:.0%}过低")
+                return False
+            return None
+
+        # 高风险工具 → 看历史 + 参数
+        risk = cls._get_tool_risk(tool)
+        if risk == "high":
+            rate = cls._get_approval_rate(tool, risk)
+            if rate > 0.9:
+                # 极高历史批准率 → 信任
+                return True
+            if rate < 0.2:
+                cls._record_decision(tool, risk, False, 1.0 - rate,
+                                     f"高风险工具 {tool} 历史批准率{rate:.0%}过低")
+                return False
+            return None  # 不明确 → 人工审批
+
+        # 中风险
+        if risk == "medium":
+            rate = cls._get_approval_rate(tool, risk)
+            if rate > 0.8:
+                return True
+            if rate < 0.3:
+                cls._record_decision(tool, risk, False, 1.0 - rate,
+                                     f"历史批准率{rate:.0%}过低")
+                return False
+            return None
+
+        return None
+
+    @classmethod
+    def _record_decision(cls, tool: str, risk: str, approved: bool,
+                         confidence: float, reason: str):
+        """记录一次自动决策。"""
+        import hashlib
+        decision = AutoDecision(
+            id=f"auto_{int(time.time())}_{abs(hash(tool)) % 10000:04d}",
+            tool=tool,
+            risk=risk,
+            context_type="auto_classifier",
+            auto_approved=approved,
+            confidence=confidence,
+            timestamp=time.time(),
+            reason=reason,
+        )
+        cls._history.append(decision)
+        cls.save()
+
+    @classmethod
+    def record_mismatch(cls, tool: str, risk: str, auto_decision: bool,
+                        human_decision: bool):
+        """记录自动决策与人工决策的不一致，用于改进分类器。"""
+        cls._record_decision(
+            tool=tool, risk=risk,
+            approved=human_decision,
+            confidence=0.5,
+            reason=f"自动{'通过' if auto_decision else '拒绝'}但人工{'拒绝' if auto_decision != human_decision else '一致'}"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Layer 3: 人工审批（原 ApprovalManager 升级版）
+# ═══════════════════════════════════════════════════════════════════════════════
 
 @dataclass
 class ApprovalRequest:
     """一次审批请求的数据记录。"""
-    id: str                       # 唯一 ID（时间戳 + hash）
-    title: str                    # 审批标题，简短描述
-    detail: str                   # 详细说明，含具体数据
+    id: str
+    title: str
+    detail: str
     risk: str                     # low / medium / high
     status: str                   # pending / approved / rejected / expired
     created_at: float
     decided_at: Optional[float] = None
     timeout: int = 86400          # 默认 24 小时过期
+    tool: str = ""                # 触发审批的工具名
+    args_snapshot: str = ""       # 工具参数快照（JSON）
+    context_type: str = ""        # 上下文类型描述
 
 
 def _req_id(title: str) -> str:
     return f"appr_{int(time.time())}_{abs(hash(title)) % 10000:04d}"
-
-
-# ── 文件持久化 ──────────────────────────────────────────────────────────
 
 
 def _save(req: ApprovalRequest):
@@ -88,13 +411,89 @@ def _load(req_id: str) -> Optional[ApprovalRequest]:
         return None
 
 
-# ── 统一审批接口 ────────────────────────────────────────────────────────
-
-
 class ApprovalManager:
     """审批管理器，纯静态方法。"""
 
-    # ── 提交审批 ──────────────────────────────────────────────────────
+    # ── 权限检查主入口（三合一） ──────────────────────────────────
+
+    @staticmethod
+    def check_permission(
+        tool: str,
+        args: dict,
+        context: Optional[dict] = None,
+        auto_override: bool = True,
+    ) -> dict:
+        """权限检查主入口 — Layer 1→2→3 链式检查。
+
+        Args:
+            tool: 工具名
+            args: 工具参数
+            context: 上下文信息（任务类型、轮次等）
+            auto_override: 是否启用自动模式（Layer 2）
+
+        Returns:
+            {"allowed": bool, "reason": str, "approach": str,
+             "rule_id": str|None, "req_id": str|None, "auto": bool}
+        """
+        # Layer 1: Deny 优先规则
+        denied = DenyRules.check(tool, args)
+        if denied:
+            return {
+                "allowed": False,
+                "reason": f"🛡️ Deny 规则阻止: {denied.reason}",
+                "approach": "deny_rule",
+                "rule_id": denied.id,
+                "req_id": None,
+                "auto": True,
+            }
+
+        # Layer 2: 自动模式
+        if auto_override:
+            auto = AutoMode.should_auto_approve(tool, args)
+            if auto is True:
+                return {
+                    "allowed": True,
+                    "reason": "✅ 自动模式通过（低风险/高批准率）",
+                    "approach": "auto_approve",
+                    "rule_id": None,
+                    "req_id": None,
+                    "auto": True,
+                }
+            if auto is False:
+                return {
+                    "allowed": False,
+                    "reason": "⛔ 自动模式拒绝（高风险/低批准率）",
+                    "approach": "auto_reject",
+                    "rule_id": None,
+                    "req_id": None,
+                    "auto": True,
+                }
+
+        # Layer 3: 人工审批
+        risk = AutoMode._get_tool_risk(tool) if hasattr(AutoMode, '_get_tool_risk') else "medium"
+        title = f"审批工具调用: {tool}"
+        if tool == "terminal":
+            title = f"终端: {args.get('command', '')[:60]}"
+        detail = json.dumps(args, ensure_ascii=False, indent=2)[:500]
+        req_id = ApprovalManager.submit(
+            title=title,
+            detail=detail,
+            risk=risk,
+            tool=tool,
+            args_snapshot=json.dumps(args, ensure_ascii=False),
+            context_type=f"check_permission_{tool}",
+        )
+
+        return {
+            "allowed": None,  # 待人工决策
+            "reason": f"🟡 需要审批 (ID: {req_id})",
+            "approach": "pending_approval",
+            "rule_id": None,
+            "req_id": req_id,
+            "auto": False,
+        }
+
+    # ── 提交审批 ──────────────────────────────────────────────────
 
     @staticmethod
     def submit(
@@ -102,11 +501,14 @@ class ApprovalManager:
         detail: str = "",
         risk: str = "medium",
         timeout: int = 86400,
+        tool: str = "",
+        args_snapshot: str = "",
+        context_type: str = "",
     ) -> str:
         """非阻塞提交审批请求。
 
         写入文件后立即返回，不等待用户决策。
-        适用于后台线程（HealthChecker、Evolution 等不能阻塞的场景）。
+        适用于后台线程、PreToolUse 等不能阻塞的场景。
         返回请求 ID，供后续查询。
         """
         req_id = _req_id(title)
@@ -118,6 +520,9 @@ class ApprovalManager:
             status="pending",
             created_at=time.time(),
             timeout=timeout,
+            tool=tool,
+            args_snapshot=args_snapshot,
+            context_type=context_type,
         )
         _save(req)
         logger.info(f"📋 提交审批 [{risk.upper()}] {title}  (ID: {req_id})")
@@ -136,6 +541,9 @@ class ApprovalManager:
         适用于夸父对话中需要用户当场确认的场景。
         返回 True（批准）/ False（拒绝/超时）。
         """
+        import sys
+        from select import select
+
         req_id = _req_id(title)
         req = ApprovalRequest(
             id=req_id,
@@ -158,14 +566,9 @@ class ApprovalManager:
         print(f"{'='*60}")
         print()
 
-        # 等待用户输入（带超时）
-        import sys
-        from select import select
-
         print(f"是否执行？ [y/N] （{timeout}s 后自动拒绝）: ", end="", flush=True)
 
         if sys.stdin.isatty():
-            # 真终端 → 用 input() 但有超时
             try:
                 import signal
 
@@ -178,11 +581,10 @@ class ApprovalManager:
                 signal.alarm(0)
             except TimeoutError:
                 answer = ""
-                print()  # newline after timeout
+                print()
             except (EOFError, KeyboardInterrupt):
                 answer = ""
         else:
-            # 非 TTY（管道/重定向）→ 只读不阻塞
             ready, _, _ = select([sys.stdin], [], [], timeout)
             if ready:
                 answer = sys.stdin.readline().strip().lower()
@@ -241,11 +643,9 @@ class ApprovalManager:
         """解析请求 ID。空串时找最新 pending 的请求。"""
         if req_id:
             return _load(req_id)
-        # 没有指定 ID → 找最新的一个 pending 请求
         pending = ApprovalManager.list_pending()
         if not pending:
             return None
-        # 按创建时间倒序，取最新的
         pending.sort(key=lambda r: r.created_at, reverse=True)
         return pending[0]
 
@@ -256,7 +656,6 @@ class ApprovalManager:
         """获取所有待审批的请求。"""
         if not APPROVALS_DIR.exists():
             return []
-        # 清理过期的
         now = time.time()
         pending = []
         for f in sorted(APPROVALS_DIR.glob("*.json")):
@@ -265,7 +664,6 @@ class ApprovalManager:
                 req = ApprovalRequest(**data)
                 if req.status == "pending":
                     if now - req.created_at > req.timeout:
-                        # 过期了
                         req.status = "expired"
                         req.decided_at = now
                         _save(req)
@@ -292,8 +690,26 @@ class ApprovalManager:
         return items
 
 
-# ── 格式化输出（供 Hermes/夸父展示） ─────────────────────────────────────
+# ── 快速权限检查（单函数入口，供 PreToolUse 集成调用） ────────────────────
 
+# 全局对像：PreToolUse 检查器
+_pretooluse_cache: dict = {}
+
+def pretooluse_check(tool: str, args: dict, context: Optional[dict] = None) -> dict:
+    """PreToolUse 权限检查 — 装饰器/钩子入口。
+
+    这是 agent_loop 在每次工具调用前调用的单函数入口。
+    使用缓存避免同一工具+参数在连续轮次中重复检查。
+    """
+    # 加载配置（延迟初始化）
+    if not _pretooluse_cache:
+        DenyRules.load()
+        AutoMode.load()
+
+    return ApprovalManager.check_permission(tool, args, context)
+
+
+# ── 格式化输出（供展示） ────────────────────────────────────────────────
 
 def format_approval(req: ApprovalRequest) -> str:
     """格式化一条审批请求为可读文本。"""
