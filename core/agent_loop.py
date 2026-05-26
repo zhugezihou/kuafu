@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional, Callable
 
 from core.llm import LLMClient
-from core.memory_api import MemoryAPI
+from core.memory import MemoryManager as MemoryAPI  # 新三层记忆系统，兼容旧接口
 from core.evolution import EvolutionEngine
 from core.observer import Observer
 from core.tool_registry import ToolRegistry
@@ -157,8 +157,8 @@ class AgentLoop:
         self._mem_maintenance_counter = 0
 
         # EvolutionEngine：自我进化（任务结束时判断是否生成技能）
-        from core.evolution_engine import EvolutionEngine
-        self.evolution_engine = EvolutionEngine(root_dir=ROOT_DIR)
+        from core.evolution_engine import EvolutionEngine as EvolEngineV2
+        self.evolution_engine = EvolEngineV2(root_dir=ROOT_DIR)
 
         # Observer：运行时工具调用跟踪
         self._observer = Observer()
@@ -449,7 +449,25 @@ class AgentLoop:
             except Exception:
                 pass
 
-        # 8. 自我认知
+        # 8. 记忆上下文（三层记忆，预算感知注入）
+        budget = getattr(self, 'budget_allocator', None)
+        budget_ratio = 1.0
+        if budget and budget._last_snapshot:
+            budget_ratio = budget._last_snapshot.overall_ratio
+        memory_block = self.memory.build_memory_block(
+            budget_ratio=budget_ratio,
+            include_search=task if task else "",
+        )
+        if memory_block:
+            pm.add_section(
+                section_id="memory_context",
+                title="记忆上下文",
+                content=memory_block,
+                order=8,
+                budget_tag="memory",
+            )
+
+        # 9. 自我认知
         try:
             all_skills = discover_skills()
             skills_count = len(all_skills) if all_skills else 0
