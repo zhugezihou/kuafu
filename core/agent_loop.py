@@ -187,7 +187,10 @@ class AgentLoop:
             self.tools.register("delegate_task", schema, handle_delegate)
             self._log("🧩 子 Agent 系统就绪: delegate_task 工具已注册")
         except Exception as e:
-            self._log(f"⚠️ 子 Agent 注册失败: {e}")
+            self._log(f"⚠️ 子 Agent 系统注册失败: {e}")
+
+        # ── P1-3: Memory 工具注册（memory_store / memory_search / memory_reflect） ──
+        self._register_memory_tools()
 
     def _register_skill_rollback(self):
         """注册 skill_rollback 工具（回滚最后一条 skill 进化）。"""
@@ -240,6 +243,26 @@ class AgentLoop:
             self._log("↩️ 技能回滚工具已注册: skill_rollback")
         except Exception as e:
             self._log(f"⚠️ skill_rollback 注册失败: {e}")
+
+    # ── P1-3: Memory 工具注册 ──────────────────────────────────────────
+    def _register_memory_tools(self):
+        """注册记忆工具（memory_store / memory_search / memory_reflect）。"""
+        try:
+            from core.memory_api import MemoryAPI
+            mem_api = MemoryAPI()
+            self._memory_api_for_tools = mem_api
+            schemas = mem_api.get_tool_schemas()
+            for schema in schemas:
+                name = schema["name"]
+                params = schema["parameters"]
+                desc = schema["description"]
+                self.tools.register(name, {
+                    "description": desc,
+                    "parameters": params,
+                }, lambda args, _n=name: mem_api.handle_tool_call(_n, args))
+            self._log(f"🧠 记忆工具就绪: {', '.join(s['name'] for s in schemas)}")
+        except Exception as e:
+            self._log(f"⚠️ 记忆工具注册失败: {e}")
 
     def _init_mcp(self):
         """初始化 MCP 桥接，加载配置并注册工具。"""
@@ -1012,6 +1035,25 @@ class AgentLoop:
                             "tool_call_id": tc["id"],
                             "content": f"[工具 {fn_name} 的结果被过滤（判定无贡献），原长 {len(safe_output)} 字符]",
                         })
+
+                    # ── P1-1: PostToolUse 自动压缩 ────────────────────────────
+                    # 每个工具结果追加到 messages 后立即检查 token 预算
+                    # 超阈值则自动触发压缩（避免链式工具调用累积过量）
+                    post_tool_tokens = self.compressor._count_tokens(messages)
+                    if post_tool_tokens > self.compressor.max_context_tokens * 0.85:
+                        self._log(f"📏 PostToolUse 自动压缩: {post_tool_tokens}/{self.compressor.max_context_tokens} tokens")
+                        ctx_result = self.compressor.compress_with_local_llm(messages)
+                        if ctx_result.messages_removed > 0:
+                            system_msgs = [m for m in messages if m.get("role") == "system"]
+                            recent_non_system = [m for m in messages if m.get("role") != "system"]
+                            keep_count = min(self.compressor.keep_recent_rounds * 4, len(recent_non_system))
+                            recent_msgs = recent_non_system[-keep_count:] if keep_count > 0 else []
+                            messages = system_msgs + [{
+                                "role": "system",
+                                "content": f"【上下文压缩】以下是对旧对话的摘要，请基于此继续当前任务：\n{ctx_result.summary}",
+                            }] + recent_msgs
+                            self._log(f"✅ PostToolUse 压缩完成: {ctx_result.compression_ratio*100:.0f}% 缩减 "
+                                      f"({ctx_result.original_tokens}→{ctx_result.compressed_tokens} tokens)")
 
                     self.sessions.append_message(
                         self.current_session_id, "tool",

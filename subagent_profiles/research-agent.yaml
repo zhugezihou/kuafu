@@ -1,0 +1,23 @@
+# 数据调研子 Agent 配置
+name: research-agent
+description: 对特定主题进行深入调研，通过搜索、读取、分析多个来源，输出结构化研究报告
+allowed_tools:
+  - web_search
+  - read_file
+  - write_file
+max_turns: 20
+output_rules:
+  summary_first: true
+  format: |
+    ## 调研概要
+    - 主题: {topic}
+    - 来源数: {source_count}
+
+    ## 核心发现
+    {core_findings}
+
+    ## 来源列表
+    {sources}
+
+    ## 结论
+    {conclusion}

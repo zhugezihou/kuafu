@@ -3,11 +3,20 @@ subagent.py — 子 Agent 系统
 
 提供 delegate_task 工具函数，被 agent_loop.py 注册为夸父的一个工具。
 子 Agent 在隔离的 AgentLoop 中执行，拥有独立的 ToolRegistry 和对话上下文。
+
+P1-2: 支持 YAML Frontmatter 配置化 (subagent_profiles/ 目录)
+- LLM 通过 skill 参数引用预定义的子 Agent 配置
+- 配置含 allowed_tools、max_turns、output_rules
+- 不指定 skill 时使用原来的直接 goal/context 模式（向后兼容）
 """
 
+import os
+import json
 import time
+import yaml
 import logging
-from typing import Optional
+from pathlib import Path
+from typing import Optional, Any
 from dataclasses import dataclass, field
 
 logger = logging.getLogger("kuafu.subagent")
@@ -15,6 +24,54 @@ logger = logging.getLogger("kuafu.subagent")
 MAX_CONCURRENT = 3
 MAX_TURNS = 20
 TIMEOUT = 300
+
+# P1-2: 子 Agent Profile 目录
+SUBAGENT_PROFILES_DIR = Path(__file__).resolve().parent.parent / "subagent_profiles"
+
+
+def load_skill_profile(name: str) -> Optional[dict[str, Any]]:
+    """加载子 Agent YAML Frontmatter 配置。
+
+    Args:
+        name: skill 名称（不含 .yaml 后缀）
+
+    Returns:
+        配置字典，含 name, description, allowed_tools, max_turns, output_rules
+        不存在或格式错误返回 None
+    """
+    path = SUBAGENT_PROFILES_DIR / f"{name}.yaml"
+    if not path.exists():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        if not isinstance(data, dict) or not data.get("name"):
+            return None
+        return {
+            "name": data.get("name", name),
+            "description": data.get("description", ""),
+            "allowed_tools": data.get("allowed_tools", []),
+            "max_turns": data.get("max_turns", MAX_TURNS),
+            "output_rules": data.get("output_rules", {}),
+        }
+    except Exception as e:
+        logger.warning(f"子 Agent Profile 加载失败 {name}: {e}")
+        return None
+
+
+def list_skill_profiles() -> list[dict[str, str]]:
+    """列出所有可用的子 Agent 配置。"""
+    if not SUBAGENT_PROFILES_DIR.exists():
+        return []
+    profiles = []
+    for p in sorted(SUBAGENT_PROFILES_DIR.glob("*.yaml")):
+        data = load_skill_profile(p.stem)
+        if data:
+            profiles.append({
+                "name": p.stem,
+                "description": data["description"][:200],
+            })
+    return profiles
 
 
 @dataclass
@@ -34,7 +91,17 @@ _active_subagents = 0
 
 
 def get_delegate_schema() -> dict:
-    """返回 delegate_task 工具的 OpenAI function calling schema。"""
+    """返回 delegate_task 工具的 OpenAI function calling schema。
+
+    P1-2: 支持 skill 参数引用 YAML Frontmatter 配置的子 Agent 模板。
+    可用技能: {', '.join(p['name'] for p in list_skill_profiles())}。
+    """
+    # 注入可用 skill 列表到描述中
+    available_skills = list_skill_profiles()
+    skill_descriptions = "\n".join(
+        f"  - {s['name']}: {s['description']}" for s in available_skills
+    ) if available_skills else "  暂无预定义技能"
+
     return {
         "description": "将一个独立的子任务委托给隔离的子 Agent 执行。子 Agent 拥有独立的上下文和工具集，适合并行处理边界清晰的任务。注意：子 Agent 的记忆是空的，需要把所有相关信息通过 context 参数传递。",
         "parameters": {
@@ -53,6 +120,10 @@ def get_delegate_schema() -> dict:
                     "items": {"type": "string"},
                     "description": "允许子 Agent 使用的工具列表（可选，默认全部）。例如: ['terminal', 'read_file', 'write_file', 'web_search']",
                 },
+                "skill": {
+                    "type": "string",
+                    "description": f"可选的子 Agent 技能模板名称，对应 subagent_profiles/ 目录下的 YAML 配置。\n可用技能:\n{skill_descriptions}\n\n指定 skill 后，goal 和 context 会被合并到 skill 的提示框架中，同时工具白名单由 skill 配置决定。不指定则使用传统的 goal/context 模式。",
+                },
             },
             "required": ["goal", "context"],
         },
@@ -60,13 +131,33 @@ def get_delegate_schema() -> dict:
 
 
 def handle_delegate(args: dict) -> dict:
-    """处理 delegate_task 工具调用。"""
+    """处理 delegate_task 工具调用。
+
+    P1-2: 支持 skill 参数，自动加载 subagent_profiles/ 下的 YAML 配置。
+    """
     goal = args.get("goal", "")
     context = args.get("context", "")
     tool_whitelist = args.get("tools", None)
+    skill_name = args.get("skill", None)
 
     if not goal:
         return {"success": False, "output": "goal 参数不能为空"}
+
+    # ── P1-2: 加载 skill profile ──────────────────────────────────
+    profile = None
+    effective_max_turns = MAX_TURNS
+    if skill_name:
+        profile = load_skill_profile(skill_name)
+        if profile:
+            logger.info(f"🧩 子 Agent 使用 skill profile: {skill_name}")
+            # skill 配置覆盖 max_turns
+            if profile.get("max_turns"):
+                effective_max_turns = profile["max_turns"]
+            # skill 配置的工具白名单优先
+            if profile.get("allowed_tools"):
+                tool_whitelist = profile["allowed_tools"]
+        else:
+            logger.warning(f"⚠️ 子 Agent skill profile 不存在: {skill_name}，回退到直接模式")
 
     # 检查并发上限
     global _active_subagents
@@ -93,7 +184,7 @@ def handle_delegate(args: dict) -> dict:
         from core.agent_loop import AgentLoop
         sub_loop = AgentLoop(
             tool_registry=sub_tools,
-            max_turns=MAX_TURNS,
+            max_turns=effective_max_turns,
         )
         # 跳过 MCP 加载（子 Agent 不需要外部工具绑定）
         sub_loop.mcp_bridge = None
