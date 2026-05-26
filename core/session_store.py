@@ -475,7 +475,13 @@ class SessionStore:
             self._conn = None
 
     def __del__(self):
-        self.close()
+        try:
+            self.close()
+        except sqlite3.ProgrammingError:
+            # SQLite 对象跨线程导致的异常，忽略（GC 线程与创建线程不同）
+            pass
+        except Exception:
+            pass
 
     # ── P1-3: 会话 Fork ────────────────────────────────────────────
 
