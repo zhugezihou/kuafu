@@ -523,17 +523,19 @@ class SessionStore:
 
         return new_id
 
-    def resume_context(self, src_session_id: str, max_tokens: int = 4000) -> Optional[str]:
+    def resume_context(self, src_session_id: str, max_tokens: int = 4000, use_llm: bool = True) -> Optional[str]:
         """从历史会话恢复上下文（压缩版）。
 
         生成一段「上下文简报」注入到当前会话，比 fork 更轻量：
         - 不创建新会话
         - 只返回一段可被注入 system prompt 的文本
         - 保留源会话的关键决策、Pin 标记、白板信息
+        - P3-3: use_llm=True 时使用本地 LLM 生成智能摘要，比关键词提取更准确
 
         Args:
             src_session_id: 源会话 ID
             max_tokens: 简报最大 token 数
+            use_llm: 是否使用 LLM 生成智能摘要（默认 True）
 
         Returns:
             上下文简报文本，或 None
@@ -547,7 +549,16 @@ class SessionStore:
         if not messages:
             return None
 
-        # 提取关键信息
+        # P3-3: 尝试 LLM 智能摘要（更结构化、更准确）
+        if use_llm:
+            try:
+                llm_summary = self._llm_summarize_session(messages, src, max_tokens)
+                if llm_summary:
+                    return llm_summary
+            except Exception as e:
+                logger.warning(f"LLM 会话摘要失败，回退到关键词提取: {e}")
+
+        # 回退：关键词提取（原有逻辑）
         parts = []
         parts.append(f"📋 会话简报：{src.title} ({src_session_id})")
         parts.append(f"   {src.message_count} 条消息 · {src.total_tokens} tokens")
@@ -580,6 +591,88 @@ class SessionStore:
                 parts.append(f"   🧑 {content}")
 
         return "\n".join(parts)
+
+    # ── P3-3: LLM 智能会话摘要 ─────────────────────────────────────
+
+    def _llm_summarize_session(self, messages: list[dict], session: Session,
+                                max_tokens: int = 4000) -> Optional[str]:
+        """使用本地 LLM 对会话进行结构化智能摘要。
+
+        自动提取：对话主题、关键决策、待办事项、技术结论。
+        """
+        try:
+            from core.llm import LLMClient
+
+            # 准备会话内容样本（取首+尾以减少 token 消耗）
+            content_parts = []
+            # 系统消息始终保留
+            for m in messages:
+                if m["role"] == "system":
+                    c = str(m.get("content", ""))[:400]
+                    if c:
+                        content_parts.append(f"[系统] {c}")
+
+            # 取前 3 轮 + 后 5 轮对话
+            non_system = [(i, m) for i, m in enumerate(messages) if m["role"] != "system"]
+            front = non_system[:3]
+            back = non_system[-5:] if len(non_system) > 8 else non_system[3:]
+
+            seen = set()
+            for idx, m in front + back:
+                role = m["role"]
+                c = str(m.get("content", ""))[:300]
+                if c and c not in seen:
+                    seen.add(c)
+                    label = "🧑 用户" if role == "user" else "🤖 助手"
+                    content_parts.append(f"{label}: {c}")
+
+            conversation_sample = "\n\n".join(content_parts)
+            if len(conversation_sample) > 8000:
+                conversation_sample = conversation_sample[:8000] + "..."
+
+            prompt = f"""你是一个专业的对话摘要助手。请分析以下会话，输出结构化简报。
+
+会话标题：{session.title}
+消息数：{session.message_count} 条
+
+对话内容：
+{conversation_sample}
+
+请严格按以下格式输出（不要加额外解释）：
+
+## 主题
+（1-2句话概括会话目的）
+
+## 关键决策
+（列出已确定的方案、决定，每条一行用 - 开头）
+
+## 待办事项
+（列出尚未完成的行动项，每条一行用 - 开头；无则写"无"）
+
+## 技术结论
+（列出代码/架构/配置方面的结论性信息，每条一行用 - 开头；无则写"无"）"""
+
+            client = LLMClient(
+                max_tokens=min(max_tokens, 2000),
+                temperature=0.2,
+            )
+            result = client.chat([{"role": "user", "content": prompt}])
+            llm_content = (result.get("content") or "").strip()
+
+            if llm_content and len(llm_content) > 50:
+                return (
+                    f"📋 会话简报（LLM）：{session.title} ({session.id})\n"
+                    f"   {session.message_count} 条消息\n\n"
+                    f"{llm_content}"
+                )
+
+            return None
+        except ImportError:
+            logger.warning("LLM 模块不可用，跳过智能摘要")
+            return None
+        except Exception as e:
+            logger.warning(f"LLM 摘要异常: {e}")
+            return None
 
     def find_related_sessions(self, query: str, limit: int = 5) -> list[Session]:
         """找到与查询相关的会话（用于推荐 resume 目标）。

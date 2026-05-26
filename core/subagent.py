@@ -16,6 +16,7 @@ import time
 import yaml
 import logging
 import uuid
+import subprocess
 from pathlib import Path
 from typing import Optional, Any
 from dataclasses import dataclass, field
@@ -32,6 +33,16 @@ SUBAGENT_PROFILES_DIR = Path(__file__).resolve().parent.parent / "subagent_profi
 # P2-1: 侧链隔离 — 子 Agent 完整对话转录写磁盘
 SIDECHAIN_DIR = Path(__file__).resolve().parent.parent / "sidechain_data" / "transcripts"
 SIDECHAIN_DIR.mkdir(parents=True, exist_ok=True)
+
+# P3-1: Worktree 隔离 — 子 Agent 独立 git worktree
+WORKTREE_BASE = Path(__file__).resolve().parent.parent / "sidechain_data" / "worktrees"
+WORKTREE_BASE.mkdir(parents=True, exist_ok=True)
+
+# P3-2: 子 Agent 记忆持久化目录
+SUBAGENT_MEMORY_DIR = Path(__file__).resolve().parent.parent / "sidechain_data" / "subagent_memory"
+SUBAGENT_MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 def load_skill_profile(name: str) -> Optional[dict[str, Any]]:
@@ -129,6 +140,15 @@ def get_delegate_schema() -> dict:
                     "type": "string",
                     "description": f"可选的子 Agent 技能模板名称，对应 subagent_profiles/ 目录下的 YAML 配置。\n可用技能:\n{skill_descriptions}\n\n指定 skill 后，goal 和 context 会被合并到 skill 的提示框架中，同时工具白名单由 skill 配置决定。不指定则使用传统的 goal/context 模式。",
                 },
+                "worktree": {
+                    "type": "boolean",
+                    "description": "是否使用 git worktree 隔离（默认 false）。设为 true 时，子 Agent 在独立的 git worktree 目录中运行，拥有完全隔离的文件系统。仅当项目已初始化 git 仓库时有效。",
+                },
+                "memory_modes": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": ["user", "project", "task"]},
+                    "description": "注入哪类父 Agent 记忆到子 Agent 上下文（可选）。'user'=用户偏好/沟通风格，'project'=项目技术决策/约定，'task'=当前任务相关背景。不指定则无记忆注入。",
+                },
             },
             "required": ["goal", "context"],
         },
@@ -139,11 +159,15 @@ def handle_delegate(args: dict) -> dict:
     """处理 delegate_task 工具调用。
 
     P1-2: 支持 skill 参数，自动加载 subagent_profiles/ 下的 YAML 配置。
+    P3-1: 支持 worktree 参数，在独立 git worktree 中隔离运行。
+    P3-2: 支持 memory_modes 参数，从父 Agent 注入记忆到子 Agent。
     """
     goal = args.get("goal", "")
     context = args.get("context", "")
     tool_whitelist = args.get("tools", None)
     skill_name = args.get("skill", None)
+    use_worktree = args.get("worktree", False)
+    memory_modes = args.get("memory_modes", None)
 
     if not goal:
         return {"success": False, "output": "goal 参数不能为空"}
@@ -164,10 +188,96 @@ def handle_delegate(args: dict) -> dict:
         else:
             logger.warning(f"⚠️ 子 Agent skill profile 不存在: {skill_name}，回退到直接模式")
 
+    # ── P3-1: Worktree 隔离 ────────────────────────────────────────
+    worktree_path = None
+    worktree_branch = None
+    original_cwd = os.getcwd()
+
+    if use_worktree:
+        try:
+            # 检查是否在 git 仓库中
+            result = subprocess.run(
+                ["git", "rev-parse", "--is-inside-work-tree"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0 and result.stdout.strip() == "true":
+                worktree_id = uuid.uuid4().hex[:8]
+                worktree_branch = f"subagent/{worktree_id}"
+                worktree_path = WORKTREE_BASE / worktree_id
+
+                # 创建新分支（从当前 HEAD 开始）
+                subprocess.run(
+                    ["git", "branch", worktree_branch],
+                    capture_output=True, text=True, timeout=30,
+                    cwd=PROJECT_ROOT,
+                )
+
+                # 添加 worktree
+                subprocess.run(
+                    ["git", "worktree", "add", str(worktree_path), worktree_branch],
+                    capture_output=True, text=True, timeout=30,
+                    cwd=PROJECT_ROOT,
+                )
+
+                logger.info(f"🌳 Worktree 隔离: {worktree_path} (branch: {worktree_branch})")
+
+                # 切换到 worktree 目录
+                os.chdir(str(worktree_path))
+            else:
+                logger.warning("⚠️ worktree 模式请求但不在 git 仓库中，回退到默认目录")
+                use_worktree = False
+        except Exception as e:
+            logger.warning(f"⚠️ Worktree 创建失败: {e}，回退到默认目录")
+            use_worktree = False
+
+    # ── P3-2: 记忆注入 ─────────────────────────────────────────────
+    memory_context = ""
+    if memory_modes:
+        try:
+            from core.memory_api import MemoryAPI
+            mem_api = MemoryAPI()
+            sections = []
+
+            for mode in memory_modes:
+                if mode == "user":
+                    results = mem_api.search("用户偏好 风格 沟通", limit=5)
+                    if results:
+                        prefs = "\n".join(
+                            f"  - {r.get('content', '')[:200]}"
+                            for r in results
+                        )
+                        sections.append(f"[用户记忆]\n{prefs}")
+
+                elif mode == "project":
+                    results = mem_api.search("项目 技术 决策 架构 约定", limit=5)
+                    if results:
+                        tech = "\n".join(
+                            f"  - {r.get('content', '')[:200]}"
+                            for r in results
+                        )
+                        sections.append(f"[项目记忆]\n{tech}")
+
+                elif mode == "task":
+                    results = mem_api.search(goal[:50], limit=3)
+                    if results:
+                        task_mem = "\n".join(
+                            f"  - {r.get('content', '')[:200]}"
+                            for r in results
+                        )
+                        sections.append(f"[任务相关记忆]\n{task_mem}")
+
+            if sections:
+                memory_context = "\n\n".join(sections)
+                logger.info(f"🧠 子 Agent 注入记忆: {len(sections)} 个领域")
+
+        except Exception as e:
+            logger.warning(f"⚠️ 记忆注入失败: {e}")
+
     # 检查并发上限
     global _active_subagents
     with _delegate_lock:
         if _active_subagents >= MAX_CONCURRENT:
+            _cleanup_worktree(worktree_path, worktree_branch)
             return {
                 "success": False,
                 "output": f"已达到最大并发子 Agent 数 ({MAX_CONCURRENT})，请等待当前子 Agent 完成后重试",
@@ -207,14 +317,14 @@ def handle_delegate(args: dict) -> dict:
             sidechain_messages.append({"type": "log", "text": text, "time": time.time()})
         sub_loop._log = _transcript_log
 
-        # 组装提示
-        prompt = goal
+        # 组装提示（含注入的记忆）
+        prompt_parts = []
+        if memory_context:
+            prompt_parts.append(f"[注入记忆]\n{memory_context}\n")
         if context:
-            prompt = f"""[上下文]
-{context}
-
-[任务]
-{goal}"""
+            prompt_parts.append(f"[上下文]\n{context}")
+        prompt_parts.append(f"[任务]\n{goal}")
+        prompt = "\n\n".join(prompt_parts)
 
         start = time.time()
         result = sub_loop.run(prompt)
@@ -229,6 +339,9 @@ def handle_delegate(args: dict) -> dict:
                 "task_id": task_id,
                 "goal": goal[:200],
                 "context": context[:500] if context else "",
+                "memory_modes": memory_modes,
+                "use_worktree": use_worktree,
+                "worktree_path": str(worktree_path) if worktree_path else None,
                 "success": result.get("success", False),
                 "turns": result.get("turns", 0),
                 "duration": duration,
@@ -242,14 +355,16 @@ def handle_delegate(args: dict) -> dict:
             logger.warning(f"侧链转录写入失败: {e}")
             sidechain_path = None
 
+        # ── P3-2: 子 Agent 记忆持久化 — 提取有用知识写回 ──
+        if memory_modes and result.get("success", False):
+            _persist_subagent_knowledge(task_id, goal, result.get("result", ""))
+
         raw_output = result.get("result", "") or ""
 
         # ── P2-2: 强制只返摘要（sidechain 隔离） ──
-        # Claude Code 设计启示：子 Agent 的完整对话永远不进父上下文
-        # 父 Agent 只收到摘要 + 可选的侧链文件引用
         MAX_SUMMARY_CHARS = 800  # ≈ 500 tokens
 
-        # 用子 Agent 的结果做摘要（原始结果先给摘要器，不再放全量 output 回父上下文）
+        # 用子 Agent 的结果做摘要
         summary = _summarize_result(raw_output, max_chars=MAX_SUMMARY_CHARS)
 
         # 返回：只有 summary，没有全量 output
@@ -263,6 +378,8 @@ def handle_delegate(args: dict) -> dict:
         # 可选：附带侧链文件引用（供日志调试）
         if sidechain_path:
             ret["_sidechain"] = str(sidechain_path)
+        if worktree_path:
+            ret["_worktree"] = str(worktree_path)
         return ret
 
     except Exception as e:
@@ -271,6 +388,10 @@ def handle_delegate(args: dict) -> dict:
     finally:
         with _delegate_lock:
             _active_subagents -= 1
+        # 恢复工作目录
+        os.chdir(original_cwd)
+        # 清理 worktree
+        _cleanup_worktree(worktree_path, worktree_branch)
 
 
 # ── P0-2: 子 Agent 结果摘要工具 ──────────────────────────────────
@@ -362,3 +483,74 @@ def _summarize_result(text: str, max_chars: int = 800) -> str:
     if len(result) > max_chars:
         result = result[:max_chars] + "..."
     return result
+
+
+# ── P3-1: Worktree 清理 ──────────────────────────────────────────────
+
+
+def _cleanup_worktree(worktree_path: Optional[Path], branch: Optional[str]):
+    """清理 git worktree 目录和临时分支。"""
+    if not worktree_path and not branch:
+        return
+
+    try:
+        if worktree_path and worktree_path.exists():
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", str(worktree_path)],
+                capture_output=True, text=True, timeout=30,
+                cwd=PROJECT_ROOT,
+            )
+            logger.info(f"🗑️ Worktree 已移除: {worktree_path}")
+
+        if branch:
+            subprocess.run(
+                ["git", "branch", "-D", branch],
+                capture_output=True, text=True, timeout=10,
+                cwd=PROJECT_ROOT,
+            )
+            logger.info(f"🗑️ 临时分支已删除: {branch}")
+    except Exception as e:
+        logger.warning(f"⚠️ Worktree 清理失败: {e}")
+
+
+# ── P3-2: 子 Agent 知识持久化 ───────────────────────────────────────
+
+
+def _persist_subagent_knowledge(task_id: str, goal: str, result: str):
+    """将子 Agent 执行中产生的有用知识写回父 Agent 的记忆系统。
+
+    提取 key-value 形式的知识点并存入 memory_api。
+    """
+    try:
+        from core.memory_api import MemoryAPI
+
+        result_sample = (result or "")[:3000]
+        if len(result_sample) < 50:
+            return
+
+        mem_api = MemoryAPI()
+
+        # 提取任务的 insights（用简短的关键点）
+        insights = []
+        lines = result_sample.split("\n")
+        for line in lines:
+            line = line.strip()
+            # 保留看起来像结论/决策的行
+            if line and len(line) > 20 and any(
+                kw in line.lower()
+                for kw in ["结论", "决定", "注意", "关键", "建议", "最终",
+                           "result", "conclusion", "recommend", "important",
+                           "note:", "tip:", "best", "方案", "选择"]
+            ):
+                insights.append(line[:200])
+
+        if insights:
+            for insight in insights[:3]:
+                mem_api.store(
+                    content=f"[subagent:{task_id}] {insight}",
+                    context=f"subagent_result:{goal[:60]}",
+                    source=f"subagent/{task_id}",
+                )
+            logger.info(f"🧠 子 Agent 知识已持久化: {len(insights)} 条 insight")
+    except Exception as e:
+        logger.warning(f"⚠️ 子 Agent 知识存储失败: {e}")
