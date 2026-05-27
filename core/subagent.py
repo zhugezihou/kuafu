@@ -314,10 +314,12 @@ def handle_delegate(args: dict) -> dict:
                     sub_tools.unregister(name)
 
         # 创建隔离的 AgentLoop（不加载 MCP，不加载记忆）
-        # 子 Agent 用云端 LLM，避免与父 Agent 本地模型争抢并发
-        from core.llm import LLMClient
+        # 子 Agent 跟随父 Agent 后端配置（cloud → DeepSeek, local → 本地模型）
+        # 但在实际使用中，local 模式下不会创建子 Agent（由 agent_loop.py 的 guard 禁止）
+        from core.llm import LLMClient, KUAFFU_BACKEND
         from core.agent_loop import AgentLoop
-        sub_llm = LLMClient(backend="cloud")
+        sub_backend = KUAFFU_BACKEND
+        sub_llm = LLMClient(backend=sub_backend)
         sub_loop = AgentLoop(
             llm=sub_llm,
             tool_registry=sub_tools,

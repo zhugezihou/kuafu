@@ -766,7 +766,9 @@ class AgentLoop:
         if matched:
             _simple, complex_skills = resolve_skill_execution(matched)
 
-        if complex_skills:
+        # 本地模式禁止子 Agent（子 Agent 硬编码 cloud，本地无翻墙容易超时）
+        local_mode = getattr(self.llm, 'backend', 'cloud') == 'local'
+        if complex_skills and not local_mode:
             top_skill = complex_skills[0]
             self._log(f"🧩 检测到复杂 skill: {top_skill['name']} → 后台委派子 Agent")
             sub_prompt = build_delegation_prompt(top_skill, task)
