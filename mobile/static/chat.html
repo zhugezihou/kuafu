@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#1a1a2e">
+<title>夸父 · 移动助手</title>
+<style>
+/* ── 全局 ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0f0f1a;
+  --surface: #1a1a2e;
+  --surface2: #232340;
+  --border: #2d2d50;
+  --text: #e0e0f0;
+  --text2: #8888aa;
+  --primary: #6c63ff;
+  --primary-hover: #5a52e0;
+  --success: #4ade80;
+  --error: #f87171;
+  --info: #60a5fa;
+  --user-bg: #2d2d50;
+  --assistant-bg: #1e1e38;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow: 0 2px 12px rgba(0,0,0,0.3);
+}
+
+html, body {
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ── 布局 ── */
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  max-width: 800px;
+  margin: 0 auto;
+  position: relative;
+}
+
+/* ── 顶栏 ── */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  z-index: 10;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.header .logo {
+  width: 32px;
+  height: 32px;
+  background: var(--primary);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: bold;
+  color: white;
+}
+
+.header h1 {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.model-badge {
+  font-size: 11px;
+  background: var(--surface2);
+  color: var(--text2);
+  padding: 2px 8px;
+  border-radius: 10px;
+  white-space: nowrap;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.icon-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text2);
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  transition: all 0.2s;
+}
+
+.icon-btn:active { background: var(--surface2); }
+
+/* ── 消息区 ── */
+.chat-area {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+}
+
+.chat-area::-webkit-scrollbar { width: 4px; }
+.chat-area::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.welcome {
+  text-align: center;
+  margin: auto;
+  padding: 32px 16px;
+  color: var(--text2);
+}
+
+.welcome .icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+}
+
+.welcome h2 {
+  font-size: 20px;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+.welcome p {
+  font-size: 14px;
+  line-height: 1.6;
+  max-width: 320px;
+  margin: 0 auto;
+}
+
+/* ── 消息气泡 ── */
+.message {
+  display: flex;
+  gap: 10px;
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+.message.user {
+  flex-direction: row-reverse;
+}
+
+.msg-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.message.user .msg-avatar {
+  background: var(--primary);
+  color: white;
+}
+
+.message.assistant .msg-avatar {
+  background: var(--surface2);
+  color: var(--primary);
+  border: 1px solid var(--border);
+}
+
+.msg-content {
+  max-width: 82%;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  font-size: 15px;
+  line-height: 1.6;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.message.user .msg-content {
+  background: var(--primary);
+  color: white;
+  border-bottom-right-radius: 4px;
+}
+
+.message.assistant .msg-content {
+  background: var(--assistant-bg);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: 4px;
+}
+
+.msg-content p { margin: 4px 0; }
+.msg-content code {
+  background: rgba(0,0,0,0.3);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+}
+.msg-content pre {
+  background: rgba(0,0,0,0.4);
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  font-size: 13px;
+  margin: 8px 0;
+}
+.msg-content pre code {
+  background: none;
+  padding: 0;
+}
+.msg-content strong { color: var(--primary); }
+
+.msg-time {
+  font-size: 10px;
+  color: var(--text2);
+  margin-top: 4px;
+  text-align: right;
+  opacity: 0.6;
+}
+
+/* ── 错误消息 ── */
+.message.error .msg-content {
+  background: rgba(248, 113, 113, 0.1);
+  border-color: var(--error);
+  color: var(--error);
+}
+
+/* ── 输入区 ── */
+.input-area {
+  padding: 12px 16px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.input-wrapper {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+textarea {
+  flex: 1;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 10px 14px;
+  font-size: 15px;
+  font-family: inherit;
+  resize: none;
+  min-height: 44px;
+  max-height: 120px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+textarea:focus { border-color: var(--primary); }
+textarea::placeholder { color: var(--text2); }
+
+.send-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius);
+  border: none;
+  background: var(--primary);
+  color: white;
+  font-size: 20px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.send-btn:active { background: var(--primary-hover); }
+.send-btn.loading { opacity: 0.5; pointer-events: none; }
+
+/* ── 状态条 ── */
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  font-size: 11px;
+  color: var(--text2);
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+.status-dot.error { background: var(--error); }
+.status-dot.loading { background: #fbbf24; animation: pulse 0.6s infinite; }
+
+/* ── 进度指示器 ── */
+.thinking-indicator {
+  display: flex;
+  gap: 4px;
+  padding: 4px 0;
+}
+
+.thinking-indicator span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text2);
+  animation: bounce 1.4s infinite;
+}
+
+.thinking-indicator span:nth-child(2) { animation-delay: 0.2s; }
+.thinking-indicator span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes bounce { 0%, 60%, 100% { transform: translateY(0); } 30% { transform: translateY(-6px); } }
+
+/* ── 复制按钮 ── */
+.copy-btn {
+  background: transparent;
+  border: none;
+  color: var(--text2);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.2s;
+  float: right;
+}
+
+.message:hover .copy-btn { opacity: 1; }
+
+/* ── 滚动条美化 ── */
+@media (hover: none) {
+  .copy-btn { opacity: 0.4; }
+}
+
+/* ── 适配小屏 ── */
+@media (max-width: 480px) {
+  .header { padding: 10px 12px; }
+  .chat-area { padding: 12px; }
+  .input-area { padding: 10px 12px; }
+  .msg-content { font-size: 14px; max-width: 86%; }
+  .model-badge { max-width: 100px; font-size: 10px; }
+}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+
+  <!-- 顶栏 -->
+  <div class="header">
+    <div class="header-left">
+      <div class="logo">夸</div>
+      <h1>夸父</h1>
+      <span class="model-badge" id="modelBadge">载入中…</span>
+    </div>
+    <div class="header-actions">
+      <button class="icon-btn" onclick="resetChat()" title="新对话">✕</button>
+      <button class="icon-btn" onclick="toggleModel()" title="切换模型">⟳</button>
+    </div>
+  </div>
+
+  <!-- 聊天区 -->
+  <div class="chat-area" id="chatArea">
+    <div class="welcome" id="welcome">
+      <div class="icon">🌞</div>
+      <h2>夸父 · 逐日不息</h2>
+      <p>我是夸父，一个自我进化的 AI 助手。问我任何事，我来帮你搞定。</p>
+    </div>
+  </div>
+
+  <!-- 输入区 -->
+  <div class="input-area">
+    <div class="input-wrapper">
+      <textarea id="inputBox" rows="1" placeholder="给夸父发消息…" autofocus></textarea>
+      <button class="send-btn" id="sendBtn" onclick="sendMessage()">↑</button>
+    </div>
+  </div>
+
+  <!-- 状态条 -->
+  <div class="status-bar">
+    <span class="status-dot" id="statusDot" title="已连接"></span>
+    <span id="statusText">就绪</span>
+    <span style="flex:1"></span>
+    <span id="taskCount"></span>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+const API_BASE = '';
+
+// ── DOM refs ──
+const chatArea = document.getElementById('chatArea');
+const welcome = document.getElementById('welcome');
+const inputBox = document.getElementById('inputBox');
+const sendBtn = document.getElementById('sendBtn');
+const modelBadge = document.getElementById('modelBadge');
+const statusDot = document.getElementById('statusDot');
+const statusText = document.getElementById('statusText');
+const taskCount = document.getElementById('taskCount');
+
+let isLoading = false;
+
+// ── 自动调整 textarea 高度 ──
+inputBox.addEventListener('input', () => {
+  inputBox.style.height = 'auto';
+  inputBox.style.height = Math.min(inputBox.scrollHeight, 120) + 'px';
+});
+
+inputBox.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
+
+// ── 初始化 ──
+document.addEventListener('DOMContentLoaded', () => {
+  fetchStatus();
+  inputBox.focus();
+});
+
+// ── 发送消息 ──
+async function sendMessage() {
+  const text = inputBox.value.trim();
+  if (!text || isLoading) return;
+
+  inputBox.value = '';
+  inputBox.style.height = 'auto';
+  isLoading = true;
+  sendBtn.classList.add('loading');
+
+  // 隐藏欢迎
+  welcome.style.display = 'none';
+
+  // 添加用户消息
+  addMessage('user', text);
+  scrollToBottom();
+
+  // 添加思考中的占位
+  const loadingId = addLoadingMessage();
+  scrollToBottom();
+
+  setStatus('loading', '思考中…');
+
+  try {
+    const res = await fetch(API_BASE + '/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text })
+    });
+    const data = await res.json();
+
+    // 移除 loading
+    removeLoadingMessage(loadingId);
+
+    if (data.success) {
+      addMessage('assistant', data.message || data.summary || '完成');
+      if (data.duration) {
+        setStatus('ok', `完成 (${data.duration}s)`);
+      }
+    } else {
+      addMessage('error', data.message || '执行失败');
+      setStatus('error', '失败');
+    }
+  } catch (err) {
+    removeLoadingMessage(loadingId);
+    addMessage('error', '网络错误: ' + err.message);
+    setStatus('error', '网络错误');
+  }
+
+  isLoading = false;
+  sendBtn.classList.remove('loading');
+  inputBox.focus();
+  scrollToBottom();
+}
+
+// ── 重置对话 ──
+async function resetChat() {
+  if (isLoading) return;
+  try {
+    await fetch(API_BASE + '/api/reset', { method: 'POST' });
+  } catch (_) {}
+
+  // 清除消息，保留 welcome
+  const msgs = chatArea.querySelectorAll('.message');
+  msgs.forEach(m => m.remove());
+  welcome.style.display = '';
+  setStatus('ok', '新对话');
+  inputBox.focus();
+}
+
+// ── 切换模型 ──
+async function toggleModel() {
+  if (isLoading) return;
+
+  // 弹窗选择
+  const target = prompt('切换模型: local / cloud / deepseek / claude');
+  if (!target) return;
+
+  setStatus('loading', '切换模型中…');
+  try {
+    const res = await fetch(API_BASE + '/api/model', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target: target.trim() })
+    });
+    const data = await res.json();
+    if (data.success) {
+      setStatus('ok', '模型已切换');
+      fetchStatus();
+    } else {
+      setStatus('error', data.message || '切换失败');
+    }
+  } catch (err) {
+    setStatus('error', '网络错误');
+  }
+}
+
+// ── 获取状态 ──
+async function fetchStatus() {
+  try {
+    const res = await fetch(API_BASE + '/api/status');
+    const data = await res.json();
+    if (data.success) {
+      modelBadge.textContent = data.model || '—';
+      if (data.task_count) {
+        taskCount.textContent = `任务: ${data.task_count}`;
+      }
+    }
+  } catch (_) {}
+}
+
+// ── 添加消息 ──
+function addMessage(role, content) {
+  const div = document.createElement('div');
+  div.className = `message ${role}`;
+
+  const avatar = document.createElement('div');
+  avatar.className = 'msg-avatar';
+  avatar.textContent = role === 'user' ? '我' : '夸';
+
+  const bubble = document.createElement('div');
+  bubble.className = 'msg-content';
+
+  // 格式化代码块
+  const formatted = formatContent(content);
+  bubble.innerHTML = formatted;
+
+  const time = document.createElement('div');
+  time.className = 'msg-time';
+  time.textContent = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+
+  bubble.appendChild(time);
+  div.appendChild(avatar);
+  div.appendChild(bubble);
+  chatArea.appendChild(div);
+
+  return div;
+}
+
+// ── 加载中消息 ──
+function addLoadingMessage() {
+  const div = document.createElement('div');
+  div.className = 'message assistant loading-msg';
+
+  const avatar = document.createElement('div');
+  avatar.className = 'msg-avatar';
+  avatar.textContent = '夸';
+
+  const bubble = document.createElement('div');
+  bubble.className = 'msg-content';
+  bubble.innerHTML = '<div class="thinking-indicator"><span></span><span></span><span></span></div>';
+
+  div.appendChild(avatar);
+  div.appendChild(bubble);
+  chatArea.appendChild(div);
+
+  return div;
+}
+
+function removeLoadingMessage(id) {
+  const el = chatArea.querySelector('.loading-msg');
+  if (el) el.remove();
+}
+
+// ── 格式化内容 ──
+function formatContent(text) {
+  if (!text) return '';
+
+  // 转义 HTML
+  let html = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  // 代码块 ```code```
+  html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    const langClass = lang ? ` class="lang-${lang}"` : '';
+    return `<pre><code${langClass}>${code.trim()}</code></pre>`;
+  });
+
+  // 行内代码 `code`
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // 换行
+  html = html.replace(/\n/g, '<br>');
+
+  return html;
+}
+
+// ── 滚动到底部 ──
+function scrollToBottom() {
+  setTimeout(() => {
+    chatArea.scrollTop = chatArea.scrollHeight;
+  }, 50);
+}
+
+// ── 状态 ──
+function setStatus(type, text) {
+  statusText.textContent = text || '就绪';
+  statusDot.className = 'status-dot';
+  if (type === 'error') statusDot.classList.add('error');
+  else if (type === 'loading') statusDot.classList.add('loading');
+}
+
+// ── 每 30 秒刷新状态 ──
+setInterval(fetchStatus, 30000);
+</script>
+</body>
+</html>
