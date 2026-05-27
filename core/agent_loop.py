@@ -196,6 +196,12 @@ class AgentLoop:
         self.on_approval_request: Optional[Callable[[str, dict, str], None]] = None
         # 签名: on_approval_request(tool_name, args, req_id) -> None
 
+        # ── 实时事件回调（供 Web UI 等外部订阅） ──
+        self.on_llm_start: Optional[Callable[[int], None]] = None
+        self.on_llm_end: Optional[Callable[[int, str], None]] = None
+        self.on_tool_start: Optional[Callable[[str, dict, float], None]] = None
+        self.on_tool_end: Optional[Callable[[str, dict, float, str], None]] = None
+
     def _register_delegate_tool(self):
         """注册 delegate_task 工具（子 Agent 系统）。"""
         try:
@@ -848,6 +854,9 @@ class AgentLoop:
                 self._delegation_result = None  # 避免重复注入
 
             self._log(f"🤔 第 {turn_count}/{self.max_turns} 轮 — LLM 思考中...")
+            llm_start_ts = time.time()
+            if self.on_llm_start:
+                self.on_llm_start(turn_count)
 
             # 上下文压缩检查：每次 LLM 调用前检查是否需要压缩
             if self.compressor.needs_compression(messages):
@@ -885,6 +894,12 @@ class AgentLoop:
 
             # 调用 LLM
             response = self.llm.chat(messages, tools=self.tools.get_schemas())
+
+            # ── LLM 调用结束通知 ──
+            llm_elapsed = time.time() - llm_start_ts
+            if self.on_llm_end:
+                success_status = "success" if response.get("success") else "error"
+                self.on_llm_end(turn_count, success_status)
 
             # ── LLM 调用失败处理 ─────────────────────────────────
             if not response["success"]:
@@ -1016,6 +1031,9 @@ class AgentLoop:
                         ensure_ascii=False,
                     )[:60]
                     self._log(f"🔧 执行 {fn_name}({arg_preview}...)")
+                    tool_start_ts = time.time()
+                    if self.on_tool_start:
+                        self.on_tool_start(fn_name, tc.get("function", {}).get("arguments", {}), tool_start_ts)
 
                     # ── PreToolUse: 权限检查（Deny 规则 → 自动模式 → 人工审批） ──
                     if self.permission_enabled and fn_name not in ("finish", "delegate_task", "skill_rollback"):
@@ -1095,6 +1113,12 @@ class AgentLoop:
                             continue
 
                     tool_result = self.tools.execute(tc)
+
+                    # ── 工具执行结束通知 ──
+                    if self.on_tool_end:
+                        tool_elapsed = time.time() - tool_start_ts
+                        self.on_tool_end(fn_name, tc.get("function", {}).get("arguments", {}),
+                                         tool_elapsed, "success" if tool_result.get("success", True) else "error")
 
                     # 安全脱敏：对终端输出中的 API key、token 等脱敏
                     raw_output = str(tool_result.get("output", "(无输出)"))

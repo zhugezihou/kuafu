@@ -381,8 +381,12 @@ class KuafuAgent:
             evolution=self.evolution,
             on_step=lambda msg: print(f"  {msg}", flush=True),
         )
+        self._loop = loop  # 暴露给 Web UI
         # 注入审批推送回调
         self._inject_approval_notifier(loop)
+        # 注入 WebSocket 实时回调（由 Web UI 设置）
+        if hasattr(self, '_ws_inject_cb') and self._ws_inject_cb:
+            self._ws_inject_cb(loop)
 
         # 根据 mode 选择执行路径
         if mode == "whiteboard":
@@ -517,8 +521,12 @@ class KuafuAgent:
             evolution=self.evolution,
             on_step=lambda msg: print(f"  {msg}", flush=True),
         )
+        self._loop = loop  # 暴露给 Web UI
         # 注入审批推送回调
         self._inject_approval_notifier(loop)
+        # 注入 WebSocket 实时回调（由 Web UI 设置）
+        if hasattr(self, '_ws_inject_cb') and self._ws_inject_cb:
+            self._ws_inject_cb(loop)
 
         # 传递历史上下文（最近的 5 轮）
         if is_followup:
@@ -673,7 +681,6 @@ class KuafuAgent:
             "llm_model": self.llm.model,
             "memory": self.memory.get_status(),
             "evolution": self.evolution.get_evolution_stats(),
-            "task_stats": self.evolution.get_task_stats(),
         }
         # P2 状态
         if _HAS_PRIORITIZER and hasattr(self, '_prioritizer_thread'):

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-夸父 (Kuafu) 移动端 Web UI 服务器
-=====================================
-纯 Python 标准库（http.server），零外部依赖。
-在手机浏览器中提供类 ChatGPT 聊天界面。
+夸父 (Kuafu) PC 版 Web UI 服务器
+==================================
+FastAPI + WebSocket 实时推送审批、工具执行计时器。
 
 用法:
     python mobile/web_server.py [--port 8080]
@@ -13,45 +12,40 @@
     KUAFFU_HOST      — 监听地址 (默认 0.0.0.0)
     KUAFFU_PORT      — 监听端口 (默认 8080)
 
-架构:
-    - /           → 聊天界面 (SPA HTML)
-    - /api/chat   → POST: 发送消息 (流式 SSE)
-    - /api/status → GET:  查看状态
-    - /api/reset  → POST: 重置对话
-    - /api/model  → GET/POST: 查询/切换模型
+API:
+    GET  /              → SPA HTML
+    POST /api/chat      → 发送消息
+    GET  /api/status    → Agent 状态
+    POST /api/reset     → 重置对话
+    POST /api/approve   → 批准审批 (req_id)
+    POST /api/reject    → 拒绝审批 (req_id)
+    GET  /api/approvals/pending → 待审批列表
+    WS   /ws            → 实时事件推送
 """
 
+import asyncio
 import json
+import logging
 import os
 import sys
-import time
 import threading
-import queue
-import logging
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Optional
-import urllib.parse
 
-# ── 添加项目根目录到 sys.path ──
+import uvicorn
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+
+# ── 项目根路径 ──
 ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT_DIR))
 
 # ── 导入夸父核心 ──
 from core.main import KuafuAgent
+from core.agent_loop import AgentLoop
 from core.llm import LLMClient
 import core.approval as kuafu_approval
-
-# ─── Web UI 模式：绕过审批系统 ───
-# 手机端无人工审批界面，非交互模式下审批会超时并阻塞 Agent
-# 直接重写 pretooluse_check 让所有工具调用通过
-_original_pretooluse_check = kuafu_approval.pretooluse_check
-
-def _web_pretooluse_check(tool: str, args: dict, context=None) -> dict:
-    """Web UI 模式下跳过审批，直接放行。"""
-    return {"allowed": True, "reason": "✅ web mode bypass", "approach": "web_auto"}
-
-kuafu_approval.pretooluse_check = _web_pretooluse_check
 
 # ── 日志 ──
 logging.basicConfig(
@@ -61,9 +55,72 @@ logging.basicConfig(
 )
 log = logging.getLogger("kuafu-web")
 
-# ── 全局 Agent（单例）──
+# ═══════════════════════════════════════════════════════════════
+# 全局
+# ═══════════════════════════════════════════════════════════════
+
 _agent: Optional[KuafuAgent] = None
 _agent_lock = threading.Lock()
+_last_loop: Optional[AgentLoop] = None  # 最后一次 converse 创建的 AgentLoop 引用
+
+# WebSocket 连接管理
+_ws_connections: list[WebSocket] = []
+_ws_lock = asyncio.Lock()
+
+app = FastAPI(title="夸父 Web UI")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+async def _ws_broadcast(data: dict):
+    """向所有已连接的 WebSocket 广播消息。"""
+    msg = json.dumps(data, ensure_ascii=False)
+    dead: list[WebSocket] = []
+    async with _ws_lock:
+        for ws in _ws_connections:
+            try:
+                await ws.send_text(msg)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            _ws_connections.remove(ws)
+
+
+def _ws_broadcast_sync(event_type: str, data: dict):
+    """线程安全同步版广播（由 agent 后台线程调用）。"""
+    try:
+        coro = _ws_broadcast({"type": event_type, **data})
+        if hasattr(app, '_ws_loop') and app._ws_loop:
+            asyncio.run_coroutine_threadsafe(coro, app._ws_loop)
+    except Exception as e:
+        log.warning(f"WS 广播失败: {e}")
+
+
+def _inject_loop_callbacks(loop: AgentLoop):
+    """注入 AgentLoop 的实时事件回调。"""
+    if getattr(loop, '_ws_injected', False):
+        return  # 避免重复注入
+
+    loop.on_llm_start = lambda turn: _ws_broadcast_sync("llm_start", {"turn": turn, "ts": __import__('time').time()})
+    loop.on_llm_end = lambda turn, status: _ws_broadcast_sync("llm_end", {"turn": turn, "status": status, "ts": __import__('time').time()})
+    loop.on_tool_start = lambda name, args, ts: _ws_broadcast_sync("tool_start", {"tool": name, "args": args, "ts": ts})
+    loop.on_tool_end = lambda name, args, elapsed, status: _ws_broadcast_sync("tool_end", {"tool": name, "args": args, "elapsed": elapsed, "status": status, "ts": __import__('time').time()})
+
+    # 审批回调包装
+    original_approval = loop.on_approval_request
+    def _approval_cb(tool_name, args, req_id):
+        _ws_broadcast_sync("approval_request", {
+            "tool": tool_name, "args": args, "req_id": req_id,
+            "ts": __import__('time').time(), "risk": "medium",
+        })
+        if original_approval:
+            original_approval(tool_name, args, req_id)
+    loop.on_approval_request = _approval_cb
+    loop._ws_injected = True
 
 
 def get_agent() -> KuafuAgent:
@@ -79,199 +136,248 @@ def get_agent() -> KuafuAgent:
 
 
 # ═══════════════════════════════════════════════════════════════
-# SSE 流式聊天
+# API 路由
 # ═══════════════════════════════════════════════════════════════
 
-def stream_chat(text: str) -> dict:
-    """执行任务并获取结果（非流式，因为 AgentLoop 不支持流式）。"""
+@app.get("/", response_class=HTMLResponse)
+async def index():
+    """提供 SPA 聊天界面。"""
+    html_path = ROOT_DIR / "mobile" / "static" / "chat.html"
+    if html_path.exists():
+        return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    return HTMLResponse("<h1>夸父 Web UI</h1><p>chat.html 未找到</p>")
+
+
+def _with_ws_callbacks(agent: KuafuAgent) -> KuafuAgent:
+    """Patch agent.converse 以捕获 AgentLoop 并注入 WS 回调。
+
+    因为 AgentLoop 是在 agent.converse() 内部创建的局部变量，
+    我们通过包装 converse 方法来拦截它。
+    """
+    original_converse = agent.converse
+
+    def _patched_converse(text: str) -> dict:
+        # 标记：让 main.py 在创建 loop 后调用我们的回调
+        # 但我们不能改 main.py，所以换个方式：在 converse 之前 mock
+        result = original_converse(text)
+
+        # converse 完成后，尝试从 agent 内部获取最后一次 loop 引用
+        # 实际上无法直接获取，所以我们用另一种方式：
+        # 每次 converse 结束后，搜索 AgentLoop 实例（通过已注册的回调痕迹）
+        global _last_loop
+
+        # 真正的方案：让 main.py 把 loop 暴露出来
+        # 但目前先这样——回调会在首次工具调用前注入
+        return result
+
+    agent.converse = _patched_converse  # type: ignore
+    return agent
+
+
+@app.post("/api/chat")
+async def api_chat(request: Request):
+    """发送消息给夸父。"""
+    body = await request.json()
+    text = (body.get("text") or body.get("message") or "").strip()
+    if not text:
+        return JSONResponse({"success": False, "message": "请输入消息"}, status_code=400)
+
     agent = get_agent()
-    start = time.time()
 
+    log.info(f"📝 收到: '{text[:60]}...'")
     try:
-        result = agent.converse(text)
-        elapsed = round(time.time() - start, 1)
+        # 在后台线程运行（converse 是同步阻塞的）
+        import queue
+        q: queue.Queue = queue.Queue()
 
-        return {
+        def _run():
+            try:
+                # 注册 WS 注入回调（在 main.py 创建 AgentLoop 后自动调用）
+                agent._ws_inject_cb = _inject_loop_callbacks
+                result = agent.converse(text)
+                q.put(result)
+            except Exception as e:
+                q.put({"success": False, "errors": [str(e)], "result": str(e),
+                       "turns": 0, "duration": 0})
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        result = q.get()
+
+        # 尝试从反向渠道获取 AgentLoop 引用
+        # 方法：在 main.py 中 loop 赋值后，通过某种方式暴露
+        # 但目前先这样——后续完善
+
+        log.info(f"✅ 完成: duration={result.get('duration', 0)}s, turns={result.get('turns', 0)}")
+        return JSONResponse({
             "success": result.get("success", False),
-            "result": result.get("result", ""),
-            "summary": result.get("summary", ""),
-            "turns": result.get("turns", 0),
-            "errors": result.get("errors", []),
-            "duration": elapsed,
-            "task_type": result.get("task_type", "generic"),
-            "model": agent.llm.model,
-        }
-    except Exception as e:
-        log.error(f"❌ 任务失败: {e}")
-        return {
-            "success": False,
-            "result": f"执行出错: {type(e).__name__}: {e}",
-            "errors": [str(e)],
-            "duration": round(time.time() - start, 1),
-        }
-
-
-# ═══════════════════════════════════════════════════════════════
-# HTML 页面
-# ═══════════════════════════════════════════════════════════════
-
-def render_chat_ui() -> str:
-    """返回聊天界面 HTML。"""
-    with open(ROOT_DIR / "mobile" / "static" / "chat.html", "r", encoding="utf-8") as f:
-        return f.read()
-
-
-# ═══════════════════════════════════════════════════════════════
-# HTTP Handler
-# ═══════════════════════════════════════════════════════════════
-
-class KuafuHTTPHandler(BaseHTTPRequestHandler):
-    """HTTP 请求处理。"""
-
-    def log_message(self, format, *args):
-        """用我们的日志格式替代默认的 stderr 输出。"""
-        log.info(f"{self.client_address[0]} - {format % args}")
-
-    def _send_json(self, data: dict, status: int = 200):
-        """发送 JSON 响应。"""
-        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def _read_body(self) -> dict:
-        """读取并解析 JSON 请求体。"""
-        length = int(self.headers.get("Content-Length", 0))
-        if length == 0:
-            return {}
-        raw = self.rfile.read(length)
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            return {"text": raw.decode("utf-8", errors="replace")}
-
-    def _send_chat_response(self, result: dict):
-        """返回聊天结果（JSON 格式，前端渲染）。"""
-        self._send_json({
-            "success": result["success"],
-            "message": result.get("result", ""),
+            "message": result.get("result", "") or result.get("summary", ""),
             "summary": result.get("summary", ""),
             "turns": result.get("turns", 0),
             "duration": result.get("duration", 0),
             "errors": result.get("errors", []),
             "task_type": result.get("task_type", "generic"),
-            "model": result.get("model", ""),
+            "model": agent.llm.model,
         })
+    except Exception as e:
+        log.error(f"❌ 任务失败: {e}")
+        return JSONResponse({
+            "success": False,
+            "message": f"执行出错: {type(e).__name__}: {e}",
+            "errors": [str(e)],
+            "duration": 0,
+        }, status_code=500)
 
-    # ── 路由 ──
 
-    def do_GET(self):
-        parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path.rstrip("/")
+@app.get("/api/status")
+async def api_status():
+    """Agent 状态。"""
+    try:
+        agent = get_agent()
+        status = agent.get_status()
+        return JSONResponse({
+            "success": True,
+            "name": status.get("name", "夸父"),
+            "version": status.get("version", "0.4.0"),
+            "model": status.get("llm_model", ""),
+            "backend": agent.llm.backend,
+            "task_count": status.get("task_count", 0),
+            "memory_count": status.get("memory", {}).get("count", 0),
+            "evolution_level": status.get("evolution", {}).get("level", 0),
+            "prioritizer_alive": status.get("prioritizer", {}).get("alive", False),
+        })
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
-        if path == "" or path == "/index.html":
-            # 聊天界面
-            html = render_chat_ui()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(html.encode("utf-8"))))
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(html.encode("utf-8"))
 
-        elif path == "/api/status":
+@app.post("/api/reset")
+async def api_reset():
+    """重置对话。"""
+    try:
+        agent = get_agent()
+        agent.reset_conversation()
+        return JSONResponse({"success": True, "message": "对话已重置"})
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/api/approve")
+async def api_approve(request: Request):
+    """批准审批请求。"""
+    body = await request.json()
+    req_id = body.get("req_id", "")
+    ok = kuafu_approval.ApprovalManager.approve(req_id)
+    if ok:
+        await _ws_broadcast({"type": "approval_result", "req_id": req_id, "approved": True})
+        return JSONResponse({"success": True, "message": "已批准"})
+    return JSONResponse({"success": False, "message": "审批失败或已处理"}, status_code=400)
+
+
+@app.post("/api/reject")
+async def api_reject(request: Request):
+    """拒绝审批请求。"""
+    body = await request.json()
+    req_id = body.get("req_id", "")
+    ok = kuafu_approval.ApprovalManager.reject(req_id)
+    if ok:
+        await _ws_broadcast({"type": "approval_result", "req_id": req_id, "approved": False})
+        return JSONResponse({"success": True, "message": "已拒绝"})
+    return JSONResponse({"success": False, "message": "拒绝失败或已处理"}, status_code=400)
+
+
+@app.get("/api/approvals/pending")
+async def api_pending_approvals():
+    """获取待审批列表。"""
+    pending = kuafu_approval.ApprovalManager.list_pending()
+    return JSONResponse({
+        "success": True,
+        "approvals": [
+            {
+                "id": r.id,
+                "title": r.title,
+                "detail": r.detail[:200],
+                "risk": r.risk,
+                "tool": r.tool,
+                "created_at": r.created_at,
+            }
+            for r in pending
+        ]
+    })
+
+
+@app.post("/api/model")
+async def api_model(request: Request):
+    """切换模型。"""
+    body = await request.json()
+    target = body.get("target", "").strip()
+    if not target:
+        return JSONResponse({"success": False, "message": "缺少 target 参数"}, status_code=400)
+    try:
+        agent = get_agent()
+        msg = agent.switch_model(target)
+        return JSONResponse({"success": True, "message": msg})
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+
+
+# ═══════════════════════════════════════════════════════════════
+# WebSocket 实时推送
+# ═══════════════════════════════════════════════════════════════
+
+@app.websocket("/ws")
+async def websocket_endpoint(ws: WebSocket):
+    await ws.accept()
+    async with _ws_lock:
+        _ws_connections.append(ws)
+    log.info(f"🔌 WebSocket 客户端已连接 ({len(_ws_connections)} 个)")
+
+    try:
+        while True:
+            data = await ws.receive_text()
             try:
-                agent = get_agent()
-                status = agent.get_status()
-                self._send_json({
-                    "success": True,
-                    "name": status.get("name", "夸父"),
-                    "version": status.get("version", "0.4.0"),
-                    "model": status.get("llm_model", ""),
-                    "backend": agent.llm.backend,
-                    "task_count": status.get("task_count", 0),
-                    "memory_count": status.get("memory", {}).get("count", 0),
-                    "evolution_level": status.get("evolution", {}).get("level", 0),
-                    "prioritizer_alive": status.get("prioritizer", {}).get("alive", False),
-                })
-            except Exception as e:
-                self._send_json({"success": False, "error": str(e)}, 500)
+                msg = json.loads(data)
+                action = msg.get("action", "")
+                if action == "approve":
+                    req_id = msg.get("req_id", "")
+                    kuafu_approval.ApprovalManager.approve(req_id)
+                    await _ws_broadcast({"type": "approval_result", "req_id": req_id, "approved": True})
+                elif action == "reject":
+                    req_id = msg.get("req_id", "")
+                    kuafu_approval.ApprovalManager.reject(req_id)
+                    await _ws_broadcast({"type": "approval_result", "req_id": req_id, "approved": False})
+            except json.JSONDecodeError:
+                pass
+    except WebSocketDisconnect:
+        pass
+    finally:
+        async with _ws_lock:
+            if ws in _ws_connections:
+                _ws_connections.remove(ws)
+        log.info(f"🔌 WebSocket 客户端断开 ({len(_ws_connections)} 个)")
 
-        elif path == "/api/model":
-            try:
-                agent = get_agent()
-                self._send_json({
-                    "success": True,
-                    "model": agent.llm.model,
-                    "backend": agent.llm.backend,
-                    "base_url": agent.llm.base_url,
-                    "max_tokens": agent.llm.max_tokens,
-                    "temperature": agent.llm.temperature,
-                })
-            except Exception as e:
-                self._send_json({"success": False, "error": str(e)}, 500)
 
-        else:
-            self._send_json({"error": "Not Found"}, 404)
+# ═══════════════════════════════════════════════════════════════
+# 启动
+# ═══════════════════════════════════════════════════════════════
 
-    def do_POST(self):
-        parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path.rstrip("/")
+@app.on_event("startup")
+async def startup():
+    """存储事件循环引用，供 agent 线程推送消息。"""
+    app._ws_loop = asyncio.get_running_loop()
+    log.info("🌐 WebSocket 事件循环就绪，Web UI 启动中...")
 
-        if path == "/api/chat":
-            body = self._read_body()
-            text = body.get("text", body.get("message", "")).strip()
-            if not text:
-                self._send_json({"success": False, "message": "请输入消息"}, 400)
-                return
-
-            # 流式输出此任务正在进行中
-            log.info(f"📝 收到: '{text[:60]}...'")
-            result = stream_chat(text)
-            log.info(f"✅ 完成: duration={result.get('duration', 0)}s, turns={result.get('turns', 0)}, "
-                     f"success={result.get('success', False)}")
-            self._send_chat_response(result)
-
-        elif path == "/api/reset":
-            try:
-                agent = get_agent()
-                agent.reset_conversation()
-                self._send_json({"success": True, "message": "对话已重置"})
-            except Exception as e:
-                self._send_json({"success": False, "error": str(e)}, 500)
-
-        elif path == "/api/model":
-            body = self._read_body()
-            target = body.get("target", "").strip()
-            if not target:
-                self._send_json({"success": False, "message": "缺少 target 参数"}, 400)
-                return
-            try:
-                agent = get_agent()
-                msg = agent.switch_model(target)
-                self._send_json({"success": True, "message": msg})
-            except Exception as e:
-                self._send_json({"success": False, "error": str(e)}, 500)
-
-        else:
-            self._send_json({"error": "Not Found"}, 404)
-
-    def do_OPTIONS(self):
-        """CORS preflight。"""
-        self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.end_headers()
+    # 预热 Agent
+    log.info("预热夸父 Agent...")
+    try:
+        agent = get_agent()
+        log.info(f"✅ Agent 就绪: backend={agent.llm.backend}, model={agent.llm.model}")
+    except Exception as e:
+        log.warning(f"Agent 预热失败（可在首次请求时初始化）: {e}")
 
 
 def main():
-    # 命令行参数解析
     import argparse
-    parser = argparse.ArgumentParser(description="夸父移动端 Web UI 服务器")
+    parser = argparse.ArgumentParser(description="夸父 PC 版 Web UI 服务器")
     parser.add_argument("--port", type=int, default=None, help="监听端口 (默认 8080)")
     parser.add_argument("--host", type=str, default=None, help="监听地址 (默认 0.0.0.0)")
     args, _ = parser.parse_known_args()
@@ -279,25 +385,12 @@ def main():
     host = args.host or os.environ.get("KUAFFU_HOST", "0.0.0.0")
     port = args.port or int(os.environ.get("KUAFFU_PORT", "8080"))
 
-    # 预热 Agent
-    log.info("预热夸父 Agent...")
-    try:
-        get_agent()
-    except Exception as e:
-        log.error(f"❌ Agent 初始化失败: {e}")
-        sys.exit(1)
-
-    server = HTTPServer((host, port), KuafuHTTPHandler)
-    log.info(f"🌐 夸父 Web UI 已启动: http://{host}:{port}/")
-    log.info(f"📱 手机浏览器打开 http://<手机IP>:{port}/ 即可使用")
-    log.info(f"   确保手机和电脑在同一网络下")
+    log.info(f"🌐 夸父 PC Web UI 启动: http://{host}:{port}/")
+    log.info(f"   WebSocket: ws://{host}:{port}/ws")
+    log.info(f"   浏览器打开 http://localhost:{port}/ 即可使用")
     log.info(f"   Ctrl+C 停止服务器")
 
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        log.info("服务器已停止")
-        server.server_close()
+    uvicorn.run(app, host=host, port=port, log_level="warning")
 
 
 if __name__ == "__main__":
