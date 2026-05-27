@@ -17,5 +17,9 @@ kuafu.pid
 memory/sessions.db
 memory/sessions.db-shm
 memory/sessions.db-wal
-memory/memory.db  # 新三层记忆系统数据库
+memory/memory.db
+memory/memory.db-shm
+memory/memory.db-wal
+sidechain_data/
+logs/
 matrix_animation.html

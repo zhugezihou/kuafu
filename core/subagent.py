@@ -314,8 +314,12 @@ def handle_delegate(args: dict) -> dict:
                     sub_tools.unregister(name)
 
         # 创建隔离的 AgentLoop（不加载 MCP，不加载记忆）
+        # 子 Agent 用云端 LLM，避免与父 Agent 本地模型争抢并发
+        from core.llm import LLMClient
         from core.agent_loop import AgentLoop
+        sub_llm = LLMClient(backend="cloud")
         sub_loop = AgentLoop(
+            llm=sub_llm,
             tool_registry=sub_tools,
             max_turns=effective_max_turns,
         )
@@ -354,7 +358,32 @@ def handle_delegate(args: dict) -> dict:
         _hb_thread.start()
 
         try:
-            result = sub_loop.run(prompt)
+            # 用线程包装 sub_loop.run() 以便支持超时强制终止
+            _sub_result = [None]
+            _sub_exception = [None]
+
+            def _run_sub():
+                try:
+                    _sub_result[0] = sub_loop.run(prompt)
+                except Exception as e:
+                    _sub_exception[0] = e
+
+            _sub_thread = threading.Thread(target=_run_sub, daemon=True)
+            _sub_thread.start()
+            _sub_thread.join(timeout=TIMEOUT)
+
+            if _sub_thread.is_alive():
+                # 超时：daemon 线程随主线程退出
+                logger.warning(f"⚠️ 子 Agent 超时（{TIMEOUT}s），强制终止")
+                result = {
+                    "success": False,
+                    "error": f"子 Agent 执行超时（{TIMEOUT}s）",
+                    "result": "",
+                }
+            elif _sub_exception[0]:
+                raise _sub_exception[0]
+            else:
+                result = _sub_result[0]
         finally:
             _heartbeat_stop.set()
             _hb_thread.join(timeout=2)

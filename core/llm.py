@@ -237,6 +237,29 @@ class LLMClient:
                 last_error = str(e)
                 time.sleep(1 * (attempt + 1))
 
+        # ── 降级重试：cloud 超时后自动切 local ──
+        if self.backend == "cloud" and LOCAL_BASE_URL is not None:
+            try:
+                local_client = LLMClient(
+                    backend="local",
+                    api_key="ignored",
+                    base_url=LOCAL_BASE_URL,
+                    model=LOCAL_MODEL,
+                    max_tokens=self.max_tokens,
+                    temperature=self.temperature,
+                    timeout=self.timeout,
+                )
+                logger.info(f"🌧️  Cloud API 重试 {max_retries} 次均失败，降级到本地模型 ({LOCAL_MODEL})...")
+
+                resp = local_client.chat(messages, tools=tools, max_retries=1)
+                if resp["success"]:
+                    logger.info("🌤️  本地模型降级成功")
+                    return resp
+                else:
+                    logger.warning(f"☁️  本地模型也失败: {resp.get('error', '')[:60]}")
+            except Exception as e:
+                logger.warning(f"☁️  本地模型降级异常: {e}")
+
         return {
             "success": False,
             "content": "",

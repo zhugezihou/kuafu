@@ -10,6 +10,7 @@
 依赖：pyyaml（夸父核心依赖之一）
 """
 
+import logging
 import json
 import os
 import re
@@ -20,6 +21,8 @@ from typing import Optional
 ROOT_DIR = Path(__file__).resolve().parent.parent
 SKILLS_DIR = ROOT_DIR / "skills"
 COMPLETION_LOG = ROOT_DIR / "logs" / "skill_usage.jsonl"
+
+logger = logging.getLogger(__name__)
 
 # 技能模板：匹配关键词 → 技能名
 SKILL_TRIGGERS = {}
@@ -302,7 +305,36 @@ def increment_usage(skill_name: str):
             pass
 
 
-# ── 分层执行：简单 vs 复杂 skill ───────────────────────────────────
+# ── 子 Agent 并行开关 ──────────────────────────────────────
+
+_SUBAGENT_ENABLED = None
+
+
+def _is_subagent_enabled() -> bool:
+    """查询子 Agent 是否启用。
+
+    由 SUBAGENT_ENABLED 环境变量和 KUAFFU_BACKEND 共同控制。
+    优先级：
+    1. SUBAGENT_ENABLED 显式设置 → 直接使用
+    2. 未设置 → 自动推断：cloud=启用, local=禁用
+    """
+    global _SUBAGENT_ENABLED
+    if _SUBAGENT_ENABLED is not None:
+        return _SUBAGENT_ENABLED
+
+    env_val = os.environ.get("SUBAGENT_ENABLED", "").strip().lower()
+    if env_val in ("true", "1", "yes"):
+        _SUBAGENT_ENABLED = True
+    elif env_val in ("false", "0", "no"):
+        _SUBAGENT_ENABLED = False
+    else:
+        backend = os.environ.get("KUAFFU_BACKEND", "cloud").strip().lower()
+        _SUBAGENT_ENABLED = (backend == "cloud")
+
+    return _SUBAGENT_ENABLED
+
+
+# ── 分层执行：简单 vs 复杂 skill ────────────────────────────
 
 
 def is_complex_skill(skill: dict) -> bool:
@@ -312,7 +344,14 @@ def is_complex_skill(skill: dict) -> bool:
     1. 步骤数 >= COMPLEX_STEP_THRESHOLD (5)
     2. 步骤涉及 >= 3 种工具类别（跨领域）
     3. 步骤中包含 'delegate'/'委派'/'子任务'/'并行' 等关键词
+
+    注意：子 Agent 委派受 SUBAGENT_ENABLED 全局开关控制。
+    当后端大模型无并行能力时，所有 skill 都不委派。详见 _is_subagent_enabled()。
     """
+    # 全局开关：大模型无并行能力 → 所有 skill 都不委派
+    if not _is_subagent_enabled():
+        return False
+
     steps = skill.get("steps", [])
 
     # 标准1：步骤数 >= 5

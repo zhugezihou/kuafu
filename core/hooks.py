@@ -4,7 +4,7 @@ core/hooks.py — 事件钩子系统（Hook Event System）
 从 Claude Code 学来的事件驱动架构。夸父在关键生命周期点触发钩子，
 钩子可以连接到 4 种执行类型，实现可插拔的横切关注点。
 
-27 个钩子事件点（按生命周期分组）：
+28 个钩子事件点（按生命周期分组）：
   Agent 生命周期:
     1. on_agent_start      — Agent 启动
     2. on_agent_end        — Agent 结束
@@ -47,6 +47,7 @@ core/hooks.py — 事件钩子系统（Hook Event System）
   审批相关:
     26. on_permission_check — 权限检查（PreToolUse 之后）
     27. on_approval_result  — 审批结果（通过/拒绝）
+    28. on_budget_critical   — Token 预算超限告警
 
 4 种执行类型：
   - shell:      执行 shell 命令
@@ -85,6 +86,7 @@ HOOK_EVENTS = frozenset({
     "on_skill_create", "on_skill_update",
     "on_context_exceed", "on_collapse", "on_cron_tick",
     "on_permission_check", "on_approval_result",
+    "on_budget_critical",
 })
 
 

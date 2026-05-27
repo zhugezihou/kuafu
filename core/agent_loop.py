@@ -611,15 +611,7 @@ class AgentLoop:
         """预算危险回调：当某类别达到 critical/over 阈值时触发。"""
         self._log(f"🚨 Budget Critical: {', '.join(critical_categories)} "
                   f"({snapshot.total_used}/{snapshot.total_budget} tokens)")
-        # 自动触发 Hook 事件
-        try:
-            from core.hooks import trigger_async
-            trigger_async("on_budget_critical", {
-                "snapshot": snapshot.to_dict(),
-                "critical": critical_categories,
-            })
-        except Exception:
-            pass
+        # 钩子事件 on_budget_critical 已在 HOOK_EVENTS 注册，需要时注册 handler 即可响应
 
     def _try_delegate_complex_skills(self, task: str) -> Optional[dict]:
         """检测复杂 skill 并委派子 Agent 执行。

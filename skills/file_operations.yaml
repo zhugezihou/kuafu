@@ -16,7 +16,6 @@ steps:
 - 用 search_files 搜索关键代码位置
 - 用 patch 做精确替换，不要整体覆盖文件
 - 只有新建文件时才用 write_file
-- 修改后验证：读回来检查是否改对了
 examples:
 - 任务：修改 agent_loop.py 增加一个技能注入功能
 - 1. read_file('core/agent_loop.py') 了解现有结构
@@ -30,4 +29,4 @@ pitfalls:
 - write_file 会完全覆盖文件内容，不要误用
 - 创建新文件前确认路径正确
 - 编辑 .py 文件后不需要手动检查语法——系统会自动 lint
-usage_count: 13
+usage_count: 31
