@@ -56,7 +56,7 @@ class LLMClient:
         model: str = "",
         max_tokens: int = 4096,
         temperature: float = 0.7,
-        timeout: int = 60,
+        timeout: int = 120,
     ):
         # 后端选择：参数 > 环境变量 > 默认 cloud
         backend = (backend or KUAFFU_BACKEND).strip().lower()
