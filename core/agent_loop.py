@@ -89,6 +89,25 @@ def load_identity_statement() -> str:
 
 _BOOTUP_LOGGED = False  # 模块级 flag：首次初始化的启动日志只打印一次
 
+# 异步后处理：深层反思、进化管道等 LLM 调用不阻塞主流程
+def _async_post_task(task_result: dict, messages: list, task: str, loop: 'AgentLoop') -> None:
+    """在后台线程执行后处理 LLM 调用，不阻塞 run() 返回。"""
+    def _run():
+        try:
+            loop._deep_reflect(task_result, messages)
+        except Exception:
+            pass
+        try:
+            loop._run_evolution_pipeline(task_result, task, messages)
+        except Exception:
+            pass
+        try:
+            loop._learn_user_preferences(task_result, task)
+        except Exception:
+            pass
+    t = threading.Thread(target=_run, daemon=True, name="async-post-task")
+    t.start()
+
 
 class AgentLoop:
     """Agent 执行循环。
@@ -1344,7 +1363,8 @@ class AgentLoop:
         )
 
         # 深层反思：调用 LLM 分析任务经验，提取可供未来参考的教训
-        self._deep_reflect(task_result, messages)
+        # 异步执行，不阻塞主流程
+        _async_post_task(task_result, messages, task, self)
 
         # 自检
         self._self_check(task_result, messages, start)
