@@ -80,7 +80,7 @@ class EvolutionEngine:
         self._events: list[EvolutionEvent] = []
         self._total = 0
         self._last_trigger_time: float = 0.0
-        self._cooldown = 30.0  # 秒，同类型任务冷却
+        self._cooldown = 10.0  # 秒，同类型任务冷却
 
     # ── 新管道入口（供 agent_loop 调用） ──
 

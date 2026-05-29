@@ -89,7 +89,8 @@ class Observation:
             return True
         if self.is_repeated_failure:
             return True
-        if self.tool_calls >= 5:
+        # 3+ 次工具调用且有实质结果 → 值得评估
+        if self.tool_calls >= 3 and len(self.result.strip()) > 20:
             return True
         if self.is_novel_task:
             return True
