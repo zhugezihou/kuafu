@@ -109,9 +109,9 @@ class KuafuAgent:
         self._prioritizer_thread: Optional[threading.Thread] = None
         self._init_prioritizer()
 
-        # P3: 启动主动网络学习引擎（daemon=True，每隔数小时自动学习）
+        # P3: 主动网络学习引擎（被动模式 — 用户输入指令后才启动）
         self._web_learner: Optional[Any] = None
-        self._init_web_learner()
+        self._init_web_learner(passive=True)
 
         # P4: 启动自检优化程序（可选，daemon=True，每 4 小时自动体检）
         self._health_checker_thread: Optional[Any] = None
@@ -188,8 +188,8 @@ class KuafuAgent:
 
     # ---- P3: 主动网络学习引擎 ----
 
-    def _init_web_learner(self):
-        """初始化主动网络学习引擎（可选）。"""
+    def _init_web_learner(self, passive: bool = False):
+        """初始化主动网络学习引擎（被动模式 — 不自动启动 WebLearner 线程）。"""
         try:
             from autonomous.web_learner import WebLearner
 
@@ -211,7 +211,9 @@ class KuafuAgent:
                 learn_interval=21600,   # 6 小时
                 max_per_cycle=8,
             )
-            self._web_learner.start(daemon=True)
+
+            if not passive:
+                self._web_learner.start(daemon=True)
         except Exception as e:
             self._web_learner = None
             import logging
