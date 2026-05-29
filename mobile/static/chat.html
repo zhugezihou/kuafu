@@ -314,7 +314,7 @@ textarea::placeholder { color:var(--text2); }
 
 <script>
 'use strict';
-const WS_URL = `${location.protocol==='https:'?'wss:':'ws:'}//${location.host}/ws`;
+const SSE_URL = `${location.protocol==='https:'?'https:':'http:'}//${location.host}/api/events`;
 
 // DOM
 const $ = id => document.getElementById(id);
@@ -336,10 +336,16 @@ let abortController = null;
 // Input
 inputBox.addEventListener('input', () => { inputBox.style.height='auto'; inputBox.style.height=Math.min(inputBox.scrollHeight,100)+'px'; });
 inputBox.addEventListener('keydown', e => { if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage();} });
-document.addEventListener('DOMContentLoaded', ()=>{ fetchStatus();fetchSessions();connectWebSocket();inputBox.focus(); });
+document.addEventListener('DOMContentLoaded', ()=>{ fetchStatus();fetchSessions();connectSSE();inputBox.focus(); });
 
-// ═══ WebSocket ═══
-function connectWebSocket() { if(ws)ws.close(); ws=new WebSocket(WS_URL); ws.onopen=()=>{}; ws.onclose=()=>setTimeout(connectWebSocket,3000); ws.onmessage=evt=>{try{handleWS(JSON.parse(evt.data))}catch(_){}}; }
+// ═══ SSE 实时事件 ═══
+let eventSource = null;
+function connectSSE() {
+  if(eventSource) eventSource.close();
+  eventSource = new EventSource(SSE_URL);
+  eventSource.onmessage = evt => { try{ handleWS(JSON.parse(evt.data)); }catch(_){} };
+  eventSource.onerror = () => { eventSource.close(); setTimeout(connectSSE, 3000); };
+}
 
 function handleWS(msg) {
   switch(msg.type){
@@ -395,8 +401,8 @@ function renderApprovals() {
     return `<div class="approval-card" id="appr-${id}"><div class="approval-header"><span class="approval-tool">${escHtml(a.tool)}</span><span class="approval-risk ${a.risk}">${(a.risk||'medium').toUpperCase()}</span></div><div class="approval-detail">${escHtml(JSON.stringify(a.args||{},null,2))}</div><div class="approval-actions"><button class="btn-approve" onclick="approveReq('${id}')">批准</button><button class="btn-reject" onclick="rejectReq('${id}')">拒绝</button></div></div>`;
   }).join('');
 }
-function approveReq(id) { if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({action:'approve',req_id:id})); else fetch('/api/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({req_id:id})}); removeApproval(id,true); }
-function rejectReq(id) { if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({action:'reject',req_id:id})); else fetch('/api/reject',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({req_id:id})}); removeApproval(id,false); }
+function approveReq(id) { fetch('/api/approve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({req_id:id})}); removeApproval(id,true); }
+function rejectReq(id) { fetch('/api/reject',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({req_id:id})}); removeApproval(id,false); }
 
 // ═══ Chat (Typewriter + Stats) ═══
 async function sendMessage() {
