@@ -356,6 +356,21 @@ ok "termux-services 已配置（如有安装）"
 # ─── 启动快捷方式 ────────────────────────────────────────────────────────────
 title "🔗 创建快捷方式"
 
+# 别名：输入 kuafu 直接启动
+ALIAS_CMD="alias kuafu='bash ~/kuafu/mobile/start-mobile.sh'"
+if [ -f "$TERMUX_HOME/.bashrc" ]; then
+    if ! grep -q "alias kuafu=" "$TERMUX_HOME/.bashrc"; then
+        echo "$ALIAS_CMD" >> "$TERMUX_HOME/.bashrc"
+        ok "别名已添加: kuafu → start-mobile.sh"
+    else
+        ok "别名已存在: kuafu"
+    fi
+else
+    echo "$ALIAS_CMD" > "$TERMUX_HOME/.bashrc"
+    ok "已创建 .bashrc 并添加别名: kuafu"
+fi
+
+# Termux 快捷方式（长按图标）
 cat > "$TERMUX_HOME/.shortcuts/kuafu.sh" << 'SHORTEOF'
 #!/data/data/com.termux/files/usr/bin/sh
 exec /data/data/com.termux/files/home/kuafu/mobile/start-mobile.sh
