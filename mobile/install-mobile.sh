@@ -387,66 +387,18 @@ echo ""
 echo -e "${CYN}   夸父 · 手机版${NC}"
 echo ""
 
-# 检查模型
-MODEL_FILE=""
-if [ -f "$KUAFFU_DIR/models/qwen3-8b-q4_k_m.gguf" ]; then
-    MODEL_FILE="$KUAFFU_DIR/models/qwen3-8b-q4_k_m.gguf"
-elif [ -f "$KUAFFU_DIR/models/qwen3-4b-q4_k_m.gguf" ]; then
-    MODEL_FILE="$KUAFFU_DIR/models/qwen3-4b-q4_k_m.gguf"
-elif [ -f "$KUAFFU_DIR/models/qwen3-14b-q4_k_m.gguf" ]; then
-    MODEL_FILE="$KUAFFU_DIR/models/qwen3-14b-q4_k_m.gguf"
-fi
-
-# 查找 llama-server
-LLAMA_PATH="$(command -v llama-server 2>/dev/null)"
-if [ -z "$LLAMA_PATH" ] && [ -f "$KUAFFU_DIR/llama.cpp/llama-server" ]; then
-    LLAMA_PATH="$KUAFFU_DIR/llama.cpp/llama-server"
-fi
-
-# 启动 llama-server
-if [ -n "$MODEL_FILE" ] && [ -f "$MODEL_FILE" ] && [ -n "$LLAMA_PATH" ]; then
-    MODEL_SIZE=$(ls -lh "$MODEL_FILE" | awk '{print $5}')
-    ok "模型: $(basename "$MODEL_FILE") ($MODEL_SIZE)"
-    ok "引擎: llama-server"
-
-    # 检查是否已在运行
-    if curl -s http://127.0.0.1:8080/v1/models > /dev/null 2>&1; then
-        ok "llama-server 已在运行"
-    else
-        inf "启动 llama-server..."
-        $LLAMA_PATH \
-            -m "$MODEL_FILE" \
-            -c 4096 \
-            --port 8080 \
-            --host 127.0.0.1 \
-            -ngl 99 \
-            --mlock \
-            > "$KUAFFU_DIR/logs/llama.log" 2>&1 &
-
-        # 等待就绪
-        for i in $(seq 1 30); do
-            sleep 1
-            if curl -s http://127.0.0.1:8080/v1/models > /dev/null 2>&1; then
-                ok "llama-server 就绪"
-                break
-            fi
-            [ "$i" -eq 30 ] && warn "llama-server 启动较慢，请检查日志"
-        done
-    fi
-else
-    warn "模型或 llama-server 未就绪"
-    warn "后端将使用云端模式 (DeepSeek)"
-    export KUAFFU_BACKEND=cloud
-fi
+# 强制云端模式（手机版不跑本地模型）
+export KUAFFU_BACKEND=cloud
+warn "云端模式（DeepSeek）"
 
 # 启动 Web UI
-PORT="${KUAFFU_PORT:-8080}"
-HOST="${KUAFFU_HOST:-0.0.0.0}"
+PORT="\${KUAFFU_PORT:-8080}"
+HOST="\${KUAFFU_HOST:-0.0.0.0}"
 
 inf "启动夸父 Web UI..."
-export KUAFFU_BACKEND="${KUAFFU_BACKEND:-local}"
+export KUAFFU_BACKEND="\${KUAFFU_BACKEND:-cloud}"
 
-python "$KUAFFU_DIR/mobile/web_server.py" --port "$PORT" --host "$HOST" 2>&1
+python "\$KUAFFU_DIR/mobile/web_server.py" --port "\$PORT" --host "\$HOST" 2>&1
 STARTEOF
 
 chmod +x "$KUAFFU_DIR/mobile/start-mobile.sh"

@@ -45,25 +45,9 @@ if [ ! -f "$KUAFFU_DIR/mobile/web_server.py" ]; then
     exit 1
 fi
 
-# 3. 检查模型和引擎
-MODEL_FILES=""
-for f in "$KUAFFU_DIR/models/"*.gguf; do
-    [ -f "$f" ] && MODEL_FILES="$MODEL_FILES $f"
-done
-
-LLAMA_PATH="$(command -v llama-server 2>/dev/null)"
-[ -z "$LLAMA_PATH" ] && [ -f "$KUAFFU_DIR/llama.cpp/llama-server" ] && LLAMA_PATH="$KUAFFU_DIR/llama.cpp/llama-server"
-
-if [ -n "$MODEL_FILES" ] && [ -n "$LLAMA_PATH" ]; then
-    export KUAFFU_BACKEND=local
-    ok "本地模式: 模型 + llama-server 就绪"
-else
-    export KUAFFU_BACKEND=cloud
-    warn "云端模式（需要网络）"
-    [ -z "$MODEL_FILES" ] && warn "  未检测到 GGUF 模型文件"
-    [ -z "$LLAMA_PATH" ] && warn "  未检测到 llama-server"
-    echo ""
-fi
+# 3. 强制云端模式（手机版不跑本地模型）
+export KUAFFU_BACKEND=cloud
+warn "云端模式（DeepSeek）"
 
 # 4. 获取 IP
 DEVICE_IP="$(ip route get 1 2>/dev/null | grep -o 'src [0-9.]*' | cut -d' ' -f2 || echo '127.0.0.1')"
