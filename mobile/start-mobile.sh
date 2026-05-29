@@ -49,6 +49,9 @@ fi
 export KUAFFU_BACKEND=cloud
 warn "云端模式（DeepSeek）"
 
+# 手机版禁止审批拦截（终端操作太多，审批刷屏）
+export KUAFFU_DISABLE_APPROVAL=1
+
 # 4. 获取 IP
 DEVICE_IP="$(ip route get 1 2>/dev/null | grep -o 'src [0-9.]*' | cut -d' ' -f2 || echo '127.0.0.1')"
 PORT="${KUAFFU_PORT:-8080}"

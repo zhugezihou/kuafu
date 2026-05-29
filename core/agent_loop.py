@@ -10,6 +10,7 @@
 """
 
 import json
+import os
 import time
 import threading
 from pathlib import Path
@@ -189,7 +190,7 @@ class AgentLoop:
             self._log(f"⚠️ Hook 系统初始化失败: {e}")
 
         # ── Permission System（PreToolUse 权限检查） ──
-        self.permission_enabled = True  # 设为 False 可完全绕过权限检查
+        self.permission_enabled = os.environ.get("KUAFFU_DISABLE_APPROVAL", "") != "1"
         self._pretooluse_cache: dict = {}
 
         # ── 审批通知回调 （外部注入，如飞书推送） ──

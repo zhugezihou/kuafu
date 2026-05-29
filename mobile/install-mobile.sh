@@ -406,6 +406,9 @@ echo ""
 export KUAFFU_BACKEND=cloud
 warn "云端模式（DeepSeek）"
 
+# 手机版禁止审批拦截（终端操作太多，审批刷屏）
+export KUAFFU_DISABLE_APPROVAL=1
+
 # 启动 Web UI
 PORT="\${KUAFFU_PORT:-8080}"
 HOST="\${KUAFFU_HOST:-0.0.0.0}"
