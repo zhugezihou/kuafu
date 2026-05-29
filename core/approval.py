@@ -303,16 +303,22 @@ class AutoMode:
     def should_auto_approve(cls, tool: str, args: dict) -> Optional[bool]:
         """自动判断是否应通过审批。
 
+        策略：
+          - 低风险  → 自动通过
+          - 中风险  → 自动通过（不打扰用户）
+          - 高风险  → 走人工审批
+          - terminal 特别处理：检查命令内容
+
         Returns:
             True = 自动通过
             False = 自动拒绝
-            None = 无法自动决策（走人工审批）
+            None = 走人工审批（仅高风险时）
         """
-        # 低风险工具直接通过（只读操作）
+        # 低风险工具自动通过
         if tool in cls.AUTO_TOOLS_LOW:
             return True
 
-        # 检查终端命令内容
+        # terminal 特别处理
         if tool == "terminal":
             cmd = args.get("command", "")
             lower_cmd = cmd.lower().strip()
@@ -328,41 +334,27 @@ class AutoMode:
                                       "git status", "git diff", "git log")):
                 return True
 
-            # 中等风险 → 看历史批准率
-            rate = cls._get_approval_rate(tool, "medium")
-            if rate > 0.8:
-                return True
-            if rate < 0.3:
-                cls._record_decision(tool, "medium", False, 1.0 - rate,
-                                     f"历史批准率{rate:.0%}过低")
-                return False
-            return None
+            # 其他 terminal 命令 → 中风险自动通过
+            return True
 
-        # 高风险工具 → 看历史 + 参数
+        # 获取风险等级
         risk = cls._get_tool_risk(tool)
-        if risk == "high":
-            rate = cls._get_approval_rate(tool, risk)
-            if rate > 0.9:
-                # 极高历史批准率 → 信任
-                return True
-            if rate < 0.2:
-                cls._record_decision(tool, risk, False, 1.0 - rate,
-                                     f"高风险工具 {tool} 历史批准率{rate:.0%}过低")
-                return False
-            return None  # 不明确 → 人工审批
 
-        # 中风险
-        if risk == "medium":
-            rate = cls._get_approval_rate(tool, risk)
-            if rate > 0.8:
-                return True
-            if rate < 0.3:
-                cls._record_decision(tool, risk, False, 1.0 - rate,
-                                     f"历史批准率{rate:.0%}过低")
-                return False
-            return None
+        # 中风险及以下 → 自动通过
+        if risk in ("low", "medium"):
+            return True
 
-        return None
+        # 高风险才能走到人工审批
+        # 检查历史批准率
+        rate = cls._get_approval_rate(tool, risk)
+        if rate > 0.9:
+            # 极高历史批准率 → 信任
+            return True
+        if rate < 0.2:
+            cls._record_decision(tool, risk, False, 1.0 - rate,
+                                 f"高风险工具 {tool} 历史批准率{rate:.0%}过低")
+            return False
+        return None  # 高风险 + 不确定 → 人工审批
 
     @classmethod
     def _record_decision(cls, tool: str, risk: str, approved: bool,
