@@ -226,29 +226,30 @@ class AutoMode:
 
     # 风险等级判定（工具名 → 风险）
     TOOL_RISK_MAP = {
-        # 高风险（需要人工确认）
-        "write_file": "high",
-        "patch": "high",
+        # 高风险（不可逆操作，需要人工确认）
         "delete_file": "high",
-        "terminal": "medium",  # 具体看命令
-        "execute_code": "high",
         "mcp_*": "high",       # MCP 操作默认高风险
 
-        # 中风险
-        "web_scrape": "medium",
-        "web_submit": "medium",
-        "feishu_send": "medium",
-        "feishu_doc_write": "medium",
+        # 中风险（可逆操作，但需谨慎）
+        "terminal": "medium",  # 具体看命令
+        "write_file": "medium",
+        "patch": "medium",
+        "execute_code": "medium",
 
-        # 低风险（只读操作不在此列 — 完全不需要审批）
+        # 低风险
+        "web_scrape": "low",
+        "web_submit": "low",
+        "feishu_send": "low",
+        "feishu_doc_write": "low",
         "web_search": "low",
         "read_file": "low",
         "search_files": "low",
     }
 
-    # 可自动决策的工具（按风险 + 批准率阈值）
-    AUTO_TOOLS_LOW = {"web_search", "search_files", "read_file", "memory_store", "memory_search", "memory_reflect"}
-    AUTO_TOOLS_MEDIUM = {"feishu_send", "web_scrape"}
+    # 可自动决策的工具
+    AUTO_TOOLS_LOW = {"web_search", "search_files", "read_file", "memory_store", "memory_search", "memory_reflect",
+                      "web_scrape", "web_submit", "feishu_send", "feishu_doc_write"}
+    AUTO_TOOLS_MEDIUM = {"terminal", "write_file", "patch", "execute_code"}
 
     @classmethod
     def load(cls):
@@ -305,8 +306,8 @@ class AutoMode:
 
         策略：
           - 低风险  → 自动通过
-          - 中风险  → 自动通过（不打扰用户）
-          - 高风险  → 走人工审批
+          - 中风险  → 自动通过（write_file/patch/terminal 均为可逆操作）
+          - 高风险  → 走人工审批（仅 delete_file / mcp_*）
           - terminal 特别处理：检查命令内容
 
         Returns:
@@ -318,43 +319,33 @@ class AutoMode:
         if tool in cls.AUTO_TOOLS_LOW:
             return True
 
-        # terminal 特别处理
-        if tool == "terminal":
-            cmd = args.get("command", "")
-            lower_cmd = cmd.lower().strip()
-            # 危险命令 → 自动拒绝
-            if any(danger in lower_cmd for danger in ["rm -rf /", "dd if=", "> /dev/sda", "mkfs", "fdisk"]):
-                cls._record_decision(tool, "high", False, 0.95,
-                                     f"危险命令: {cmd[:50]}")
-                return False
-
-            # 无害命令 → 自动通过
-            if lower_cmd.startswith(("ls", "echo", "cat", "head", "tail", "pwd",
-                                      "which", "type", "pip list", "python -c",
-                                      "git status", "git diff", "git log")):
-                return True
-
-            # 其他 terminal 命令 → 中风险自动通过
+        # 中风险工具自动通过（write_file/patch 等可逆操作不再审批）
+        if tool in cls.AUTO_TOOLS_MEDIUM:
+            # terminal 特别检查危险命令
+            if tool == "terminal":
+                cmd = args.get("command", "")
+                lower_cmd = cmd.lower().strip()
+                if any(danger in lower_cmd for danger in ["rm -rf /", "dd if=", "> /dev/sda", "mkfs", "fdisk"]):
+                    cls._record_decision(tool, "high", False, 0.95,
+                                         f"危险命令: {cmd[:50]}")
+                    return False
             return True
 
         # 获取风险等级
         risk = cls._get_tool_risk(tool)
 
-        # 中风险及以下 → 自动通过
-        if risk in ("low", "medium"):
-            return True
+        # 只有高风险才走人工审批
+        if risk == "high":
+            rate = cls._get_approval_rate(tool, risk)
+            if rate > 0.9:
+                return True
+            if rate < 0.2:
+                cls._record_decision(tool, risk, False, 1.0 - rate,
+                                     f"高风险工具 {tool} 历史批准率{rate:.0%}过低")
+                return False
+            return None  # 高风险 + 不确定 → 人工审批
 
-        # 高风险才能走到人工审批
-        # 检查历史批准率
-        rate = cls._get_approval_rate(tool, risk)
-        if rate > 0.9:
-            # 极高历史批准率 → 信任
-            return True
-        if rate < 0.2:
-            cls._record_decision(tool, risk, False, 1.0 - rate,
-                                 f"高风险工具 {tool} 历史批准率{rate:.0%}过低")
-            return False
-        return None  # 高风险 + 不确定 → 人工审批
+        return True
 
     @classmethod
     def _record_decision(cls, tool: str, risk: str, approved: bool,
