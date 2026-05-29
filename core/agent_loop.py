@@ -204,9 +204,21 @@ class AgentLoop:
         self.on_tool_end: Optional[Callable[[str, dict, float, str], None]] = None
 
     def _register_delegate_tool(self):
-        """注册 delegate_task 工具（子 Agent 系统）。"""
+        """注册 delegate_task 工具（子 Agent 系统）。
+        
+        注入父 Agent 的 LLM 配置，确保子 Agent 与父 Agent 使用相同的模型后端。
+        """
         try:
-            from core.subagent import get_delegate_schema, handle_delegate
+            from core.subagent import get_delegate_schema, handle_delegate, PARENT_LLM_BACKEND, PARENT_LLM_CONFIG
+            # 注入父 Agent 的运行时配置
+            import core.subagent as _sa
+            _sa.PARENT_LLM_BACKEND = self.llm.backend
+            _sa.PARENT_LLM_CONFIG = {
+                "base_url": self.llm.base_url,
+                "model": self.llm.model,
+                "max_tokens": self.llm.max_tokens,
+                "temperature": self.llm.temperature,
+            }
             schema = get_delegate_schema()
             self.tools.register("delegate_task", schema, handle_delegate)
             if self._bootup:
