@@ -19,6 +19,6 @@ steps:
 pitfalls:
 - 工具报错仓库不存在时切勿盲目重试或假设。
 - 避免在未验证仓库状态时直接引用错误信息。
-usage_count: 2
+usage_count: 3
 created_at: 1779680376
 source: kuafu_impromptu_evolution
