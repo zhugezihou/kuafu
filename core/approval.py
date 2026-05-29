@@ -627,28 +627,15 @@ class ApprovalManager:
 
             print(f"是否执行？ [y/N] （{timeout}s 后自动拒绝）: ", end="", flush=True)
 
-            if sys.stdin.isatty():
-                try:
-                    import signal
-
-                    def handler(signum, frame):
-                        raise TimeoutError
-
-                    signal.signal(signal.SIGALRM, handler)
-                    signal.alarm(timeout)
-                    answer = input().strip().lower()
-                    signal.alarm(0)
-                except TimeoutError:
-                    answer = ""
-                    print()
-                except (EOFError, KeyboardInterrupt):
-                    answer = ""
-            else:
+            # 用 select + sys.stdin.readline 替代 input()，避免与主循环的 input() 冲突
+            try:
                 ready, _, _ = select([sys.stdin], [], [], timeout)
                 if ready:
                     answer = sys.stdin.readline().strip().lower()
                 else:
                     answer = ""
+            except (EOFError, KeyboardInterrupt):
+                answer = ""
 
             approved = answer in ("y", "yes", "是", "批准", "确认", "ok")
             req.status = "approved" if approved else "rejected"
