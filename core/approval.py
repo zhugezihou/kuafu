@@ -742,6 +742,10 @@ class ApprovalManager:
 # 全局对像：PreToolUse 检查器
 _pretooluse_cache: dict = {}
 
+# 全局审批回调（由 Web UI 等注入，接收 tool, args, req_id）
+ON_APPROVAL_REQUEST_CB: Optional[callable] = None
+
+
 def pretooluse_check(tool: str, args: dict, context: Optional[dict] = None) -> dict:
     """PreToolUse 权限检查 — 装饰器/钩子入口。
 
@@ -753,7 +757,16 @@ def pretooluse_check(tool: str, args: dict, context: Optional[dict] = None) -> d
         DenyRules.load()
         AutoMode.load()
 
-    return ApprovalManager.check_permission(tool, args, context)
+    result = ApprovalManager.check_permission(tool, args, context)
+
+    # 非交互模式下，审批请求通过全局回调广播（Web UI / SSE 等）
+    if result.get("approach") == "pending_approval" and ON_APPROVAL_REQUEST_CB:
+        try:
+            ON_APPROVAL_REQUEST_CB(tool, args, result.get("req_id", ""))
+        except Exception:
+            pass
+
+    return result
 
 
 # ── 格式化输出（供展示） ────────────────────────────────────────────────
