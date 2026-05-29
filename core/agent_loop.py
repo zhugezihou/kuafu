@@ -1170,6 +1170,9 @@ class AgentLoop:
                         ToolResultStore.should_compact(safe_output)
                         or (budget_tools_alert and len(safe_output) > 800)  # 预算预警时阈值从2000降到800
                     )
+                    # read_tool_result 本身就是要读数据，不再次 microcompact（防死循环）
+                    if fn_name == "read_tool_result":
+                        should_microcompact = False
 
                     if should_microcompact:
                         meta = self.tool_result_store.store(fn_name, safe_output)
