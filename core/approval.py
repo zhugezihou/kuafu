@@ -491,6 +491,18 @@ class ApprovalManager:
 
         # Layer 3: 人工审批
         risk = AutoMode._get_tool_risk(tool) if hasattr(AutoMode, '_get_tool_risk') else "medium"
+
+        # 只保留高风险走人工审批，中/低风险自动通过
+        if risk not in ("high",):
+            return {
+                "allowed": True,
+                "reason": f"✅ 风险 {risk} 自动通过（仅高风险需审批）",
+                "approach": "auto_approve",
+                "rule_id": None,
+                "req_id": None,
+                "auto": True,
+            }
+
         title = f"审批工具调用: {tool}"
         if tool == "terminal":
             title = f"终端: {args.get('command', '')[:60]}"
