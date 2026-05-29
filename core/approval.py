@@ -619,12 +619,21 @@ class ApprovalManager:
             print(f"是否执行？ [y/N] （{timeout}s 后自动拒绝）: ", end="", flush=True)
 
             # 用 select + sys.stdin.readline 替代 input()，避免与主循环的 input() 冲突
+            # 每 10 秒重打一次提示，避免异步线程输出打乱输入行
             try:
-                ready, _, _ = select([sys.stdin], [], [], timeout)
-                if ready:
-                    answer = sys.stdin.readline().strip().lower()
-                else:
-                    answer = ""
+                elapsed = 0
+                answer = ""
+                while elapsed < timeout:
+                    ready, _, _ = select([sys.stdin], [], [], 10)
+                    if ready:
+                        answer = sys.stdin.readline().strip().lower()
+                        break
+                    elapsed += 10
+                    remaining = timeout - elapsed
+                    if remaining > 0:
+                        print(f"\r是否执行？ [y/N] （{remaining}s 后自动拒绝）: ", end="", flush=True)
+                    else:
+                        answer = ""
             except (EOFError, KeyboardInterrupt):
                 answer = ""
 
