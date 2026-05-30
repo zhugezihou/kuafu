@@ -136,7 +136,8 @@ kuafu/
 夸父支持多平台消息通道：
 
 - **`channel/base.py`** — 统一抽象（MessageChannel）
-- **`channel/feishu.py`** — 飞书 Bot 实现（轮询模式）
+- **`channel/feishu_ws.py`** — 飞书 WebSocket 直连（lark-oapi）
+- **`channel/wechat_personal.py`** — 个人微信 Wechaty 通道
 - **`ChannelManager`** — 多通道注册 + 消息分发
 
 ### 记忆系统

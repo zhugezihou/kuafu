@@ -195,9 +195,9 @@
 - [ ] 23.2 Message dataclass 含 text/platform/timestamp/metadata
 - [ ] 23.3 SendResult dataclass 含 success/platform/error
 
-### T24：飞书通道（全新）
-**P2 | 30s | 文件：590行**
-- [ ] 24.1 FeishuChannel 初始化（env 无 key 时跳过）
+### T24：飞书 WebSocket 直连通道
+**P2 | 30s | 文件：263行**
+- [ ] 24.1 FeishuWebSocketChannel 初始化（env 无 key 时跳过）
 - [ ] 24.2 `send()` 返回 SendResult
 - [ ] 24.3 `poll()` 返回消息列表（或空列表）
 - [ ] 24.4 无 API key 时优雅降级

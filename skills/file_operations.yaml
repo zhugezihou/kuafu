@@ -29,4 +29,4 @@ pitfalls:
 - write_file 会完全覆盖文件内容，不要误用
 - 创建新文件前确认路径正确
 - 编辑 .py 文件后不需要手动检查语法——系统会自动 lint
-usage_count: 31
+usage_count: 157

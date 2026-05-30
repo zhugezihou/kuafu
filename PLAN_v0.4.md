@@ -129,7 +129,7 @@ class WebhookServer:
 | `core/channel/telegram.py` | **新建** | Telegram Bot（可选依赖 `python-telegram-bot`） |
 | `core/channel/discord.py` | **新建** | Discord Bot（可选依赖 `discord.py`） |
 | `core/channel/email.py` | **新建** | 邮件（标准库 `imaplib` + `smtplib`，零新增依赖） |
-| `core/channel/feishu.py` | **新建** | 将现有 feishu_bot.py 重构为通道接口 |
+| `core/channel/feishu_ws.py` | **新建** | 飞书 WebSocket 直连通道（lark-oapi SDK） |
 
 ### MessageChannel 接口
 ```python
@@ -143,7 +143,7 @@ class MessageChannel(ABC):
 ```
 
 ### 复用现有飞书实现
-现有 `core/feishu_bot.py` 重构为新接口，保持向后兼容。
+现有 `channel/feishu_ws.py`（WebSocket）和 `channel/wechat_personal.py`（Wechaty）。
 
 ### pyproject.toml 扩展
 ```toml

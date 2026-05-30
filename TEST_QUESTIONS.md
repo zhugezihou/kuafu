@@ -107,7 +107,7 @@
 ```
 你支持哪些通信渠道？
 ```
-【预期】回答至少提到飞书通道（FeishuChannel），说明 send/poll 功能
+【预期】回答至少提到飞书通道（FeishuWebSocketChannel），说明 WebSocket 直连
 
 ---
 
@@ -177,7 +177,7 @@
 ```
 你怎么和飞书集成的？能发消息、收消息吗？审批消息是怎么推送到飞书的？
 ```
-【预期】回答应说明 FeishuChannel 的 send/poll、FeishuBot 的审批推送和轮询应答
+【预期】回答应说明 FeishuWebSocketChannel 的 WebSocket 直连、微信 Wechaty 通道
 
 ---
 
