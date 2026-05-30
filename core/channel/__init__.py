@@ -11,11 +11,11 @@ channel 包 — 多平台消息通道系统。
 from core.channel.base import MessageChannel, Message, SendResult
 from core.channel.manager import ChannelManager
 from core.channel.feishu_ws import FeishuWebSocketChannel
-from core.channel.wechat_personal import WeChatPersonalChannel
+from core.channel.wechat_ilink import WeChatILinkChannel
 
 __all__ = [
     "MessageChannel", "Message", "SendResult",
     "ChannelManager",
     "FeishuWebSocketChannel",
-    "WeChatPersonalChannel",
+    "WeChatILinkChannel",
 ]

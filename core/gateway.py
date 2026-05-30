@@ -266,11 +266,11 @@ class GatewayServer:
         self._init_channels()
 
     def _init_channels(self):
-        """初始化消息通道（直连模式：飞书WS + 微信Wechaty）。"""
+        """初始化消息通道（直连模式：飞书WS + 微信iLink）。"""
         try:
             from core.channel import ChannelManager
             from core.channel.feishu_ws import FeishuWebSocketChannel
-            from core.channel.wechat_personal import WeChatPersonalChannel
+            from core.channel.wechat_ilink import WeChatILinkChannel
             from core.channel.gateway_loop import GatewayLoop
 
             mgr = ChannelManager()
@@ -282,11 +282,9 @@ class GatewayServer:
                 mgr.register(FeishuWebSocketChannel())
                 print("[Gateway] 飞书 WS 直连通道已注册")
 
-            # 个人微信 Wechaty 通道（需要 WECHAT_PUPPET_TOKEN）
-            wx_token = os.environ.get("WECHAT_PUPPET_TOKEN", "")
-            if wx_token:
-                mgr.register(WeChatPersonalChannel())
-                print("[Gateway] 个人微信 Wechaty 通道已注册")
+            # 微信 iLink API 通道（腾讯官方，零配置，扫码登录）
+            mgr.register(WeChatILinkChannel())
+            print("[Gateway] 微信 iLink 通道已注册（扫码登录）")
 
             if mgr.list():
                 self.channels = mgr

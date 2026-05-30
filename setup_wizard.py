@@ -7,7 +7,7 @@
 1. 选择 LLM 后端
 2. 输入 API Key
 3. 配置飞书 WebSocket 直连通道（可选）
-4. 配置微信 Wechaty 通道（可选）
+4. 配置微信 iLink 通道（腾讯官方，零配置）
 5. 测试连接
 6. 保存 .env
 7. 显示下一步指引
@@ -236,46 +236,27 @@ def ask_feishu() -> dict:
     return config
 
 
-# ─── 微信 Wechaty 通道配置 ──────────────────────────────────────────────────
+# ─── 微信 iLink 通道配置（腾讯官方） ──────────────────────────────────────
 def ask_wechat() -> dict:
-    """配置微信 Wechaty 通道（可选）。"""
-    print_step(4, "个人微信 Wechaty 通道（可选）")
-    print_info("夸父支持通过 Wechaty 连接个人微信")
-    print_info("需要 Wechaty Puppet Service Token")
-    print_info("免费申请: https://wechaty.js.org/docs/puppet-services/")
-    print_info("配置后 Gateway 启动时会自动扫码登录微信")
+    """配置微信 iLink 通道（可选，零配置）。"""
+    print_step(4, "个人微信 iLink 通道（腾讯官方）")
+    print_info("夸父通过腾讯官方 iLink 协议连接个人微信")
+    print_info("无需任何 Token 或 API Key，扫码即可登录")
+    print_info("首次启动 Gateway 时自动打印二维码，微信扫码确认")
     print()
 
     if RICH_AVAILABLE:
-        enable = Confirm.ask("  是否配置微信通道?", default=False)
+        enable = Confirm.ask("  是否启用微信通道?", default=True)
     else:
-        resp = input("  是否配置微信通道? (y/N): ").strip().lower()
-        enable = resp == "y"
+        resp = input("  是否启用微信通道? (Y/n): ").strip().lower()
+        enable = resp != "n"
 
     if not enable:
-        print_info("跳过微信通道，后续可在 .env 中手动配置")
+        print_info("跳过微信通道，后续可在 Gateway 启动时启用")
         return {}
 
-    config = {}
-
-    existing_token = ""
-    if DOT_ENV.exists():
-        with open(DOT_ENV) as f:
-            for line in f:
-                if line.startswith("WECHAT_PUPPET_TOKEN="):
-                    existing_token = line.split("=", 1)[1].strip()
-                    break
-    if existing_token and len(existing_token) > 3:
-        masked = existing_token[:8] + "****"
-        if input(f"  检测到已有 Token ({masked})，使用? (Y/n): ").strip().lower() != "n":
-            config["WECHAT_PUPPET_TOKEN"] = existing_token
-        else:
-            config["WECHAT_PUPPET_TOKEN"] = input("  Wechaty Puppet Token: ").strip()
-    else:
-        config["WECHAT_PUPPET_TOKEN"] = input("  Wechaty Puppet Token: ").strip()
-
-    print_ok("微信通道配置完成")
-    return config
+    print_ok("微信通道将在 Gateway 启动时自动扫码登录")
+    return {}  # iLink 不需要配置
 
 
 # ─── 测试连接 ────────────────────────────────────────────────────────────────
@@ -375,7 +356,7 @@ def show_next_steps(backend: str, has_feishu: bool, has_wechat: bool):
         print_ok("飞书通道已配置，Gateway 启动后自动连接")
 
     if has_wechat:
-        print_ok("微信通道已配置，Gateway 启动后打印二维码，扫码登录")
+        print_ok("微信通道已配置，Gateway 启动后自动扫码登录（腾讯 iLink 官方协议）")
 
     print()
     print_info("文档: https://github.com/zhugezihou/kuafu")
