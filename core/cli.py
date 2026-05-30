@@ -247,79 +247,172 @@ def run_model(args: argparse.Namespace, agent: Any) -> int:
 
 
 def run_skill(args: argparse.Namespace, agent: Any = None) -> int:
-    """kuafu skill — 技能管理。"""
-    from core.skill_manager import SkillManager
-    mgr = SkillManager()
+    def run_skill(args: argparse.Namespace, agent: Any = None) -> int:
+        """kuafu skill — 技能管理。"""
+        from core.skill_manager import SkillManager
+        mgr = SkillManager()
 
-    if args.cmd == "list":
-        local = mgr.list_local()
-        installed = mgr.list_installed_market()
-        print(f"本地技能 ({len(local)}):")
-        for s in local:
-            print(f"  {s.name:30s} {s.description[:50]}")
-        if installed:
-            print(f"\n市场安装 ({len(installed)}):")
-            for s in installed:
+        if args.cmd == "list":
+            local = mgr.list_local()
+            installed = mgr.list_installed_market()
+            print(f"本地技能 ({len(local)}):")
+            for s in local:
                 print(f"  {s.name:30s} {s.description[:50]}")
-        return 0
-
-    elif args.cmd == "search":
-        query = args.query or ""
-        if not query:
-            # 没关键词时列出市场全部
-            market = mgr.fetch_market_index()
-            print(f"技能市场 ({len(market)} 个可用):")
-            for s in market[:20]:
-                print(f"  {s.name:30s} [{s.category or '?'}] {s.description[:40]}")
+            if installed:
+                print(f"\n市场安装 ({len(installed)}):")
+                for s in installed:
+                    print(f"  {s.name:30s} {s.description[:50]}")
             return 0
 
-        local = mgr.search_local(query)
-        market = mgr.search_market(query)
-        print(f"本地匹配 ({len(local)}):")
-        for s in local:
-            print(f"  {s.name}")
-        print(f"\n市场匹配 ({len(market)}):")
-        for s in market:
-            print(f"  {s.name:30s} [{s.author or '?'}] {s.description[:50]}")
+        elif args.cmd == "search":
+            query = args.query or ""
+            if not query:
+                market = mgr.fetch_market_index()
+                print(f"技能市场 ({len(market)} 个可用):")
+                for s in market[:20]:
+                    print(f"  {s.name:30s} [{s.category or '?'}] {s.description[:40]}")
+                return 0
+
+            local = mgr.search_local(query)
+            market = mgr.search_market(query)
+            print(f"本地匹配 ({len(local)}):")
+            for s in local:
+                print(f"  {s.name}")
+            print(f"\n市场匹配 ({len(market)}):")
+            for s in market:
+                print(f"  {s.name:30s} [{s.author or '?'}] {s.description[:50]}")
+            return 0
+
+        elif args.cmd == "install":
+            name = args.name or ""
+            if not name:
+                print("用法: kuafu skill install <skill_name|url>")
+                return 1
+            result = mgr.install(name)
+            if result["success"]:
+                print(f"✅ 已安装: {result['name']}")
+                fp = result.get("file", "")
+                if fp:
+                    print(f"   路径: {fp}")
+            else:
+                print(f"❌ 安装失败: {result.get('error', '未知错误')}")
+            return 0
+
+        elif args.cmd == "remove":
+            name = args.name or ""
+            if not name:
+                print("用法: kuafu skill remove <skill_name>")
+                return 1
+            if mgr.remove_local(name) or mgr.uninstall(name):
+                print(f"已删除: {name}")
+            else:
+                print(f"未找到: {name}")
+            return 0
+
+        elif args.cmd == "stats":
+            stats = mgr.get_stats()
+            print("技能统计:")
+            print(f"  本地: {stats['local']} 个")
+            print(f"  市场安装: {stats['installed_market']} 个")
+            print(f"  市场可用: {stats['available_market']} 个")
+            return 0
+
+        else:
+            print("可用: kuafu skill list / search / install / remove / stats")
+            return 0
+
+
+def run_tools(args: argparse.Namespace, agent: Any) -> int:
+    """kuafu tools — 工具集管理。"""
+    from core.tool_registry import ToolRegistry
+
+    registry = getattr(agent, '_tools', None) or getattr(agent, 'tool_registry', None)
+    if registry is None:
+        loop = getattr(agent, '_loop', None)
+        if loop and hasattr(loop, 'tools'):
+            registry = loop.tools
+    if registry is None:
+        registry = ToolRegistry()
+
+    if args.cmd == "list":
+        core_names = sorted(registry.list_tools())
+        compact_names = sorted(s["function"]["name"] for s in getattr(registry, '_compact', []))
+        deferred_names = sorted(
+            s["schema"]["function"]["name"] for s in getattr(registry, '_deferred', [])
+        )
+        print(f"核心工具 ({len(core_names)}):")
+        for n in core_names:
+            print(f"  {n}")
+        print(f"\n紧凑工具 ({len(compact_names)}):")
+        for n in compact_names:
+            print(f"  {n}")
+        print(f"\n延迟工具 ({len(deferred_names)}):")
+        for n in deferred_names:
+            print(f"  {n}")
         return 0
 
-    elif args.cmd == "install":
+    elif args.cmd == "enable":
         name = args.name or ""
         if not name:
-            print("用法: kuafu skill install <skill_name|url>")
+            print("用法: kuafu tools enable <tool_name>")
             return 1
-        result = mgr.install(name)
-        if result["success"]:
-            print(f"✅ 已安装: {result['name']}")
-            fp = result.get("file", "")
-            if fp:
-                print(f"   路径: {fp}")
-        else:
-            print(f"❌ 安装失败: {result.get('error', '未知错误')}")
-        return 0
+        for entry in getattr(registry, '_deferred', []):
+            if entry["schema"]["function"]["name"] == name:
+                registry.inject_tool(name)
+                print(f"已启用: {name}")
+                return 0
+        for s in getattr(registry, '_compact', []):
+            if s["function"]["name"] == name:
+                registry._promote_compact_tool(name)
+                print(f"已提升: {name}")
+                return 0
+        for s in getattr(registry, '_schemas', []):
+            if s["function"]["name"] == name:
+                print(f"{name} 是核心工具，始终可用")
+                return 0
+        print(f"未找到工具: {name}")
+        return 1
 
-    elif args.cmd == "remove":
+    elif args.cmd == "disable":
         name = args.name or ""
         if not name:
-            print("用法: kuafu skill remove <skill_name>")
+            print("用法: kuafu tools disable <tool_name>")
             return 1
-        if mgr.remove_local(name) or mgr.uninstall(name):
-            print(f"已删除: {name}")
-        else:
-            print(f"未找到: {name}")
-        return 0
+        for s in getattr(registry, '_schemas', []):
+            if s["function"]["name"] == name:
+                print(f"不能禁用核心工具: {name}")
+                return 1
+        injected = getattr(registry, '_injected_tools', [])
+        before = len(injected)
+        registry._injected_tools = [s for s in injected if s["function"]["name"] != name]
+        if len(registry._injected_tools) < before:
+            print(f"已禁用: {name}")
+            return 0
+        compact = getattr(registry, '_compact', [])
+        before = len(compact)
+        registry._compact = [s for s in compact if s["function"]["name"] != name]
+        if len(registry._compact) < before:
+            print(f"已禁用紧凑工具: {name}")
+            return 0
+        print(f"未找到工具: {name}")
+        return 1
 
     elif args.cmd == "stats":
-        stats = mgr.get_stats()
-        print("技能统计:")
-        print(f"  本地: {stats['local']} 个")
-        print(f"  市场安装: {stats['installed_market']} 个")
-        print(f"  市场可用: {stats['available_market']} 个")
+        core = len(getattr(registry, '_schemas', []))
+        compact = len(getattr(registry, '_compact', []))
+        deferred = len(getattr(registry, '_deferred', []))
+        injected = len(getattr(registry, '_injected_tools', []))
+        print("工具统计:")
+        print(f"  核心: {core} 个")
+        print(f"  紧凑: {compact} 个（首次调用后自动提升）")
+        print(f"  延迟: {deferred} 个（通过 tool_search 发现）")
+        print(f"  已注入: {injected} 个")
         return 0
 
     else:
-        print("可用: kuafu skill list / search / install / remove / stats")
+        print("可用: kuafu tools list / enable / disable / stats")
         return 0
+
 
 
 def run_gateway(args: argparse.Namespace, agent: Any) -> int:
@@ -492,6 +585,22 @@ SUBCOMMANDS = {
                 "args": [("name", {"help": "技能名称"})],
             },
             "stats": {"help": "技能统计"},
+        },
+    },
+    "tools": {
+        "help": "工具集管理（列出/启用/禁用）",
+        "handler": run_tools,
+        "subparsers": {
+            "list": {"help": "列出所有工具"},
+            "enable": {
+                "help": "启用工具",
+                "args": [("name", {"help": "工具名称"})],
+            },
+            "disable": {
+                "help": "禁用工具",
+                "args": [("name", {"help": "工具名称"})],
+            },
+            "stats": {"help": "工具统计"},
         },
     },
 }
