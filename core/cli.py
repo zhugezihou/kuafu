@@ -542,7 +542,7 @@ SUBCOMMANDS = {
             "list": {"help": "列出可用模型"},
             "switch": {
                 "help": "切换后端",
-                "args": [("backend", {"choices": ["cloud", "local"], "help": "目标后端"})],
+                "args": [("backend", {"help": "provider ID (deepseek/openai/claude/qwen等)"})],
             },
         },
     },

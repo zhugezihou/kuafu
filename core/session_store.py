@@ -110,19 +110,13 @@ class SessionStore:
     def create_session(self, title: str = "") -> str:
         """创建一个新会话。返回 session_id。"""
         now = time.time()
-        # 生成唯一 ID
-        date_str = time.strftime("%Y%m%d", time.localtime(now))
+        import uuid
+        session_id = f"sess_{time.strftime('%Y%m%d', time.localtime(now))}_{uuid.uuid4().hex[:8]}"
+
         cursor = self._get_cursor()
         cursor.execute(
-            "SELECT COUNT(*) FROM sessions WHERE id LIKE ?",
-            (f"sess_{date_str}_%",),
-        )
-        count = cursor.fetchone()[0] + 1
-        session_id = f"sess_{date_str}_{count:03d}"
-
-        cursor.execute(
             "INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
-            (session_id, title or f"会话 {date_str}-{count:03d}", now, now),
+            (session_id, title or f"会话 {time.strftime('%Y%m%d', time.localtime(now))}", now, now),
         )
         self._conn.commit()
         return session_id
