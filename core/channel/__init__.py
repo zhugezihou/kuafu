@@ -2,8 +2,7 @@
 channel 包 — 多平台消息通道系统。
 
 使用:
-    from core.channel import ChannelManager
-    from core.channel import FeishuChannel
+    from core.channel import ChannelManager, FeishuWebSocketChannel
     manager = ChannelManager()
     manager.register(feishu_channel)
     manager.start_all()
@@ -11,12 +10,12 @@ channel 包 — 多平台消息通道系统。
 
 from core.channel.base import MessageChannel, Message, SendResult
 from core.channel.manager import ChannelManager
-from core.channel.feishu import FeishuChannel
-from core.channel.wechat import WeChatChannel
+from core.channel.feishu_ws import FeishuWebSocketChannel
+from core.channel.wechat_personal import WeChatPersonalChannel
 
 __all__ = [
     "MessageChannel", "Message", "SendResult",
     "ChannelManager",
-    "FeishuChannel",
-    "WeChatChannel",
+    "FeishuWebSocketChannel",
+    "WeChatPersonalChannel",
 ]

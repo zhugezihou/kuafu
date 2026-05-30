@@ -266,35 +266,27 @@ class GatewayServer:
         self._init_channels()
 
     def _init_channels(self):
-        """初始化消息通道。"""
+        """初始化消息通道（直连模式：飞书WS + 微信Wechaty）。"""
         try:
             from core.channel import ChannelManager
-            from core.channel.feishu import FeishuChannel
-            from core.channel.wechat import WeChatChannel
+            from core.channel.feishu_ws import FeishuWebSocketChannel
+            from core.channel.wechat_personal import WeChatPersonalChannel
             from core.channel.gateway_loop import GatewayLoop
 
             mgr = ChannelManager()
 
-            # 飞书通道（如已配置）
+            # 飞书 WebSocket 直连通道
             fs_app_id = os.environ.get("FEISHU_APP_ID", "")
             fs_app_secret = os.environ.get("FEISHU_APP_SECRET", "")
-            fs_chat_id = os.environ.get("FEISHU_CHAT_ID", "")
-            if fs_app_id and fs_app_secret and fs_chat_id:
-                feishu = FeishuChannel(
-                    app_id=fs_app_id,
-                    app_secret=fs_app_secret,
-                    chat_id=fs_chat_id,
-                )
-                mgr.register(feishu)
-                print("[Gateway] 飞书通道已注册")
+            if fs_app_id and fs_app_secret:
+                mgr.register(FeishuWebSocketChannel())
+                print("[Gateway] 飞书 WS 直连通道已注册")
 
-            # 微信通道（如已配置）
-            wx_webhook = os.environ.get("WECHAT_WEBHOOK_URL", "")
-            wx_corp_id = os.environ.get("WECHAT_CORP_ID", "")
-            if wx_webhook or wx_corp_id:
-                wechat = WeChatChannel()
-                mgr.register(wechat)
-                print("[Gateway] 微信通道已注册")
+            # 个人微信 Wechaty 通道（需要 WECHAT_PUPPET_TOKEN）
+            wx_token = os.environ.get("WECHAT_PUPPET_TOKEN", "")
+            if wx_token:
+                mgr.register(WeChatPersonalChannel())
+                print("[Gateway] 个人微信 Wechaty 通道已注册")
 
             if mgr.list():
                 self.channels = mgr
