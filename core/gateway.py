@@ -260,6 +260,53 @@ class GatewayServer:
         self._running = False
         self._shutdown_event = threading.Event()
 
+        # 通道管理器
+        self.channels: Any = None
+        self._gateway_loop: Any = None
+        self._init_channels()
+
+    def _init_channels(self):
+        """初始化消息通道。"""
+        try:
+            from core.channel import ChannelManager
+            from core.channel.feishu import FeishuChannel
+            from core.channel.wechat import WeChatChannel
+            from core.channel.gateway_loop import GatewayLoop
+
+            mgr = ChannelManager()
+
+            # 飞书通道（如已配置）
+            fs_app_id = os.environ.get("FEISHU_APP_ID", "")
+            fs_app_secret = os.environ.get("FEISHU_APP_SECRET", "")
+            fs_chat_id = os.environ.get("FEISHU_CHAT_ID", "")
+            if fs_app_id and fs_app_secret and fs_chat_id:
+                feishu = FeishuChannel(
+                    app_id=fs_app_id,
+                    app_secret=fs_app_secret,
+                    chat_id=fs_chat_id,
+                )
+                mgr.register(feishu)
+                print("[Gateway] 飞书通道已注册")
+
+            # 微信通道（如已配置）
+            wx_webhook = os.environ.get("WECHAT_WEBHOOK_URL", "")
+            wx_corp_id = os.environ.get("WECHAT_CORP_ID", "")
+            if wx_webhook or wx_corp_id:
+                wechat = WeChatChannel()
+                mgr.register(wechat)
+                print("[Gateway] 微信通道已注册")
+
+            if mgr.list():
+                self.channels = mgr
+                self._gateway_loop = GatewayLoop(self.agent, mgr)
+            else:
+                print("[Gateway] 未配置任何消息通道（仅 HTTP API）")
+
+        except ImportError as e:
+            print(f"[Gateway] 通道初始化跳过: {e}")
+        except Exception as e:
+            print(f"[Gateway] 通道初始化异常: {e}")
+
     def start(self) -> bool:
         """启动 Gateway。"""
         if self._running:
@@ -267,6 +314,13 @@ class GatewayServer:
             return True
 
         try:
+            # 启动消息通道
+            if self.channels:
+                self.channels.start_all()
+                print(f"[Gateway] 通道: {', '.join(self.channels.list())}")
+            if self._gateway_loop:
+                self._gateway_loop.start()
+
             # 设置 Handler 的类变量
             GatewayHandler.agent = self.agent
             GatewayHandler.api_key = self.api_key
@@ -302,6 +356,10 @@ class GatewayServer:
         """停止 Gateway。"""
         self._running = False
         self._shutdown_event.set()
+        if self._gateway_loop:
+            self._gateway_loop.stop()
+        if self.channels:
+            self.channels.stop_all()
         if self._server:
             self._server.server_close()
         print("[Gateway] 已停止")
