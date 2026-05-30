@@ -2,8 +2,14 @@
 # 夸父 (Kuafu) 一键启动
 # 检查 llama-server 是否就绪（Windows 侧），然后运行夸父
 # ⚠️ llama-server 运行在 Windows 侧（GPU/CUDA），不消耗 WSL 内存
-# ⚠️ llama-server 由 Windows 开机自启（LlamaServer.lnk → start-llama.bat）
-#    不需要也从 WSL 侧拉起（interop 启动不可靠）
+#
+# 用法:
+#   bash kuafu.sh                       # 交互模式
+#   bash kuafu.sh "写个脚本"            # 直接执行
+#   bash kuafu.sh cron list             # 定时任务
+#   bash kuafu.sh sessions list         # 会话管理
+#   bash kuafu.sh status                # 状态查看
+#   bash kuafu.sh --help                # 全部命令
 
 set -e
 
@@ -31,12 +37,23 @@ fi
 # 2. 运行夸父
 source "$KUAFFU_DIR/venv/bin/activate"
 export PYTHONPATH="$KUAFFU_DIR${PYTHONPATH:+:$PYTHONPATH}"
-# 标记为交互模式（审批系统依赖此判断）
 export KUAFFU_INTERACTIVE=1
+
+# 3. 路由
 if [ $# -eq 0 ]; then
-    # 无参数 → 交互模式
     exec python -m core.main
 else
-    # 有参数 → 命令式
-    exec python -m core.main "$@"
+    case "$1" in
+        cron|sessions|status|model)
+            # 通过 cli.py 处理子命令
+            exec python -c "
+import sys, core.cli
+sys.argv = ['kuafu'] + sys.argv[1:]
+sys.exit(core.cli.main())
+" "$@"
+            ;;
+        *)
+            exec python -m core.main "$@"
+            ;;
+    esac
 fi
