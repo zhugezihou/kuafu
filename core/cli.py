@@ -289,6 +289,21 @@ def run_gateway(args: argparse.Namespace, agent: Any) -> int:
     return 1
 
 
+def run_setup(args: argparse.Namespace, agent: Any = None) -> int:
+    """kuafu setup — 交互式配置向导。"""
+    import sys as _sys
+    ROOT_DIR = Path(__file__).resolve().parent.parent
+    setup_path = ROOT_DIR / "setup_wizard.py"
+    if not setup_path.exists():
+        print("❌ setup_wizard.py 未找到")
+        return 1
+
+    # 代理到 setup_wizard.py
+    _sys.argv = [_sys.argv[0], str(setup_path)]
+    exec(open(str(setup_path), encoding="utf-8").read())
+    return 0
+
+
 # ── 子命令配置 ──────────────────────────────────────────────
 
 SUBCOMMANDS = {
@@ -378,6 +393,10 @@ SUBCOMMANDS = {
             "uninstall": {"help": "卸载 systemd user service"},
             "status": {"help": "查看 Gateway 状态（systemctl）"},
         },
+    },
+    "setup": {
+        "help": "交互式配置向导（飞书/微信/LLM）",
+        "handler": run_setup,
     },
 }
 
