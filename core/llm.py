@@ -1,32 +1,42 @@
 """
-夸父 LLM 客户端 — 封装 DeepSeek API 调用。
+夸父 LLM 客户端 v2 — N 后端 + 自动降级。
 
-职责：
-1. 组装对话消息（system + user + history）
-2. 调用 DeepSeek Chat API（非流式 + 流式）
-3. 解析响应，提取文本和 tool_calls
-4. 错误重试和降级
+v2 相对 v1 的改进：
+  1. 从双后端（cloud/local）扩展为 N 后端
+  2. 按优先级列表降级（主 → 备1 → 备2）
+  3. 各后端独立 API Key / Base URL / 模型名
+  4. 运行时 switch() 热切换
+  5. 保留原有兼容接口
 
-依赖：
-- 环境变量 DEEPSEEK_API_KEY
-- 支持 OpenAI-compatible API
+后端配置（通过 .env 或 ModelManager）：
+  KUAFFU_PROVIDERS=deepseek,openai,qwen  # 降级顺序
+  DEEPSEEK_API_KEY=sk-xxx
+  DEEPSEEK_BASE_URL=https://api.deepseek.com
+  DEEPSEEK_MODEL=deepseek-chat
+  OPENAI_API_KEY=sk-xxx
+  OPENAI_BASE_URL=https://api.openai.com/v1
+  OPENAI_MODEL=gpt-4o-mini
+  QWEN_BASE_URL=http://localhost:8080
+  QWEN_MODEL=Qwen3.5-9B-UD-Q4_K_XL.gguf
 """
 
+from __future__ import annotations
+
 import json
+import logging
 import os
-import time
 import re
 import threading
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 import urllib.request
 import urllib.error
 
-import logging
 logger = logging.getLogger(__name__)
 
-# 加载 .env — 只查项目根目录
-ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+ROOT_DIR = Path(__file__).resolve().parent.parent
+ENV_PATH = ROOT_DIR / ".env"
 if ENV_PATH.exists():
     for line in ENV_PATH.read_text(encoding="utf-8").splitlines():
         line = line.strip()
@@ -34,261 +44,327 @@ if ENV_PATH.exists():
             k, v = line.split("=", 1)
             os.environ.setdefault(k.strip(), v.strip())
 
-DEEPSEEK_API_KEY = os.environ.get("KUAFFU_API_KEY") or os.environ.get("DEEPSEEK_API_KEY", "")
-DEEPSEEK_BASE_URL = os.environ.get("KUAFFU_BASE_URL") or os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-KUAFFU_BACKEND = os.environ.get("KUAFFU_BACKEND", "cloud").strip().lower()
-DEFAULT_MODEL = "deepseek-chat"
+# ── 默认配置模板 ──────────────────────────────────────────────
 
-# 本地模型配置
-LOCAL_BASE_URL = os.environ.get("KUAFFU_LOCAL_BASE_URL", "http://localhost:8080")
-LOCAL_MODEL = "Qwen3.5-9B-UD-Q4_K_XL.gguf"
-LOCAL_MAX_TOKENS = 4096
+DEFAULT_PROVIDERS = os.environ.get("KUAFFU_PROVIDERS", "deepseek").split(",")
+
+PROVIDER_CONFIGS: dict[str, dict] = {
+    "deepseek": {
+        "name": "DeepSeek Chat",
+        "base_url": os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+        "api_key_env": ["KUAFFU_API_KEY", "DEEPSEEK_API_KEY"],
+        "model": os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
+        "max_tokens": 4096,
+        "temperature": 0.7,
+    },
+    "openai": {
+        "name": "OpenAI",
+        "base_url": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        "api_key_env": ["OPENAI_API_KEY"],
+        "model": os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+        "max_tokens": 4096,
+        "temperature": 0.7,
+    },
+    "claude": {
+        "name": "Claude (OpenAI-compatible)",
+        "base_url": os.environ.get("CLAUDE_BASE_URL", "https://api.anthropic.com"),
+        "api_key_env": ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"],
+        "model": os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-20250514"),
+        "max_tokens": 4096,
+        "temperature": 0.7,
+    },
+    "qwen": {
+        "name": "Qwen (本地)",
+        "base_url": os.environ.get("QWEN_BASE_URL", "http://localhost:8080"),
+        "api_key_env": [],
+        "model": os.environ.get("QWEN_MODEL", "Qwen3.5-9B-UD-Q4_K_XL.gguf"),
+        "max_tokens": int(os.environ.get("QWEN_MAX_TOKENS", "4096")),
+        "temperature": 0.7,
+    },
+    "openrouter": {
+        "name": "OpenRouter",
+        "base_url": os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+        "api_key_env": ["OPENROUTER_API_KEY"],
+        "model": os.environ.get("OPENROUTER_MODEL", "qwen/qwen3.5-9b"),
+        "max_tokens": 4096,
+        "temperature": 0.7,
+    },
+    "custom": {
+        "name": "自定义",
+        "base_url": os.environ.get("CUSTOM_BASE_URL", ""),
+        "api_key_env": ["CUSTOM_API_KEY"],
+        "model": os.environ.get("CUSTOM_MODEL", ""),
+        "max_tokens": 4096,
+        "temperature": 0.7,
+    },
+}
+
+
+def _resolve_api_key(env_names: list[str]) -> str:
+    for name in env_names:
+        val = os.environ.get(name, "")
+        if val and val != "***":
+            return val
+    return ""
+
+
+class LLMBackend:
+    """单个 LLM 后端。"""
+
+    def __init__(self, provider_id: str, config: dict | None = None):
+        cfg = config or PROVIDER_CONFIGS.get(provider_id, PROVIDER_CONFIGS["deepseek"])
+        self.provider_id = provider_id
+        self.name = cfg.get("name", provider_id)
+        self.base_url = cfg["base_url"].rstrip("/")
+        self.model = cfg.get("model", "")
+        self.max_tokens = int(cfg.get("max_tokens", 4096))
+        self.temperature = float(cfg.get("temperature", 0.7))
+        self.api_key = cfg.get("api_key") or _resolve_api_key(cfg.get("api_key_env", []))
+
+    def is_available(self) -> bool:
+        """检查后端是否可用（本地检查 URL 连通性，云端检查 API Key）。"""
+        if not self.base_url:
+            return False
+        if self.api_key or not self._needs_api_key():
+            return True
+        # 尝试 ping（超时 2 秒）
+        try:
+            req = urllib.request.Request(f"{self.base_url}/v1/models", method="GET")
+            if self.api_key:
+                req.add_header("Authorization", f"Bearer {self.api_key}")
+            with urllib.request.urlopen(req, timeout=2):
+                return True
+        except Exception:
+            return False
+
+    def _needs_api_key(self) -> bool:
+        return self.provider_id not in ("qwen", "custom") or bool(PROVIDER_CONFIGS.get(self.provider_id, {}).get("api_key_env"))
+
+    def to_dict(self) -> dict:
+        return {
+            "provider": self.provider_id,
+            "name": self.name,
+            "base_url": self.base_url,
+            "model": self.model,
+            "max_tokens": self.max_tokens,
+        }
+
+    def __repr__(self) -> str:
+        return f"<LLMBackend {self.provider_id}:{self.model}>"
+
+
+def _clean_surrogates(obj):
+    if isinstance(obj, str):
+        return obj.encode("utf-8", errors="surrogatepass").decode("utf-8", errors="replace")
+    elif isinstance(obj, dict):
+        return {k: _clean_surrogates(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_clean_surrogates(item) for item in obj]
+    return obj
 
 
 class LLMClient:
-    """LLM 客户端，封装 DeepSeek Chat API。"""
+    """LLM 客户端 v2 — N 后端 + 自动降级。"""
 
-    def __init__(
-        self,
-        backend: str = "",
-        api_key: str = "",
-        base_url: str = "",
-        model: str = "",
-        max_tokens: int = 4096,
-        temperature: float = 0.7,
-        timeout: int = 120,
-    ):
-        # 后端选择：参数 > 环境变量 > 默认 cloud
-        backend = (backend or KUAFFU_BACKEND).strip().lower()
+    def __init__(self, providers: str | list[str] | None = None,
+                 api_key: str | None = None, base_url: str | None = None,
+                 model: str | None = None, max_tokens: int = 4096,
+                 temperature: float = 0.7, timeout: int = 120):
+        # 构建后端列表
+        if providers is None:
+            providers = os.environ.get("KUAFFU_PROVIDERS", "deepseek").split(",")
+        if isinstance(providers, str):
+            providers = [p.strip() for p in providers.split(",") if p.strip()]
 
-        if backend == "local":
-            self.backend = "local"
-            self.api_key = api_key or "ignored"
-            self.base_url = (base_url or LOCAL_BASE_URL).rstrip("/")
-            self.model = model or LOCAL_MODEL
-            self.max_tokens = max_tokens or LOCAL_MAX_TOKENS
-            self.temperature = temperature
-            self.timeout = timeout
-        else:
-            self.backend = "cloud"
-            self.api_key = api_key or DEEPSEEK_API_KEY
-            self.base_url = (base_url or DEEPSEEK_BASE_URL).rstrip("/")
-            self.model = model or DEFAULT_MODEL
-            self.max_tokens = max_tokens
-            self.temperature = temperature
-            self.timeout = timeout
-            if not self.api_key:
-                raise ValueError(
-                    "API Key 未设置。请在项目 .env 中设置 KUAFFU_API_KEY，或传入 api_key。"
-                )
+        self.backends: list[LLMBackend] = []
+        for pid in providers:
+            cfg = dict(PROVIDER_CONFIGS.get(pid, PROVIDER_CONFIGS["deepseek"]))
+            if pid == providers[0]:
+                # 主后端：接受参数覆盖
+                if api_key:
+                    cfg["api_key"] = api_key
+                if base_url:
+                    cfg["base_url"] = base_url
+                if model:
+                    cfg["model"] = model
+            self.backends.append(LLMBackend(pid, cfg))
 
-    def _api_url(self) -> str:
-        """构建 Chat Completions API URL。"""
-        return f"{self.base_url}/v1/chat/completions"
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.timeout = timeout
+        self._failures: dict[str, float] = {}  # provider -> cooldown until
+        self._lock = threading.Lock()
+        self._last_successful: str = ""  # 上次成功的 provider
 
-    def _build_headers(self) -> dict:
+        # 兼容旧接口
+        self.backend = self.backends[0].provider_id if self.backends else "cloud"
+        self.api_key = self.backends[0].api_key if self.backends else ""
+        self.base_url = self.backends[0].base_url if self.backends else ""
+        self.model = self.backends[0].model if self.backends else ""
+
+    # ── 选择最佳后端 ───────────────────────────────────────────
+
+    def _select_backend(self) -> LLMBackend | None:
+        """按优先级选择可用后端（跳过冷却期内的）。"""
+        now = time.time()
+        with self._lock:
+            # 上次成功的后端优先（如果在冷却期内不惩罚）
+            if self._last_successful:
+                for bk in self.backends:
+                    if bk.provider_id == self._last_successful:
+                        cooldown = self._failures.get(bk.provider_id, 0)
+                        if now >= cooldown:
+                            return bk
+
+            # 按优先级
+            for bk in self.backends:
+                cooldown = self._failures.get(bk.provider_id, 0)
+                if now >= cooldown:
+                    return bk
+
+            # 全部冷却中 → 选第一个（即使冷却）
+            return self.backends[0] if self.backends else None
+
+    def _record_failure(self, provider_id: str):
+        """记录后端失败，30 秒冷却。"""
+        with self._lock:
+            self._failures[provider_id] = time.time() + 30
+
+    def _record_success(self, provider_id: str):
+        self._last_successful = provider_id
+
+    # ── API 调用 ────────────────────────────────────────────────
+
+    def chat(self, messages: list[dict], tools: Optional[list[dict]] = None,
+             stream: bool = False, max_retries: int = 2) -> dict:
+        """调用 LLM，支持多后端自动降级。
+
+        降级流程：
+          主后端 → 失败 → 冷却 30s → 下一后端 → ... → 全部失败 → 返回错误
+        """
+        last_error = None
+
+        for attempt in range(max_retries * len(self.backends)):
+            backend = self._select_backend()
+            if not backend:
+                break
+
+            try:
+                result = self._call_backend(backend, messages, tools, stream)
+                if result["success"]:
+                    self._record_success(backend.provider_id)
+                    return result
+
+                # 后端级错误
+                self._record_failure(backend.provider_id)
+                last_error = result.get("error", "unknown")
+                logger.warning(f"后端 {backend.provider_id} 失败: {last_error}")
+
+                # 认证错误不重试其他后端（节省时间）
+                if "401" in (last_error or "") or "403" in (last_error or ""):
+                    break
+
+            except Exception as e:
+                self._record_failure(backend.provider_id)
+                last_error = str(e)
+                logger.warning(f"后端 {backend.provider_id} 异常: {e}")
+
+            time.sleep(0.5)
+
         return {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
+            "success": False, "content": "",
+            "tool_calls": None, "usage": None,
+            "error": last_error or "所有后端均不可用",
         }
 
-    def _build_payload(
-        self,
-        messages: list[dict],
-        stream: bool = False,
-        tools: Optional[list[dict]] = None,
-    ) -> dict:
+    def _call_backend(self, backend: LLMBackend, messages: list[dict],
+                      tools: Optional[list[dict]] = None,
+                      stream: bool = False) -> dict:
+        """向单个后端发送请求。"""
         payload = {
-            "model": self.model,
-            "messages": messages,
+            "model": backend.model,
+            "messages": _clean_surrogates(messages),
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
             "stream": stream,
         }
         if tools:
             payload["tools"] = tools
-        return payload
 
-    @staticmethod
-    def _clean_surrogates(obj):
-        """递归清理 dict/list 中所有字符串的 surrogate 字符。"""
-        if isinstance(obj, str):
-            return obj.encode("utf-8", errors="surrogatepass").decode("utf-8", errors="replace")
-        elif isinstance(obj, dict):
-            return {k: LLMClient._clean_surrogates(v) for k, v in obj.items()}
-        elif isinstance(obj, list):
-            return [LLMClient._clean_surrogates(item) for item in obj]
-        return obj
+        url = f"{backend.base_url}/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+        }
+        if backend.api_key:
+            headers["Authorization"] = f"Bearer {backend.api_key}"
 
-    def chat(
-        self,
-        messages: list[dict],
-        tools: Optional[list[dict]] = None,
-        stream: bool = False,
-        max_retries: int = 3,
-    ) -> dict:
-        """调用 LLM Chat API。
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
 
-        Returns:
-            {
-                "success": bool,
-                "content": str,
-                "tool_calls": list[dict] or None,
-                "usage": dict or None,
-                "error": str or None,
-            }
-        """
-        last_error = None
-        for attempt in range(max_retries):
-            try:
-                payload = self._build_payload(messages, stream=False, tools=tools)
-                # 清理 surrogate 字符，避免 API 服务端 JSON 解析失败
-                payload = self._clean_surrogates(payload)
-                data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-                req = urllib.request.Request(
-                    self._api_url(),
-                    data=data,
-                    headers=self._build_headers(),
-                    method="POST",
-                )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")
+            return {"success": False, "content": "", "error": f"HTTP {e.code}: {body[:200]}"}
+        except Exception as e:
+            return {"success": False, "content": "", "error": str(e)}
 
-                # ⏳ 长等待日志：单次请求超过 30 秒时输出进度
-                _req_start = time.time()
-                _logged = False
+        result = json.loads(raw.decode("utf-8", errors="replace"))
+        choice = result.get("choices", [{}])[0]
+        message = choice.get("message", {})
+        content = message.get("content", "") or message.get("reasoning_content", "")
+        tool_calls_raw = message.get("tool_calls")
 
-                def _long_wait_log():
-                    nonlocal _logged
-                    while True:
-                        # 请求已完成，_req_start 被设为 None
-                        if _req_start is None:
-                            return
-                        elapsed = time.time() - _req_start
-                        if elapsed >= 30 and not _logged:
-                            _logged = True
-                            logger.info(f"⏳ LLM API 请求已等待 {elapsed:.0f} 秒（timeout={self.timeout}）")
-                        time.sleep(10)
-
-                _lw_thread = threading.Thread(target=_long_wait_log, daemon=True)
-                _lw_thread.start()
-
+        tool_calls = None
+        if tool_calls_raw:
+            tool_calls = []
+            for tc in tool_calls_raw:
+                fn = tc.get("function", {})
                 try:
-                    with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                        raw = resp.read()
-                finally:
-                    if _logged:
-                        logger.info(f"⏳ LLM API 请求完成（耗时 {time.time() - _req_start:.1f} 秒）")
-                    _req_start = None  # 标记监控线程退出
-
-                result = json.loads(raw.decode("utf-8", errors="replace"))
-
-                choice = result.get("choices", [{}])[0]
-                message = choice.get("message", {})
-                content = message.get("content", "") or message.get("reasoning_content", "")
-                tool_calls_raw = message.get("tool_calls")
-
-                # 格式化 tool_calls
-                tool_calls = None
-                if tool_calls_raw:
-                    tool_calls = []
-                    for tc in tool_calls_raw:
-                        fn = tc.get("function", {})
-                        try:
-                            args = json.loads(fn.get("arguments", "{}"))
-                        except json.JSONDecodeError:
-                            args = {"raw": fn.get("arguments", "")}
-                        tool_calls.append({
-                            "id": tc.get("id", ""),
-                            "type": tc.get("type", "function"),
-                            "function": {
-                                "name": fn.get("name", ""),
-                                "arguments": args,
-                            },
-                        })
-
-                usage = result.get("usage")
-                return {
-                    "success": True,
-                    "content": content or "",
-                    "tool_calls": tool_calls,
-                    "usage": usage,
-                    "error": None,
-                }
-
-            except urllib.error.HTTPError as e:
-                body = e.read().decode("utf-8", errors="replace")
-                last_error = f"HTTP {e.code}: {body[:200]}"
-                if e.code in (401, 403):
-                    break  # 认证错误不重试
-                # 上下文超限：尝试截断旧消息再重试
-                if e.code == 400 and "exceed" in body.lower() and attempt < max_retries - 1:
-                    # 切掉最旧的一半非 system 消息
-                    non_system = [(i, m) for i, m in enumerate(messages) if m.get("role") != "system"]
-                    system_msgs = [m for m in messages if m.get("role") == "system"]
-                    if len(non_system) > 4:
-                        cut_count = len(non_system) // 3
-                        cut_indices = {i for i, _ in non_system[:cut_count]}
-                        messages = [m for idx, m in enumerate(messages) if idx not in cut_indices]
-                        last_error = f"HTTP 400 (ctx): 截断 {cut_count} 条旧消息后重试"
-                        time.sleep(0.5)
-                        continue
-                time.sleep(1 * (attempt + 1))
-
-            except Exception as e:
-                last_error = str(e)
-                time.sleep(1 * (attempt + 1))
-
-        # ── 降级重试：cloud 超时后自动切 local ──
-        if self.backend == "cloud" and LOCAL_BASE_URL is not None:
-            try:
-                local_client = LLMClient(
-                    backend="local",
-                    api_key="ignored",
-                    base_url=LOCAL_BASE_URL,
-                    model=LOCAL_MODEL,
-                    max_tokens=self.max_tokens,
-                    temperature=self.temperature,
-                    timeout=self.timeout,
-                )
-                logger.info(f"🌧️  Cloud API 重试 {max_retries} 次均失败，降级到本地模型 ({LOCAL_MODEL})...")
-
-                resp = local_client.chat(messages, tools=tools, max_retries=1)
-                if resp["success"]:
-                    logger.info("🌤️  本地模型降级成功")
-                    return resp
-                else:
-                    logger.warning(f"☁️  本地模型也失败: {resp.get('error', '')[:60]}")
-            except Exception as e:
-                logger.warning(f"☁️  本地模型降级异常: {e}")
+                    args = json.loads(fn.get("arguments", "{}"))
+                except json.JSONDecodeError:
+                    args = {"raw": fn.get("arguments", "")}
+                tool_calls.append({
+                    "id": tc.get("id", ""),
+                    "type": tc.get("type", "function"),
+                    "function": {"name": fn.get("name", ""), "arguments": args},
+                })
 
         return {
-            "success": False,
-            "content": "",
-            "tool_calls": None,
-            "usage": None,
-            "error": last_error,
+            "success": True, "content": content or "",
+            "tool_calls": tool_calls,
+            "usage": result.get("usage"),
+            "error": None,
         }
 
-    def chat_stream(
-        self,
-        messages: list[dict],
-        tools: Optional[list[dict]] = None,
-    ) -> dict:
-        """流式调用 LLM Chat API。
+    def chat_stream(self, messages: list[dict],
+                    tools: Optional[list[dict]] = None) -> dict:
+        """流式调用（只使用当前主后端）。"""
+        backend = self._select_backend()
+        if not backend:
+            return {"success": False, "content": "", "error": "无可用后端"}
 
-        返回与 chat() 相同的结构，但 content 为非流式完整文本。
-        """
-        last_error = None
+        payload = {
+            "model": backend.model,
+            "messages": _clean_surrogates(messages),
+            "max_tokens": self.max_tokens,
+            "temperature": self.temperature,
+            "stream": True,
+        }
+        if tools:
+            payload["tools"] = tools
+
+        url = f"{backend.base_url}/v1/chat/completions"
+        headers = {"Content-Type": "application/json"}
+        if backend.api_key:
+            headers["Authorization"] = f"Bearer {backend.api_key}"
+
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+
         content_chunks = []
         try:
-            payload = self._build_payload(messages, stream=True, tools=tools)
-            data = json.dumps(payload).encode("utf-8")
-            req = urllib.request.Request(
-                self._api_url(),
-                data=data,
-                headers=self._build_headers(),
-                method="POST",
-            )
-
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 buffer = ""
                 while True:
@@ -296,7 +372,6 @@ class LLMClient:
                     if not chunk:
                         break
                     buffer += chunk.decode("utf-8", errors="replace")
-                    # 解析 SSE 事件
                     while "\n" in buffer:
                         line, buffer = buffer.split("\n", 1)
                         line = line.strip()
@@ -305,80 +380,86 @@ class LLMClient:
                             if data_str == "[DONE]":
                                 break
                             try:
-                                data_json = json.loads(data_str)
-                                delta = (
-                                    data_json.get("choices", [{}])[0]
-                                    .get("delta", {})
-                                )
-                                content = delta.get("content", "")
-                                if content:
-                                    content_chunks.append(content)
+                                dj = json.loads(data_str)
+                                delta = dj.get("choices", [{}])[0].get("delta", {})
+                                c = delta.get("content", "")
+                                if c:
+                                    content_chunks.append(c)
                             except json.JSONDecodeError:
                                 pass
-
-            content = "".join(content_chunks)
-            return {
-                "success": True,
-                "content": content,
-                "tool_calls": None,
-                "usage": None,
-                "error": None,
-            }
-
-        except urllib.error.HTTPError as e:
-            body = e.read().decode("utf-8", errors="replace")
-            last_error = f"HTTP {e.code}: {body[:200]}"
         except Exception as e:
-            last_error = str(e)
+            return {"success": False, "content": "", "error": str(e)}
 
-        return {
-            "success": False,
-            "content": "",
-            "tool_calls": None,
-            "usage": None,
-            "error": last_error,
-        }
+        return {"success": True, "content": "".join(content_chunks), "tool_calls": None, "usage": None, "error": None}
 
-    def switch(self, config: dict) -> str:
+    # ── 运行时切换 ──────────────────────────────────────────────
+
+    def switch(self, config: dict | str) -> str:
         """运行时切换模型配置。
 
         Args:
-            config: 包含 'backend', 'model', 'base_url', 'max_tokens', 'temperature' 的字典。
-                    不提供的字段保持当前值。
-
-        Returns:
-            描述切换结果的字符串。
+            config: 字典（新配置）或字符串（providers 列表或后端名）
         """
-        old_model = self.model
-        old_backend = self.backend
+        if isinstance(config, str):
+            # 后端名或 providers 列表
+            if config in PROVIDER_CONFIGS:
+                config = {"provider": config}
+            else:
+                config = {"providers": [p.strip() for p in config.split(",") if p.strip()]}
 
-        # 应用新配置
-        if "backend" in config:
-            self.backend = config["backend"].strip().lower()
-        if "model" in config:
-            self.model = config["model"]
-        if "base_url" in config:
-            self.base_url = config["base_url"].rstrip("/")
-        if "max_tokens" in config:
-            self.max_tokens = int(config["max_tokens"])
-        if "temperature" in config:
-            self.temperature = float(config["temperature"])
-        if "api_key" in config:
-            self.api_key = config["api_key"]
+        if "providers" in config:
+            self.__init__(providers=config["providers"])
+            return f"后端列表已切换: {config['providers']}"
 
-        # 同步环境变量（供子进程和 Reviewer 使用）
-        os.environ["KUAFFU_BACKEND"] = self.backend
+        # 替换或更新主后端配置
+        if "provider" in config:
+            pid = config["provider"]
+            cfg = dict(PROVIDER_CONFIGS.get(pid, PROVIDER_CONFIGS["deepseek"]))
+            if "api_key" in config:
+                cfg["api_key"] = config["api_key"]
+            if "base_url" in config:
+                cfg["base_url"] = config["base_url"]
+            if "model" in config:
+                cfg["model"] = config["model"]
 
-        changed = []
-        if self.model != old_model:
-            changed.append(f"模型: {old_model} → {self.model}")
-        if self.backend != old_backend:
-            changed.append(f"后端: {old_backend} → {self.backend}")
+            # 插入到 backends 列表第一优先级
+            self.backends = [LLMBackend(pid, cfg)] + [
+                b for b in self.backends if b.provider_id != pid
+            ]
 
-        return f"模型已切换: {'; '.join(changed) if changed else '无变化'}" if changed else "配置无变化"
+            self.api_key = self.backends[0].api_key
+            self.base_url = self.backends[0].base_url
+            self.model = self.backends[0].model
+            self.backend = self.backends[0].provider_id
 
-    def count_tokens(self, text: str) -> int:
-        """粗略估算 token 数（中文约 1.5 tokens/字，英文约 1 token/4 字符）。"""
+            return f"已切换到 {pid}: {self.backends[0].model}"
+
+        return "配置无变化"
+
+    # ── 状态 ─────────────────────────────────────────────────────
+
+    def get_status(self) -> dict:
+        """返回所有后端状态。"""
+        status = []
+        for bk in self.backends:
+            cooldown = self._failures.get(bk.provider_id, 0)
+            status.append({
+                "provider": bk.provider_id,
+                "name": bk.name,
+                "model": bk.model,
+                "available": time.time() >= cooldown,
+                "cooldown_remaining": max(0, cooldown - time.time()),
+            })
+        return {
+            "active": self.backend,
+            "last_successful": self._last_successful,
+            "backends": status,
+        }
+
+    # ── Token 估算 ──────────────────────────────────────────────
+
+    @staticmethod
+    def count_tokens(text: str) -> int:
         chinese_chars = len(re.findall(r"[\u4e00-\u9fff]", text))
         other_chars = len(text) - chinese_chars
         return int(chinese_chars * 1.5 + other_chars / 4)

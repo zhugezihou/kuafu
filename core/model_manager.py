@@ -1,291 +1,186 @@
 """
-夸父 Model Manager — 运行时模型切换与持久化。
+夸父 Model Manager v2 — N 后端模型配置管理。
 
-职责：
-1. 预定义模型模板（cloud + local）
-2. 运行时切换后端/模型/URL/参数
-3. 持久化当前模型配置文件
-4. 从 env/环境变量初始化
+基于 LLMClient v2 的多后端架构：
+- providers 列表定义优先级
+- 每个 provider 独立配置（base_url / api_key / model）
+- 运行时 switch 热切换
+- 持久化到 memory/model_config.json
 """
+
+from __future__ import annotations
 
 import json
 import os
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any
 
-# 项目根目录
 ROOT_DIR = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT_DIR / "memory" / "model_config.json"
 
-# ── 预定义模型模板 ──────────────────────────────────────────
-MODEL_TEMPLATES = {
-    "cloud:deepseek": {
-        "name": "DeepSeek Chat (云端)",
-        "backend": "cloud",
-        "base_url": "https://api.deepseek.com",
+# 预定义 Provider 模板（与 llm.py 的 PROVIDER_CONFIGS 同步）
+PROVIDER_TEMPLATES = {
+    "deepseek": {
+        "name": "DeepSeek Chat",
+        "url": "https://api.deepseek.com",
         "model": "deepseek-chat",
-        "api_key_env": "KUAFFU_API_KEY",
-        "max_tokens": 4096,
-        "temperature": 0.7,
-        "description": "DeepSeek 官方 API，默认云端模型",
+        "key_env": ["KUAFFU_API_KEY", "DEEPSEEK_API_KEY"],
+        "desc": "DeepSeek 官方 API",
     },
-    "cloud:claude": {
-        "name": "Claude (云端)",
-        "backend": "cloud",
-        "base_url": "https://api.anthropic.com",
+    "openai": {
+        "name": "OpenAI",
+        "url": "https://api.openai.com/v1",
+        "model": "gpt-4o-mini",
+        "key_env": ["OPENAI_API_KEY"],
+        "desc": "OpenAI GPT 系列",
+    },
+    "claude": {
+        "name": "Anthropic Claude",
+        "url": "https://api.anthropic.com",
         "model": "claude-sonnet-4-20250514",
-        "api_key_env": "ANTHROPIC_API_KEY",
-        "max_tokens": 4096,
-        "temperature": 0.7,
-        "description": "Anthropic Claude Sonnet 4",
+        "key_env": ["ANTHROPIC_API_KEY"],
+        "desc": "Anthropic Claude Sonnet 4",
     },
-    "cloud:openai": {
-        "name": "OpenAI GPT-4o (云端)",
-        "backend": "cloud",
-        "base_url": "https://api.openai.com/v1",
-        "model": "gpt-4o",
-        "api_key_env": "OPENAI_API_KEY",
-        "max_tokens": 4096,
-        "temperature": 0.7,
-        "description": "OpenAI GPT-4o",
-    },
-    "local:qwen": {
-        "name": "Qwen3.5-9B (本地)",
-        "backend": "local",
-        "base_url": "http://172.21.224.1:8080",
+    "qwen": {
+        "name": "Qwen (本地)",
+        "url": "http://localhost:8080",
         "model": "Qwen3.5-9B-UD-Q4_K_XL.gguf",
-        "api_key_env": "",
-        "max_tokens": 4096,
-        "temperature": 0.7,
-        "description": "本地 llama-server (Qwen3.5-9B, port 8080)",
+        "key_env": [],
+        "desc": "本地 llama-server (Qwen3.5-9B)",
     },
-    "local:qwen_ctx8k": {
-        "name": "Qwen3.5-9B 8K (本地)",
-        "backend": "local",
-        "base_url": "http://172.21.224.1:8080",
-        "model": "Qwen3.5-9B-UD-Q4_K_XL.gguf",
-        "api_key_env": "",
-        "max_tokens": 8192,
-        "temperature": 0.7,
-        "description": "本地 llama-server (8K max_tokens)",
+    "openrouter": {
+        "name": "OpenRouter",
+        "url": "https://openrouter.ai/api/v1",
+        "model": "qwen/qwen3.5-9b",
+        "key_env": ["OPENROUTER_API_KEY"],
+        "desc": "OpenRouter 聚合 API",
     },
 }
 
-# 简写别名
 ALIASES = {
-    "deepseek": "cloud:deepseek",
-    "ds": "cloud:deepseek",
-    "claude": "cloud:claude",
-    "sonnet": "cloud:claude",
-    "openai": "cloud:openai",
-    "gpt4o": "cloud:openai",
-    "gpt-4o": "cloud:openai",
-    "qwen": "local:qwen",
-    "local": "local:qwen",
-    "qwen8k": "local:qwen_ctx8k",
+    "ds": "deepseek", "deepseek": "deepseek",
+    "openai": "openai", "gpt": "openai", "gpt4o": "openai",
+    "claude": "claude", "sonnet": "claude",
+    "qwen": "qwen", "local": "qwen",
+    "openrouter": "openrouter",
 }
+
+
+def _resolve_api_key(env_names: list[str]) -> str:
+    for name in env_names:
+        val = os.environ.get(name, "")
+        if val and val != "***":
+            return val
+    return ""
 
 
 class ModelManager:
-    """模型配置管理器。
-
-    管理当前使用的 LLM 模型配置，支持运行时切换和持久化。
-    """
+    """模型配置管理器 v2 — N 后端。"""
 
     def __init__(self, profile_id: str = "default"):
         self.profile_id = profile_id
-        self._config = self._default_config()
+        # providers 列表
+        providers_str = os.environ.get("KUAFFU_PROVIDERS", "deepseek")
+        self._providers = [p.strip() for p in providers_str.split(",") if p.strip()]
+        self._configs: dict[str, dict] = {}  # provider -> config
         self._load()
-
-    # ── 配置结构 ─────────────────────────────────────────────
+        # 填充缺失
+        for pid in self._providers:
+            if pid not in self._configs:
+                self._configs[pid] = self._default_config(pid)
 
     @staticmethod
-    def _default_config() -> dict:
-        """从环境变量推断默认配置。"""
-        backend = os.environ.get("KUAFFU_BACKEND", "cloud").strip().lower()
-        if backend == "local":
-            return {
-                "backend": "local",
-                "base_url": os.environ.get("KUAFFU_BASE_URL", "http://localhost:8080"),
-                "model": "Qwen3.5-9B-UD-Q4_K_XL.gguf",
-                "max_tokens": 4096,
-                "temperature": 0.7,
-                "profile": "local:qwen",
-            }
+    def _default_config(provider_id: str) -> dict:
+        tmpl = PROVIDER_TEMPLATES.get(provider_id, PROVIDER_TEMPLATES["deepseek"])
         return {
-            "backend": "cloud",
-            "base_url": os.environ.get("KUAFFU_BASE_URL", "https://api.deepseek.com"),
-            "model": os.environ.get("KUAFFU_MODEL", "deepseek-chat"),
-            "max_tokens": 4096,
-            "temperature": 0.7,
-            "profile": "cloud:deepseek",
+            "provider": provider_id,
+            "name": tmpl["name"],
+            "base_url": os.environ.get(f"{provider_id.upper()}_BASE_URL", tmpl["url"]),
+            "model": os.environ.get(f"{provider_id.upper()}_MODEL", tmpl["model"]),
+            "max_tokens": int(os.environ.get(f"{provider_id.upper()}_MAX_TOKENS", "4096")),
+            "api_key": _resolve_api_key(tmpl.get("key_env", [])),
+            "description": tmpl.get("desc", ""),
         }
 
     def _load(self):
-        """从持久化文件加载配置。"""
         if CONFIG_PATH.exists():
             try:
                 data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-                profile = data.get(self.profile_id)
-                if profile:
-                    self._config.update(profile)
-            except (json.JSONDecodeError, OSError):
+                profile = data.get(self.profile_id, {})
+                if "providers" in profile:
+                    self._providers = profile["providers"]
+                if "configs" in profile:
+                    self._configs = profile["configs"]
+            except Exception:
                 pass
 
     def _save(self):
-        """持久化当前配置到文件。"""
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         data = {}
         if CONFIG_PATH.exists():
             try:
                 data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
+            except Exception:
                 pass
-        data[self.profile_id] = dict(self._config)
-        CONFIG_PATH.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        data[self.profile_id] = {"providers": self._providers, "configs": self._configs}
+        CONFIG_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # ── 属性 ─────────────────────────────────────────────────
+    # ── 属性 ──────────────────────────────────────────────────────
 
     @property
-    def backend(self) -> str:
-        return self._config["backend"]
+    def providers(self) -> list[str]:
+        return list(self._providers)
 
     @property
-    def model(self) -> str:
-        return self._config["model"]
+    def active_provider(self) -> str:
+        return self._providers[0] if self._providers else "deepseek"
 
-    @property
-    def base_url(self) -> str:
-        return self._config["base_url"]
+    def get_active_config(self) -> dict:
+        pid = self.active_provider
+        return self._configs.get(pid, self._default_config(pid))
 
-    @property
-    def max_tokens(self) -> int:
-        return self._config["max_tokens"]
-
-    @property
-    def temperature(self) -> float:
-        return self._config["temperature"]
-
-    @property
-    def profile(self) -> str:
-        return self._config.get("profile", "")
-
-    def as_dict(self) -> dict:
-        return dict(self._config)
-
-    def apply(self, config: dict):
-        """直接应用外部配置到当前 ModelManager 并持久化。"""
-        for key in ("backend", "model", "base_url", "max_tokens", "temperature"):
-            if key in config:
-                self._config[key] = config[key]
-        self._config["profile"] = f"custom:{self._config['model']}"
-        self._save()
-
-    # ── 切换 ─────────────────────────────────────────────────
+    # ── 切换 ──────────────────────────────────────────────────────
 
     def switch(self, target: str) -> dict:
-        """切换模型配置。
+        """切换模型。
 
         Args:
-            target: 模板 ID（如 'cloud:deepseek'）、别名（如 'claude'）
-                     或直接 'local' / 'cloud' 快速切后端
+            target: provider ID / 别名 / --backend --model 参数
 
         Returns:
-            {"success": bool, "config": dict, "message": str}
+            {"success": bool, "message": str, "configs": dict}
         """
         lower = target.strip().lower()
 
-        # 1. 快速切换后端（保持当前模型）
-        if lower == "local":
-            return self._quick_switch_backend("local")
-        if lower == "cloud":
-            return self._quick_switch_backend("cloud")
-
-        # 2. 别名查找
+        # 别名解析
         if lower in ALIASES:
-            target = ALIASES[lower]
+            lower = ALIASES[lower]
 
-        # 3. 模板查找
-        if target in MODEL_TEMPLATES:
-            tmpl = MODEL_TEMPLATES[target]
-            self._apply_template(tmpl, profile_id=target)
+        # 按 provider 切换（设为第一优先级）
+        if lower in PROVIDER_TEMPLATES:
+            if lower in self._providers:
+                self._providers.remove(lower)
+            self._providers.insert(0, lower)
+            if lower not in self._configs:
+                self._configs[lower] = self._default_config(lower)
             self._save()
+
+            cfg = self._configs[lower]
             return {
                 "success": True,
-                "config": self.as_dict(),
-                "message": f"✅ 已切换到 **{tmpl['name']}** (`{target}`)",
+                "message": f"已切换到 {cfg.get('name', lower)} ({cfg.get('model', '')})",
+                "configs": self._configs,
             }
 
-        # 4. 自定义模型参数
-        #    格式: "--backend local --model xxx --base-url http://..."
+        # --backend/--model 自定义参数
         if lower.startswith("--"):
-            return self._parse_custom_args(target)
+            return self._apply_custom(target)
 
-        # 5. 尝试作为自定义模型名（保持当前后端）
-        self._config["model"] = target
-        self._config["profile"] = f"custom:{target}"
-        self._save()
-        return {
-            "success": True,
-            "config": self.as_dict(),
-            "message": f"✅ 模型已切换为 `{target}`（后端: {self.backend}）",
-        }
+        return {"success": False, "message": f"未知 provider: {target}", "configs": self._configs}
 
-    def _quick_switch_backend(self, backend: str) -> dict:
-        """快速切换后端。"""
-        old_backend = self._config["backend"]
-        if old_backend == backend:
-            return {
-                "success": True,
-                "config": self.as_dict(),
-                "message": f"ℹ️ 已经是 {backend} 后端，无需切换",
-            }
-
-        if backend == "local":
-            self._config["backend"] = "local"
-            self._config["base_url"] = "http://172.21.224.1:8080"
-            self._config["profile"] = "local:qwen"
-            self._config["model"] = "Qwen3.5-9B-UD-Q4_K_XL.gguf"
-        else:
-            self._config["backend"] = "cloud"
-            self._config["base_url"] = os.environ.get(
-                "KUAFFU_BASE_URL", "https://api.deepseek.com"
-            )
-            self._config["profile"] = "cloud:deepseek"
-            self._config["model"] = "deepseek-chat"
-
-        self._save()
-        return {
-            "success": True,
-            "config": self.as_dict(),
-            "message": f"✅ 已切换到 **{backend} 后端**（模型: {self.model})",
-        }
-
-    def _apply_template(self, tmpl: dict, profile_id: str):
-        """应用预定义模板配置。"""
-        self._config["backend"] = tmpl["backend"]
-        self._config["base_url"] = tmpl["base_url"]
-        self._config["model"] = tmpl["model"]
-        self._config["max_tokens"] = tmpl["max_tokens"]
-        self._config["temperature"] = tmpl["temperature"]
-        self._config["profile"] = profile_id
-
-        # 尝试从环境变量读取 API key（如果有）
-        if tmpl.get("api_key_env"):
-            env_key = os.environ.get(tmpl["api_key_env"])
-            if env_key:
-                self._config["api_key"] = env_key
-
-    def _parse_custom_args(self, args: str) -> dict:
-        """解析自定义参数格式：
-        --backend local --model xxx --base-url http://... --max-tokens 8192
-        """
+    def _apply_custom(self, args: str) -> dict:
         import shlex
-
         try:
             tokens = shlex.split(args)
         except ValueError:
@@ -301,66 +196,89 @@ class ModelManager:
                     params[key] = tokens[i + 1]
                     i += 2
                 else:
-                    params[key] = True
                     i += 1
             else:
                 i += 1
 
-        allowed = {"backend", "model", "base_url", "base_url", "max_tokens", "temperature"}
-        applied = []
-        for key, val in params.items():
-            if key in allowed and val is not True:
-                if key == "max_tokens":
-                    self._config[key] = int(val)
-                elif key == "temperature":
-                    self._config[key] = float(val)
-                else:
-                    self._config[key] = val
-                applied.append(f"{key}={val}")
+        if "provider" in params:
+            pid = params["provider"]
+            cfg = self._configs.get(pid, self._default_config(pid))
+            for k, v in params.items():
+                if k in ("base_url", "model", "api_key", "max_tokens", "temperature"):
+                    cfg[k] = v
+            self._configs[pid] = cfg
+            if pid in self._providers:
+                self._providers.remove(pid)
+            self._providers.insert(0, pid)
+            self._save()
+            return {"success": True, "message": f"已配置 {pid}", "configs": self._configs}
 
-        self._config["profile"] = "custom"
+        pid = self._providers[0]
+        cfg = self._configs.get(pid, self._default_config(pid))
+        for k in ("base_url", "model", "api_key", "max_tokens", "temperature"):
+            if k in params:
+                cfg[k] = params[k]
+        self._configs[pid] = cfg
         self._save()
+        return {"success": True, "message": f"已更新 {pid}", "configs": self._configs}
 
-        if applied:
-            return {
-                "success": True,
-                "config": self.as_dict(),
-                "message": f"✅ 已应用自定义参数: {', '.join(applied)}",
-            }
-        return {
-            "success": False,
-            "config": self.as_dict(),
-            "message": "❌ 未识别到有效参数。格式: --backend local --model xxx --base-url http://...",
-        }
+    # ── Provider 管理 ─────────────────────────────────────────────
 
-    # ── 列表 ─────────────────────────────────────────────────
+    def add_provider(self, provider_id: str, position: int = -1) -> dict:
+        """添加一个 provider 到列表。"""
+        if provider_id not in PROVIDER_TEMPLATES:
+            return {"success": False, "message": f"未知 provider: {provider_id}"}
+        if provider_id not in self._configs:
+            self._configs[provider_id] = self._default_config(provider_id)
+        if provider_id not in self._providers:
+            if position >= 0 and position < len(self._providers):
+                self._providers.insert(position, provider_id)
+            else:
+                self._providers.append(provider_id)
+        self._save()
+        return {"success": True, "message": f"已添加 {provider_id}"}
 
-    def list_templates(self) -> list[dict]:
-        """列出所有可用模板。"""
+    def remove_provider(self, provider_id: str) -> dict:
+        if provider_id in self._providers:
+            self._providers.remove(provider_id)
+            self._save()
+            return {"success": True, "message": f"已移除 {provider_id}"}
+        return {"success": False, "message": f"未找到 {provider_id}"}
+
+    def list_providers(self) -> list[dict]:
         result = []
-        for tid, tmpl in MODEL_TEMPLATES.items():
+        for pid in self._providers:
+            cfg = self._configs.get(pid, self._default_config(pid))
             result.append({
-                "id": tid,
-                "name": tmpl["name"],
-                "description": tmpl.get("description", ""),
-                "backend": tmpl["backend"],
-                "model": tmpl["model"],
-                "active": tid == self._config.get("profile"),
+                "id": pid,
+                "name": cfg.get("name", pid),
+                "model": cfg.get("model", ""),
+                "active": pid == self.active_provider,
             })
         return result
 
-    def list_aliases(self) -> dict:
-        """列出所有简写别名。"""
-        return dict(ALIASES)
+    def list_templates(self) -> list[dict]:
+        result = []
+        for tid, tmpl in PROVIDER_TEMPLATES.items():
+            active = tid in self._providers
+            result.append({
+                "id": tid,
+                "name": tmpl["name"],
+                "model": tmpl["model"],
+                "active": active,
+            })
+        return result
 
-    # ── 重置 ─────────────────────────────────────────────────
-
-    def reset(self):
-        """重置为默认配置（从环境变量推断）。"""
-        self._config = self._default_config()
-        self._save()
+    def as_dict(self) -> dict:
         return {
-            "success": True,
-            "config": self.as_dict(),
-            "message": "✅ 已重置为默认模型配置",
+            "providers": self._providers,
+            "active": self.active_provider,
+            "configs": self._configs,
         }
+
+    def apply(self, config: dict):
+        if "providers" in config:
+            self._providers = config["providers"]
+        if "configs" in config:
+            self._configs.update(config["configs"])
+        self._save()

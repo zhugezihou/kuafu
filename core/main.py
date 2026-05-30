@@ -28,7 +28,7 @@ from core.sandbox import is_path_allowed_for_write, validate_command
 from core.memory_api import MemoryAPI
 from core.evolution import EvolutionEngine, EvolutionEvent
 from core.llm import LLMClient
-from core.model_manager import ModelManager, ALIASES, MODEL_TEMPLATES
+from core.model_manager import ModelManager, ALIASES as MODEL_ALIASES
 from core.agent_loop import AgentLoop, detect_task_type
 
 # 飞书通知（仅发送，不启用轮询）
@@ -73,16 +73,24 @@ class KuafuAgent:
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.name = "夸父"
         self.version = "0.4.0"
-        # Hindsight-Lite 记忆系统（v3）：四网络 + 置信度演化
-        from core.memory import MemoryManager as HindsightMemory
-        self.memory = HindsightMemory(llm_chat_fn=llm_client.chat if llm_client else None)
-        # 兼容：如果后续创建 llm_client 后更新 memory 的 llm_chat_fn
-        self._memory_needs_llm = llm_client is None
-        self.llm = llm_client or LLMClient()
-        self.evolution = EvolutionEngine(memory=self.memory, llm=self.llm)
+
+        # ModelManager 先初始化（确保 providers 列表就绪）
         self.model_manager = ModelManager()
-        # 同步 ModelManager 与 LLMClient：以 LLMClient 为准
-        self._sync_model_manager_with_llm()
+
+        # LLMClient v2：传入 providers 列表
+        providers = self.model_manager.providers
+        if llm_client:
+            self.llm = llm_client
+        else:
+            self.llm = LLMClient(providers=providers)
+
+        # Hindsight-Lite 记忆系统
+        from core.memory import MemoryManager as HindsightMemory
+        self.memory = HindsightMemory(llm_chat_fn=self.llm.chat)
+        self._memory_needs_llm = False
+
+        # 进化引擎
+        self.evolution = EvolutionEngine(memory=self.memory, llm=self.llm)
         self._task_count = 0
         self._conversation = None
         self._conversation_messages = []
@@ -618,14 +626,10 @@ class KuafuAgent:
     def _sync_model_manager_with_llm(self):
         """以 LLMClient 实际状态为准，同步 ModelManager 配置。"""
         mm = self.model_manager.as_dict()
-        if self.llm.backend != mm.get("backend") or self.llm.model != mm.get("model"):
-            self.model_manager.apply({
-                "backend": self.llm.backend,
-                "model": self.llm.model,
-                "base_url": self.llm.base_url,
-                "max_tokens": getattr(self.llm, "max_tokens", 4096),
-                "temperature": getattr(self.llm, "temperature", 0.7),
-            })
+        active = mm.get("active", "")
+        current_provider = getattr(self.llm, "backend", "deepseek")
+        if current_provider != active:
+            self.model_manager.switch(current_provider)
 
     def _inject_approval_notifier(self, loop: AgentLoop) -> None:
         """注入审批通知回调到 AgentLoop。
@@ -651,30 +655,20 @@ class KuafuAgent:
     # ---- 模型切换 ----
 
     def switch_model(self, target: str) -> str:
-        """运行时切换模型。
-
-        支持：
-        - 模板 ID: 'cloud:deepseek', 'local:qwen', 'cloud:claude'
-        - 别名: 'deepseek', 'claude', 'qwen', 'local', 'cloud'
-        - 快速后端切换: 'local', 'cloud'
-        - 自定义参数: '--backend local --model xxx'
-        - 自定义模型名: 'gpt-4o-mini'
-
-        Returns:
-            人类可读的切换结果。
-        """
+        """运行时切换模型。"""
         result = self.model_manager.switch(target)
         if result["success"]:
-            # 应用到当前 LLMClient
-            self.llm.switch(result["config"])
-            msg = result["message"]
+            # 应用到当前 LLMClient（传入 provider ID）
+            provider = self.model_manager.active_provider
+            self.llm.switch(provider)
+            msg = result.get("message", f"已切换到 {provider}")
             self.memory.remember(
                 key=f"model_switch:{int(time.time())}",
                 content=msg,
-                tags=["model_switch", self.llm.backend, self.llm.model],
+                tags=["model_switch", provider, self.llm.model],
             )
         else:
-            msg = result["message"]
+            msg = result.get("message", "切换失败")
         return msg
 
     # ---- 状态查询 ----
@@ -760,9 +754,10 @@ class KuafuAgent:
         m = re.match(r"^用\s*(.+)$", text, re.IGNORECASE)
         if m:
             target = m.group(1).strip()
-            if target in ALIASES or target in MODEL_TEMPLATES:
+            from core.model_manager import ALIASES as _ALIASES, PROVIDER_TEMPLATES as _TMPLS
+            if target in _ALIASES or target in _TMPLS:
                 return self.switch_model(target)
-            for alias in ALIASES:
+            for alias in _ALIASES:
                 if target.startswith(alias):
                     return self.switch_model(alias)
         return None
@@ -770,17 +765,12 @@ class KuafuAgent:
     def _format_model_list(self) -> str:
         """格式化可用模型列表。"""
         templates = self.model_manager.list_templates()
-        aliases = self.model_manager.list_aliases()
-        lines = ["**可用模型模板：**"]
+        lines = ["**可用模型：**"]
         for t in templates:
-            marker = " ✅" if t["active"] else ""
-            lines.append(f"  `{t['id']}` — {t['name']}{marker}")
+            marker = " ✅" if t.get("active") else ""
+            lines.append(f"  `{t['id']}` — {t['name']} ({t.get('model','?')}){marker}")
         lines.append("")
-        lines.append("**简写别名：**")
-        for alias, target in sorted(aliases.items()):
-            lines.append(f"  `{alias}` → `{target}`")
-        lines.append("")
-        lines.append("**使用：** `切换模型 <别名/模板ID>`")
+        lines.append("**使用：** `切换模型 <provider ID>`")
         return "\n".join(lines)
 
     # ── 自主学习模式 ──────────────────────────────────────────────────
