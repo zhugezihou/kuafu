@@ -1028,18 +1028,112 @@ def main():
 
     # 交互模式（多轮对话）— 使用 readline 支持行编辑
     import readline
-    print("夸父交互模式 (输入 'exit' 退出，'new' 重置对话)")
+
+    SLASH_HELP = """可用命令:
+  /new, /reset  重置对话
+  /retry        重新执行上一条指令
+  /undo         撤销上一条回复
+  /compress     手动压缩上下文
+  /status       查看状态
+  /help         显示帮助
+  /model        显示当前模型
+  /exit, /quit  退出
+"""
+    print("夸父交互模式 (输入 /help 查看命令)")
     while True:
         try:
-            task = input("\n> ").strip()
-            if task.lower() in ("exit", "quit", "q"):
-                break
-            if task.lower() in ("new", "reset", "r"):
-                agent.reset_conversation()
-                print("🔄 对话已重置")
-                continue
+            raw_input = input("\n> ").strip()
+            task = raw_input
+            is_slash = task.startswith("/")
+
+            # ── Slash 命令 ──
+            if is_slash:
+                cmd = task[1:].lower().split()[0] if len(task) > 1 else ""
+                args_part = task[len(task.split()[0]):].strip() if len(task.split()) > 1 else ""
+
+                if cmd in ("exit", "quit", "q"):
+                    break
+
+                elif cmd in ("new", "reset", "r"):
+                    agent.reset_conversation()
+                    print("对话已重置")
+                    continue
+
+                elif cmd == "retry":
+                    if hasattr(agent, "_conversation_messages") and agent._conversation_messages:
+                        last_user_msg = None
+                        for m in reversed(agent._conversation_messages):
+                            if m["role"] == "user":
+                                last_user_msg = m["content"]
+                                break
+                        if last_user_msg:
+                            print(f"重试: {last_user_msg[:60]}...")
+                            # 移除最后一条 user + assistant
+                            if len(agent._conversation_messages) >= 2:
+                                agent._conversation_messages = agent._conversation_messages[:-2]
+                            # 重新执行
+                            agent._conversation = None
+                            result = agent.converse(last_user_msg)
+                            print(f"\n✅ {result.get('result', '(无结果)')}")
+                        else:
+                            print("没有可重试的指令")
+                    else:
+                        print("没有可重试的指令")
+                    continue
+
+                elif cmd == "undo":
+                    if hasattr(agent, "_conversation_messages") and len(agent._conversation_messages) >= 2:
+                        # 移除最后一条 user + assistant
+                        removed = agent._conversation_messages[-2:]
+                        agent._conversation_messages = agent._conversation_messages[:-2]
+                        if not agent._conversation_messages:
+                            agent._conversation = None
+                        print(f"已撤销 {len(removed)} 条消息")
+                    else:
+                        print("没有可撤销的内容")
+                    continue
+
+                elif cmd == "compress":
+                    if hasattr(agent, "_loop") and agent._loop:
+                        sid = getattr(agent._loop, "current_session_id", None)
+                        if sid:
+                            from core.session_store import SessionStore
+                            store = SessionStore()
+                            store.archive_session(sid)
+                            print(f"会话 {sid} 已归档")
+                        else:
+                            print("没有活跃会话")
+                    else:
+                        print("没有活跃会话")
+                    continue
+
+                elif cmd == "status":
+                    print(f"夸父 v{agent.version}")
+                    print(f"  LLM: {agent.llm.model}")
+                    print(f"  后端: {getattr(agent.llm, 'backend', '?')}")
+                    print(f"  任务计数: {agent._task_count}")
+                    conv_count = len(getattr(agent, "_conversation_messages", []))
+                    print(f"  对话轮次: {conv_count // 2}")
+                    evo = agent.evolution.get_evolution_stats() if hasattr(agent.evolution, "get_evolution_stats") else {}
+                    print(f"  进化次数: {evo.get('total_evolutions', 0)}")
+                    continue
+
+                elif cmd == "help":
+                    print(SLASH_HELP)
+                    continue
+
+                elif cmd == "model":
+                    print(f"当前模型: {agent.llm.model} ({getattr(agent.llm, 'backend', '?')})")
+                    continue
+
+                else:
+                    print(f"未知命令: {task}")
+                    print("输入 /help 查看可用命令")
+                    continue
+
             if not task:
                 continue
+
             result = agent.converse(task)
             status_icon = "✅" if result["success"] else "❌"
             if result["success"]:
