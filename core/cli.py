@@ -246,6 +246,49 @@ def run_model(args: argparse.Namespace, agent: Any) -> int:
         return 0
 
 
+def run_gateway(args: argparse.Namespace, agent: Any) -> int:
+    """kuafu gateway — Gateway 守护进程管理。"""
+    from core.gateway import GatewayServer, install_service, uninstall_service
+
+    if args.cmd == "start":
+        gw = GatewayServer(agent, host=args.host, port=args.port, api_key=args.key)
+        if gw.start():
+            print(f"Gateway 运行中: http://{args.host}:{args.port}")
+            print("按 Ctrl+C 停止")
+            try:
+                while gw.is_running():
+                    import time
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                print()
+            gw.stop()
+            return 0
+        else:
+            print(f"Gateway 启动失败")
+            return 1
+
+    elif args.cmd == "install":
+        install_service()
+        return 0
+
+    elif args.cmd == "uninstall":
+        uninstall_service()
+        return 0
+
+    elif args.cmd == "status":
+        import subprocess
+        result = subprocess.run(
+            ["systemctl", "--user", "status", "kuafu-gateway"],
+            capture_output=True, text=True,
+        )
+        print(result.stdout)
+        if result.returncode != 0:
+            print("Gateway 未运行或未安装")
+        return result.returncode
+
+    return 1
+
+
 # ── 子命令配置 ──────────────────────────────────────────────
 
 SUBCOMMANDS = {
@@ -317,6 +360,23 @@ SUBCOMMANDS = {
                 "help": "切换后端",
                 "args": [("backend", {"choices": ["cloud", "local"], "help": "目标后端"})],
             },
+        },
+    },
+    "gateway": {
+        "help": "Gateway 守护进程管理",
+        "handler": run_gateway,
+        "subparsers": {
+            "start": {
+                "help": "启动 Gateway（前台）",
+                "optional": [
+                    ("--port", {"type": int, "default": 8765}),
+                    ("--host", {"default": "127.0.0.1"}),
+                    ("--key", {"default": "", "help": "API Key"}),
+                ],
+            },
+            "install": {"help": "安装 systemd user service"},
+            "uninstall": {"help": "卸载 systemd user service"},
+            "status": {"help": "查看 Gateway 状态（systemctl）"},
         },
     },
 }
