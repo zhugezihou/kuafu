@@ -73,7 +73,11 @@ class KuafuAgent:
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.name = "夸父"
         self.version = "0.4.0"
-        self.memory = MemoryAPI()
+        # Hindsight-Lite 记忆系统（v3）：四网络 + 置信度演化
+        from core.memory import MemoryManager as HindsightMemory
+        self.memory = HindsightMemory(llm_chat_fn=llm_client.chat if llm_client else None)
+        # 兼容：如果后续创建 llm_client 后更新 memory 的 llm_chat_fn
+        self._memory_needs_llm = llm_client is None
         self.llm = llm_client or LLMClient()
         self.evolution = EvolutionEngine(memory=self.memory, llm=self.llm)
         self.model_manager = ModelManager()
@@ -681,7 +685,7 @@ class KuafuAgent:
             "version": self.version,
             "task_count": self._task_count,
             "llm_model": self.llm.model,
-            "memory": self.memory.get_status(),
+            "memory": self.memory.get_stats() if hasattr(self.memory, 'get_stats') else {},
             "evolution": self.evolution.get_evolution_stats(),
         }
         # P2 状态
