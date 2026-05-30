@@ -44,7 +44,7 @@ if [ $# -eq 0 ]; then
     exec python -m core.main
 else
     case "$1" in
-        cron|sessions|status|model|gateway|setup)
+        cron|sessions|status|model|gateway|setup|skill)
             # 通过 cli.py 处理子命令
             exec python -c "
 import sys, core.cli

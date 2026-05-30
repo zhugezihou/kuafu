@@ -246,6 +246,82 @@ def run_model(args: argparse.Namespace, agent: Any) -> int:
         return 0
 
 
+def run_skill(args: argparse.Namespace, agent: Any = None) -> int:
+    """kuafu skill — 技能管理。"""
+    from core.skill_manager import SkillManager
+    mgr = SkillManager()
+
+    if args.cmd == "list":
+        local = mgr.list_local()
+        installed = mgr.list_installed_market()
+        print(f"本地技能 ({len(local)}):")
+        for s in local:
+            print(f"  {s.name:30s} {s.description[:50]}")
+        if installed:
+            print(f"\n市场安装 ({len(installed)}):")
+            for s in installed:
+                print(f"  {s.name:30s} {s.description[:50]}")
+        return 0
+
+    elif args.cmd == "search":
+        query = args.query or ""
+        if not query:
+            # 没关键词时列出市场全部
+            market = mgr.fetch_market_index()
+            print(f"技能市场 ({len(market)} 个可用):")
+            for s in market[:20]:
+                print(f"  {s.name:30s} [{s.category or '?'}] {s.description[:40]}")
+            return 0
+
+        local = mgr.search_local(query)
+        market = mgr.search_market(query)
+        print(f"本地匹配 ({len(local)}):")
+        for s in local:
+            print(f"  {s.name}")
+        print(f"\n市场匹配 ({len(market)}):")
+        for s in market:
+            print(f"  {s.name:30s} [{s.author or '?'}] {s.description[:50]}")
+        return 0
+
+    elif args.cmd == "install":
+        name = args.name or ""
+        if not name:
+            print("用法: kuafu skill install <skill_name|url>")
+            return 1
+        result = mgr.install(name)
+        if result["success"]:
+            print(f"✅ 已安装: {result['name']}")
+            fp = result.get("file", "")
+            if fp:
+                print(f"   路径: {fp}")
+        else:
+            print(f"❌ 安装失败: {result.get('error', '未知错误')}")
+        return 0
+
+    elif args.cmd == "remove":
+        name = args.name or ""
+        if not name:
+            print("用法: kuafu skill remove <skill_name>")
+            return 1
+        if mgr.remove_local(name) or mgr.uninstall(name):
+            print(f"已删除: {name}")
+        else:
+            print(f"未找到: {name}")
+        return 0
+
+    elif args.cmd == "stats":
+        stats = mgr.get_stats()
+        print("技能统计:")
+        print(f"  本地: {stats['local']} 个")
+        print(f"  市场安装: {stats['installed_market']} 个")
+        print(f"  市场可用: {stats['available_market']} 个")
+        return 0
+
+    else:
+        print("可用: kuafu skill list / search / install / remove / stats")
+        return 0
+
+
 def run_gateway(args: argparse.Namespace, agent: Any) -> int:
     """kuafu gateway — Gateway 守护进程管理。"""
     from core.gateway import GatewayServer, install_service, uninstall_service
@@ -397,6 +473,26 @@ SUBCOMMANDS = {
     "setup": {
         "help": "交互式配置向导（飞书/微信/LLM）",
         "handler": run_setup,
+    },
+    "skill": {
+        "help": "技能管理（本地/市场/安装/卸载）",
+        "handler": run_skill,
+        "subparsers": {
+            "list": {"help": "列出所有技能"},
+            "search": {
+                "help": "搜索技能市场",
+                "optional": [("query", {"nargs": "?", "help": "搜索关键词"})],
+            },
+            "install": {
+                "help": "安装远程技能",
+                "args": [("name", {"help": "技能名称或 SKILL.md URL"})],
+            },
+            "remove": {
+                "help": "删除技能",
+                "args": [("name", {"help": "技能名称"})],
+            },
+            "stats": {"help": "技能统计"},
+        },
     },
 }
 
