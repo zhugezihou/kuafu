@@ -4,15 +4,20 @@
 夸父 (Kuafu) — 交互式配置向导
 
 首次安装后运行，引导用户配置：
-1. 选择 LLM 后端（云端 DeepSeek / 本地 Qwen）
+1. 选择 LLM 后端
 2. 输入 API Key
-3. 测试连接
-4. 保存 .env
-5. 显示下一步指引
+3. 配置飞书 WebSocket 直连通道（可选）
+4. 配置微信 Wechaty 通道（可选）
+5. 测试连接
+6. 保存 .env
+7. 显示下一步指引
 
 用法:
     python setup_wizard.py
 """
+
+from __future__ import annotations
+
 import os
 import sys
 import json
@@ -32,11 +37,9 @@ try:
     RICH_AVAILABLE = True
 except ImportError:
     RICH_AVAILABLE = False
-    # 回退到纯文本
 
 
 def c(text, color=None):
-    """简易颜色回退"""
     if RICH_AVAILABLE:
         return text
     if color == "green":
@@ -53,7 +56,6 @@ def c(text, color=None):
 
 
 def print_step(num, text):
-    """打印步骤标题"""
     msg = f"\n{'='*50}\n[{num}] {text}\n{'='*50}"
     if RICH_AVAILABLE:
         console.rule(f"[bold cyan]{num}. {text}")
@@ -109,11 +111,9 @@ def show_banner():
         print(c(banner, "cyan"))
 
 
-# ─── 配置向导 ────────────────────────────────────────────────────────────────
+# ─── LLM 配置 ────────────────────────────────────────────────────────────────
 def ask_backend() -> str:
-    """选择 LLM 后端"""
     print_step(1, "选择 LLM 后端")
-
     print_info("夸父支持两种运行模式：")
     print_info("  cloud  — 云端模式（DeepSeek API），需要 API Key，免 GPU")
     print_info("  local  — 本地模式（Qwen3.5-9B），需要 NVIDIA GPU 8GB+")
@@ -136,9 +136,7 @@ def ask_backend() -> str:
 
 
 def ask_api_key(backend: str) -> str:
-    """获取 API Key"""
     print_step(2, "配置 API Key")
-
     if backend == "local":
         print_info("本地模式下 API Key 不需要（llama-server 不验证 token）")
         return ""
@@ -150,7 +148,7 @@ def ask_api_key(backend: str) -> str:
     if DOT_ENV.exists():
         with open(DOT_ENV, encoding="utf-8") as f:
             for line in f:
-                if line.startswith("KUAFFU_API_KEY="):
+                if line.startswith("DEEPSEEK_API_KEY=") or line.startswith("KUAFFU_API_KEY="):
                     existing = line.split("=", 1)[1].strip()
                     break
 
@@ -162,7 +160,6 @@ def ask_api_key(backend: str) -> str:
             print(f"\n  检测到已有 Key: {masked}")
             resp = input("  继续使用? (Y/n): ").strip().lower()
             use_existing = resp != "n"
-
         if use_existing:
             return existing
 
@@ -175,14 +172,117 @@ def ask_api_key(backend: str) -> str:
     return api_key
 
 
+# ─── 飞书通道配置 ────────────────────────────────────────────────────────────
+def ask_feishu() -> dict:
+    """配置飞书 WebSocket 直连通道（可选）。"""
+    print_step(3, "飞书 WebSocket 直连通道（可选）")
+    print_info("夸父支持通过飞书 Bot 收发消息")
+    print_info("需要在飞书开放平台创建应用: https://open.feishu.cn/app")
+    print_info("配置后 Gateway 启动时会自动建立 WebSocket 连接，无需轮询")
+    print()
 
+    if RICH_AVAILABLE:
+        enable = Confirm.ask("  是否配置飞书通道?", default=False)
+    else:
+        resp = input("  是否配置飞书通道? (y/N): ").strip().lower()
+        enable = resp == "y"
+
+    if not enable:
+        print_info("跳过飞书通道，后续可在 .env 中手动配置")
+        return {}
+
+    config = {}
+
+    # App ID
+    existing_id = ""
+    if DOT_ENV.exists():
+        with open(DOT_ENV) as f:
+            for line in f:
+                if line.startswith("FEISHU_APP_ID="):
+                    existing_id = line.split("=", 1)[1].strip()
+                    break
+    if existing_id:
+        print_info(f"检测到已有 App ID: {existing_id[:15]}...")
+        use = input("  使用已有? (Y/n): ").strip().lower() != "n"
+        if use:
+            config["FEISHU_APP_ID"] = existing_id
+        else:
+            config["FEISHU_APP_ID"] = input("  飞书 App ID (cli_xxx): ").strip()
+    else:
+        config["FEISHU_APP_ID"] = input("  飞书 App ID (cli_xxx): ").strip()
+
+    # App Secret
+    existing_secret = ""
+    if DOT_ENV.exists():
+        with open(DOT_ENV) as f:
+            for line in f:
+                if line.startswith("FEISHU_APP_SECRET="):
+                    existing_secret = line.split("=", 1)[1].strip()
+                    break
+    if existing_secret and len(existing_secret) > 3:
+        if input("  检测到已有 Secret，使用? (Y/n): ").strip().lower() != "n":
+            config["FEISHU_APP_SECRET"] = existing_secret
+        else:
+            config["FEISHU_APP_SECRET"] = input("  飞书 App Secret: ").strip()
+    else:
+        config["FEISHU_APP_SECRET"] = input("  飞书 App Secret: ").strip()
+
+    # 注意：WS 模式不需要 chat_id，但发送消息时需要指定目标
+    chat_id = input("  默认发送群 Chat ID (oc_xxx，可选，回车跳过): ").strip()
+    if chat_id:
+        config["FEISHU_CHAT_ID"] = chat_id
+
+    print_ok("飞书通道配置完成")
+    return config
+
+
+# ─── 微信 Wechaty 通道配置 ──────────────────────────────────────────────────
+def ask_wechat() -> dict:
+    """配置微信 Wechaty 通道（可选）。"""
+    print_step(4, "个人微信 Wechaty 通道（可选）")
+    print_info("夸父支持通过 Wechaty 连接个人微信")
+    print_info("需要 Wechaty Puppet Service Token")
+    print_info("免费申请: https://wechaty.js.org/docs/puppet-services/")
+    print_info("配置后 Gateway 启动时会自动扫码登录微信")
+    print()
+
+    if RICH_AVAILABLE:
+        enable = Confirm.ask("  是否配置微信通道?", default=False)
+    else:
+        resp = input("  是否配置微信通道? (y/N): ").strip().lower()
+        enable = resp == "y"
+
+    if not enable:
+        print_info("跳过微信通道，后续可在 .env 中手动配置")
+        return {}
+
+    config = {}
+
+    existing_token = ""
+    if DOT_ENV.exists():
+        with open(DOT_ENV) as f:
+            for line in f:
+                if line.startswith("WECHAT_PUPPET_TOKEN="):
+                    existing_token = line.split("=", 1)[1].strip()
+                    break
+    if existing_token and len(existing_token) > 3:
+        masked = existing_token[:8] + "****"
+        if input(f"  检测到已有 Token ({masked})，使用? (Y/n): ").strip().lower() != "n":
+            config["WECHAT_PUPPET_TOKEN"] = existing_token
+        else:
+            config["WECHAT_PUPPET_TOKEN"] = input("  Wechaty Puppet Token: ").strip()
+    else:
+        config["WECHAT_PUPPET_TOKEN"] = input("  Wechaty Puppet Token: ").strip()
+
+    print_ok("微信通道配置完成")
+    return config
+
+
+# ─── 测试连接 ────────────────────────────────────────────────────────────────
 def test_connection(backend: str, api_key: str) -> bool:
-    """测试 LLM 连接"""
-    print_step(4, "测试连接")
-
+    print_step(5, "测试 LLM 连接")
     try:
         from core.llm import LLMClient
-
         if backend == "local":
             client = LLMClient(backend="local", timeout=300)
         else:
@@ -197,30 +297,27 @@ def test_connection(backend: str, api_key: str) -> bool:
             {"role": "user", "content": "回复 OK 即可"},
         ])
 
-        if result and result.strip():
-            print_ok(f"连接成功！回复: {result.strip()[:60]}")
+        if result and result.get("content", "").strip():
+            print_ok(f"连接成功！回复: {result['content'].strip()[:60]}")
             return True
         else:
             print_err("连接返回空响应")
             return False
-
     except Exception as e:
         print_err(f"连接失败: {str(e)}")
         return False
 
 
-def save_config(backend: str, api_key: str):
-    """保存 .env 配置"""
-    print_step(5, "保存配置")
+# ─── 保存配置 ────────────────────────────────────────────────────────────────
+def save_config(backend: str, api_key: str,
+                feishu: dict, wechat: dict):
+    print_step(6, "保存配置")
 
     config_lines = []
-
-    # 读取已有 .env 保留注释
     if DOT_ENV.exists():
         with open(DOT_ENV, encoding="utf-8") as f:
             config_lines = f.read().splitlines()
 
-    # 替换或新增配置项
     def set_var(key, value):
         nonlocal config_lines
         found = False
@@ -232,13 +329,22 @@ def save_config(backend: str, api_key: str):
         if not found:
             config_lines.append(f"{key}={value}")
 
-    # 核心配置
+    # LLM 配置
     if api_key:
+        set_var("DEEPSEEK_API_KEY", api_key)
         set_var("KUAFFU_API_KEY", api_key)
     set_var("KUAFFU_BACKEND", backend)
-
     if backend == "cloud":
         set_var("KUAFFU_BASE_URL", "https://api.deepseek.com")
+        set_var("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+
+    # 飞书通道配置
+    for k, v in feishu.items():
+        set_var(k, v)
+
+    # 微信通道配置
+    for k, v in wechat.items():
+        set_var(k, v)
 
     with open(DOT_ENV, "w", encoding="utf-8") as f:
         f.write("\n".join(config_lines) + "\n")
@@ -246,33 +352,40 @@ def save_config(backend: str, api_key: str):
     print_ok(f"配置文件已保存: {DOT_ENV}")
 
 
-def show_next_steps(backend: str):
-    """显示下一步指引"""
-    print_step(6, "下一步")
+# ─── 下一步指引 ──────────────────────────────────────────────────────────────
+def show_next_steps(backend: str, has_feishu: bool, has_wechat: bool):
+    print_step(7, "下一步")
 
     steps = [
-        "基本使用（交互模式）:  bash kuafu.sh",
-        "命令式:  bash kuafu.sh '你的任务'",
-        "Python API:  from kuafu import KuafuAgent; agent = KuafuAgent(); agent.run('任务')",
+        "交互模式:  bash kuafu.sh",
+        "命令式:    bash kuafu.sh '你的任务'",
     ]
 
+    if has_feishu or has_wechat:
+        steps.append("Gateway 启动:  bash kuafu.sh gateway start --port 8765")
+        steps.append("Gateway 自启:  bash kuafu.sh gateway install")
+
     if backend == "local":
-        steps.insert(0, "确保 llama-server 已在运行:  ps aux | grep llama-server")
         steps.insert(0, "首次运行前请下载模型:  bash scripts/download_model.sh")
 
     for i, step in enumerate(steps, 1):
         print_info(f"{i}. {step}")
 
+    if has_feishu:
+        print_ok("飞书通道已配置，Gateway 启动后自动连接")
+
+    if has_wechat:
+        print_ok("微信通道已配置，Gateway 启动后打印二维码，扫码登录")
+
+    print()
     print_info("文档: https://github.com/zhugezihou/kuafu")
     print_ok("配置完成！夸父已就绪，逐日不息！")
 
 
-# ─── 本地模式专用 ────────────────────────────────────────────────────────────
 def check_local_prerequisites():
     """检查本地模式前置条件"""
     print_step("进阶", "本地模式前置检查")
 
-    # 检查 nvidia-smi
     import shutil
     has_nvidia = shutil.which("nvidia-smi") is not None
     has_llama = shutil.which("llama-server") is not None or \
@@ -285,7 +398,6 @@ def check_local_prerequisites():
         print_ok("检测到 llama-server")
     else:
         print_info("llama-server 未找到，首次运行 kuafu.sh 会自动提示安装指引")
-        print_info("参考文档: https://github.com/ggml-ai/llama.cpp")
 
     model_dir = ROOT_DIR.parent / "models"
     if model_dir.exists():
@@ -301,18 +413,21 @@ def check_local_prerequisites():
 # ─── 主入口 ──────────────────────────────────────────────────────────────────
 def main():
     show_banner()
-
     print_info("欢迎！让我帮你完成夸父的初始配置。")
-    print_info("全程约 2 分钟，配置项可随时修改。")
+    print_info("全程约 3 分钟，配置项可随时修改 .env 文件。")
 
     try:
-        # 1. 选择后端
+        # 1-2. LLM 配置
         backend = ask_backend()
-
-        # 2. API Key
         api_key = ask_api_key(backend)
 
-        # 3. 测试连接
+        # 3. 飞书通道（可选）
+        feishu_config = ask_feishu()
+
+        # 4. 微信通道（可选）
+        wechat_config = ask_wechat()
+
+        # 5. 测试连接
         test_ok = test_connection(backend, api_key)
 
         if not test_ok:
@@ -325,14 +440,19 @@ def main():
                 print_info("已取消配置保存")
                 return
 
-        # 5. 保存
-        save_config(backend, api_key)
-        # 6. 本地模式额外检查
+        # 6. 保存
+        save_config(backend, api_key, feishu_config, wechat_config)
+
+        # 7. 本地模式额外检查
         if backend == "local":
             check_local_prerequisites()
 
-        # 7. 显示下一步
-        show_next_steps(backend)
+        # 8. 显示下一步
+        show_next_steps(
+            backend,
+            has_feishu=bool(feishu_config),
+            has_wechat=bool(wechat_config),
+        )
 
     except KeyboardInterrupt:
         print("\n")
