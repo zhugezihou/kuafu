@@ -204,6 +204,10 @@ class AgentLoop:
         self._observer = Observer()
         self.evolution.register_observer(self._observer)
 
+        # 进化规则引擎（基于 Hindsight 置信度）
+        self._evolution_rules = None
+        self._init_evolution_rules()
+
         # 注册 skill_rollback 工具
         self._register_skill_rollback()
 
@@ -349,6 +353,29 @@ class AgentLoop:
             self._log(f"⚠️ MCP 初始化失败: {e}")
             self.mcp_bridge = None
 
+    def _init_evolution_rules(self):
+        """初始化进化规则引擎（基于 Hindsight OpinionEngine）。"""
+        try:
+            from core.evolution_rules import EvolutionRuleManager
+            # 尝试从 memory 子系统获取 OpinionEngine
+            opinion_engine = getattr(self.memory, '_opinions', None) if hasattr(self, 'memory') else None
+            if opinion_engine is None:
+                # 尝试通过底层 SQLite 连接
+                backend = getattr(self.memory, '_longterm', None) if hasattr(self, 'memory') else None
+                if backend and hasattr(backend, '_conn'):
+                    from core.memory.hindsight_lite import OpinionEngine
+                    opinion_engine = OpinionEngine(backend._conn)
+            if opinion_engine:
+                self._evolution_rules = EvolutionRuleManager(
+                    opinion_engine=opinion_engine,
+                    llm_chat_fn=self.llm.chat if hasattr(self, 'llm') else None,
+                )
+                self._log("🧬 进化规则引擎就绪")
+            else:
+                self._log("⚠️ 进化规则引擎未初始化（无记忆系统）")
+        except Exception as e:
+            self._log(f"⚠️ 进化规则引擎初始化异常: {e}")
+
     def build_system_prompt(self, task: str = "") -> str:
         """组装结构化 system prompt（PromptTemplate + PromptCache 实现）。
 
@@ -392,6 +419,17 @@ class AgentLoop:
         # ── 3. 核心规则 ──
         rules = get_rules()
         rules_content = "\n".join(f"- {rule}" for rule in rules)
+
+        # 追加进化规则（历史经验总结）
+        try:
+            if hasattr(self, '_evolution_rules') and self._evolution_rules:
+                tt = detect_task_type(task)
+                evo_block = self._evolution_rules.build_rules_block(task, tt)
+                if evo_block:
+                    rules_content += "\n\n" + evo_block
+        except Exception:
+            pass
+
         pm.add_section(
             section_id="rules",
             title="核心规则",
@@ -1502,8 +1540,62 @@ class AgentLoop:
             if health:
                 self._log(f"⚠️ 进化健康: {health}")
 
+            # ── 进化规则分析：失败任务 → LLM 分析 → 生成规则 ──
+            try:
+                self._trigger_evolution_rule_analysis(task_result, task, messages)
+            except Exception:
+                pass
+
         except Exception as e:
             self._log(f"⚠️ 进化管道异常: {e}")
+
+    def _trigger_evolution_rule_analysis(self, task_result: dict,
+                                          task: str, messages: list) -> None:
+        """分析任务结果 → 进化规则生成 + 置信度更新。
+
+        触发条件（满足任一）：
+        1. 任务失败（有 errors）
+        2. 用户纠正（_detect_user_correction）
+        3. 3+ 轮交互的复杂任务完成
+        """
+        if not self._evolution_rules:
+            return
+
+        success = task_result.get("success", False)
+        errors = task_result.get("errors", [])
+        turns = task_result.get("turns", 0)
+        has_correction = self._detect_user_correction(messages)
+        is_significant = turns >= 3 and len(task_result.get("result", "")) > 50
+
+        if not errors and not has_correction and not is_significant:
+            return
+
+        # 失败或纠正 → LLM 分析并生成规则
+        should_evolve = (not success and errors) or has_correction
+        if should_evolve or is_significant:
+            analysis = self._evolution_rules.analyze_failure(task, task_result, messages)
+            if analysis:
+                rule = analysis.get("rule", "")
+                category = analysis.get("category", "rule")
+                keywords = analysis.get("keywords", [])
+                ttype = analysis.get("task_type", "")
+                if rule:
+                    result = self._evolution_rules.add_rule(
+                        rule, category=category, task_type=ttype,
+                        keywords=keywords, source=f"task:{task[:50]}",
+                    )
+                    if result.get("action") in ("created", "reinforced"):
+                        self._log(f"🧬 进化规则: {rule[:60]}... ({result['action']}, c={result.get('confidence',0):.2f})")
+
+        # 成功 → 强化匹配的规则
+        if success and hasattr(self, '_evolution_rules') and self._evolution_rules:
+            matched = self._evolution_rules.match_rules(task)
+            if matched:
+                for r in matched:
+                    from core.evolution_rules import EvolutionRuleManager as _ERM
+                    topic = _ERM.make_topic_static(r["rule"])
+                    self._evolution_rules.report_success(topic)
+                    self._log(f"🧬 规则强化: {r['rule'][:40]}...")
 
     def _detect_user_correction(self, messages: list) -> bool:
         """从对话中检测用户纠正信号。
