@@ -82,18 +82,33 @@ class Observation:
         return self
 
     def has_value(self) -> bool:
-        """快速判断是否有值得学的东西（零 LLM 成本）。"""
-        if self.tool_error_count > 0:
-            return True
+        """快速判断是否有值得学的东西（零 LLM 成本）。
+
+        收紧触发条件，避免频繁的无意义 Judge LLM 调用：
+        - 连续失败 > 5 次不再重复触发（说明学不会或这类型任务不适合学）
+        - 简单任务（≤3 步工具调用）且成功且有新错误 → 不触发（太 trivial）
+        - 至少要有 2+ 次工具调用且有合适的结果长度才值得评估
+        """
+        # 高优先级：用户纠正、工具错误 → 一定有价值
         if self.has_user_correction:
             return True
-        if self.is_repeated_failure:
+        if self.tool_error_count > 0 and self.tool_calls >= 2:
             return True
+
+        # 连续失败 > 5 次 → 这个方向学不会，不再触发
+        if self.is_repeated_failure:
+            if self.task_type_history >= 5 and self.tool_error_count == 0:
+                return False
+            return True
+
+        # 首次遇到的任务类型 → 有价值（但至少要有 2+ 步）
+        if self.is_novel_task and self.tool_calls >= 2:
+            return True
+
         # 3+ 次工具调用且有实质结果 → 值得评估
         if self.tool_calls >= 3 and len(self.result.strip()) > 20:
             return True
-        if self.is_novel_task:
-            return True
+
         return False
 
 

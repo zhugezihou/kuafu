@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 SKILL_TRIGGERS = {}
 
 # ── 复杂技能判定阈值 ──
-COMPLEX_STEP_THRESHOLD = 5
+COMPLEX_STEP_THRESHOLD = 8  # 步骤 ≥ 8 才算复杂，避免写了大量详细步骤的简单 skill 触发子 Agent
 COMPLEX_TOOL_CATEGORIES = {"terminal", "browser", "web_search", "file", "code"}
 
 

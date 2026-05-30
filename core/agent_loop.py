@@ -89,12 +89,20 @@ def load_identity_statement() -> str:
 
 _BOOTUP_LOGGED = False  # 模块级 flag：首次初始化的启动日志只打印一次
 
-# 异步后处理：深层反思、进化管道等 LLM 调用不阻塞主流程
+# 异步后处理：所有非主流程 LLM 调用都在后台执行，不阻塞 run() 返回
 def _async_post_task(task_result: dict, messages: list, task: str, loop: 'AgentLoop') -> None:
-    """在后台线程执行后处理 LLM 调用，不阻塞 run() 返回。"""
+    """在后台线程执行后处理 LLM 调用，不阻塞 run() 返回。
+
+    包含：深度反思、自检、进化管道、偏好学习。
+    所有 LLM 调用都在后台执行，主线程只拼接 task_result + 质量评分（零 LLM 成本）。
+    """
     def _run():
         try:
             loop._deep_reflect(task_result, messages)
+        except Exception:
+            pass
+        try:
+            loop._self_check(task_result, messages, 0)
         except Exception:
             pass
         try:
@@ -504,18 +512,23 @@ class AgentLoop:
                 simple_skills, complex_skills = resolve_skill_execution(matched)
                 if simple_skills:
                     skill_parts = []
-                    for skill in simple_skills[:2]:
+                    for skill in simple_skills[:1]:  # 最多注入 1 个好 skill
                         increment_usage(skill['name'])
                         skill_parts.append(f"### {skill['name']}")
                         if skill.get("description"):
                             skill_parts.append(str(skill['description']))
+                        # 只注入短 skill（≤5步）的完整步骤，长 skill 只给描述+链接
                         if skill.get("steps"):
-                            skill_parts.append("**步骤：**")
-                            for i, step in enumerate(skill["steps"], 1):
-                                skill_parts.append(f"  {i}. {step}")
+                            step_count = len(skill["steps"])
+                            if step_count <= 5:
+                                skill_parts.append("**步骤：**")
+                                for i, step in enumerate(skill["steps"], 1):
+                                    skill_parts.append(f"  {i}. {step}")
+                            else:
+                                skill_parts.append(f"**步骤数：** {step_count} 步（详见 skills/{skill.get('file', '')}）")
                         if skill.get("pitfalls"):
                             skill_parts.append("**注意事项：**")
-                            for p in skill["pitfalls"]:
+                            for p in skill["pitfalls"][:3]:  # 最多3条注意事项
                                 skill_parts.append(f"  ⚠️ {p}")
                     skill_parts.append("技能仅供参考，不必完全照做。")
 
@@ -1365,20 +1378,10 @@ class AgentLoop:
             tags=["task", task_result["task_type"]],
         )
 
-        # 深层反思：调用 LLM 分析任务经验，提取可供未来参考的教训
-        # 异步执行，不阻塞主流程
+        # 后处理（所有 LLM 调用已移入后台线程，主线程不阻塞）
         _async_post_task(task_result, messages, task, self)
 
-        # 自检
-        self._self_check(task_result, messages, start)
-
-        # 用户偏好学习
-        self._learn_user_preferences(task_result, task)
-
-        # ── 三阶段进化管道（Observer → EvolutionState → Judge → SkillWriter）──
-        self._run_evolution_pipeline(task_result, task, messages)
-
-        # 质量评分
+        # 质量评分（零 LLM 成本，纯静态分析，在主线程执行）
         quality = self._quality_score(task_result, messages)
         task_result["quality"] = quality
 
