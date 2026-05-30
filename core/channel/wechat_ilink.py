@@ -72,25 +72,44 @@ class WeChatILinkChannel(MessageChannel):
 
     # ── 认证流程 ──────────────────────────────────────────────
 
-    def _request(self, endpoint: str, body: dict, timeout: int = 15) -> dict:
-        """发送 POST 请求到 iLink API。"""
-        url = f"{BASE_URL}/ilink/bot/{endpoint}"
-        headers = {
-            "Content-Type": "application/json; charset=utf-8",
-            "X-WECHAT-UIN": self._uin,
-        }
-        if self._bot_token:
-            headers["X-WECHAT-BOT-TOKEN"] = self._bot_token
+    def _request(self, endpoint: str, body: dict, timeout: int = 15,
+                  method: str = "POST") -> dict:
+        """发送请求到 iLink API。
 
-        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        Args:
+            endpoint: API 端点（如 'get_bot_qrcode'），带 query 参数
+            body: POST 请求的 JSON body（仅 POST 方法使用）
+            timeout: 超时秒数
+            method: HTTP 方法
+
+        Returns:
+            dict: 解析后的 JSON 响应
+        """
+        # 部分 iLink 端点是 GET 请求（二维码获取/状态轮询）
+        if method == "GET":
+            url = f"{BASE_URL}/ilink/bot/{endpoint}"
+            headers = {}
+            if self._bot_token:
+                headers["Authorization"] = f"Bearer {self._bot_token}"
+                headers["X-WECHAT-UIN"] = self._uin
+            req = urllib.request.Request(url, headers=headers, method="GET")
+        else:
+            url = f"{BASE_URL}/ilink/bot/{endpoint}"
+            headers = {
+                "Content-Type": "application/json; charset=utf-8",
+                "X-WECHAT-UIN": self._uin,
+            }
+            if self._bot_token:
+                headers["Authorization"] = f"Bearer {self._bot_token}"
+            data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+            req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 raw = resp.read().decode("utf-8")
                 if not raw:
                     return {"errcode": -1, "errmsg": "empty response"}
                 rst = json.loads(raw)
-                # iLink API 返回 {errcode: 0, ...}
                 return rst
         except urllib.error.HTTPError as e:
             try:
@@ -107,10 +126,12 @@ class WeChatILinkChannel(MessageChannel):
 
     def get_qrcode_url(self) -> str:
         """获取登录二维码 URL。返回图片 URL，扫码后确认登录。"""
-        result = self._request("get_bot_qrcode", {"base_info": {"channel_version": "1.0.2"}})
-        if result.get("errcode") == 0:
-            return result.get("qrcode", "")
-        return ""
+        result = self._request("get_bot_qrcode?bot_type=3", {}, method="GET")
+        # iLink 返回 {qrcode: "<token>", qrcode_img_content: "<url>"}
+        img_url = result.get("qrcode_img_content", "")
+        if img_url:
+            return img_url
+        return result.get("qrcode", "")
 
     def wait_for_login(self, timeout: int = 120) -> bool:
         """等待扫码登录（轮询二维码状态）。
@@ -133,10 +154,10 @@ class WeChatILinkChannel(MessageChannel):
 
         start = time.time()
         while time.time() - start < timeout:
-            result = self._request("get_qrcode_status", {
-                "qrcode": qrcode_url,
-                "base_info": {"channel_version": "1.0.2"},
-            })
+            result = self._request(
+                f"get_qrcode_status?qrcode={qrcode_url}",
+                {}, method="GET",
+            )
             status = result.get("status", "")
             if status == "confirmed":
                 self._bot_token = result.get("bot_token", "")
