@@ -233,9 +233,9 @@ class AutoMode:
         # 高风险（不可逆操作，需要人工确认）
         "delete_file": "high",
         "mcp_*": "high",       # MCP 操作默认高风险
+        "terminal": "high",     # terminal 操作默认高风险（走审批推送）
 
         # 中风险（可逆操作，但需谨慎）
-        "terminal": "medium",  # 具体看命令
         "write_file": "medium",
         "patch": "medium",
         "execute_code": "medium",
@@ -253,7 +253,7 @@ class AutoMode:
     # 可自动决策的工具
     AUTO_TOOLS_LOW = {"web_search", "search_files", "read_file", "memory_store", "memory_search", "memory_reflect",
                       "web_scrape", "web_submit", "feishu_send", "feishu_doc_write"}
-    AUTO_TOOLS_MEDIUM = {"terminal", "write_file", "patch", "execute_code"}
+    AUTO_TOOLS_MEDIUM = {"write_file", "patch", "execute_code"}
 
     @classmethod
     def load(cls):
