@@ -139,11 +139,11 @@ class FeishuWebSocketChannel(MessageChannel):
             self._inbox.clear()
         return msgs
 
-    def _on_message(self, text: str, msg_id: str = "", chat_id: str = "", sender: str = ""):
-        # 群聊消息必须 @bot 才处理
-        # 检查多种 @ 格式：@夸父（中文名）、@Kuafu（英文名）
-        if chat_id:
-            if not any(tag in text for tag in ['@夸父', '@Kuafu', '@kuafu']):
+    def _on_message(self, text: str, msg_id: str = "", chat_id: str = "", sender: str = "", chat_type: str = "", mentions: list | None = None):
+        # 群聊消息必须 @bot 才处理（使用 SDK mentions 字段，不依赖文本显示名）
+        # 私聊（p2p）消息无需 @，直接处理
+        if chat_type == "group" or (chat_id and chat_type != "p2p"):
+            if not mentions:
                 print(f"[FeishuWS] 忽略非@bot消息: {text[:60]}")
                 return
         msg = Message(
@@ -270,6 +270,7 @@ class FeishuWebSocketChannel(MessageChannel):
                             msg_id = msg.get('message_id', '')
                             chat_id = msg.get('chat_id', '')
                             sender = (msg.get('sender') or {}).get('id', '')
+                            mentions = msg.get('mentions', [])
                         else:
                             msg_type = getattr(msg, 'message_type', getattr(msg, 'msg_type', ''))
                             if msg_type != 'text':
@@ -279,6 +280,7 @@ class FeishuWebSocketChannel(MessageChannel):
                             msg_id = getattr(msg, 'message_id', '')
                             chat_id = getattr(msg, 'chat_id', '')
                             sender = getattr(getattr(msg, 'sender', None), 'id', '') if hasattr(msg, 'sender') else ''
+                            mentions = getattr(msg, 'mentions', [])
 
                         if not content_raw:
                             return
@@ -289,6 +291,8 @@ class FeishuWebSocketChannel(MessageChannel):
                             msg_id=msg_id,
                             chat_id=chat_id,
                             sender=sender,
+                            chat_type=chat_type,
+                            mentions=mentions if isinstance(mentions, list) else [],
                         )
                     except Exception as e:
                         import traceback
@@ -377,11 +381,15 @@ class FeishuWebSocketChannel(MessageChannel):
 
                     body = msg.get("body", {})
                     content = json.loads(body.get("content", "{}")).get("text", "")
+                    mentions = msg.get("mentions", [])
+                    chat_type = msg.get("chat_type", "")
                     self._on_message(
                         text=content,
                         msg_id=msg_id,
                         chat_id=msg.get("chat_id", ""),
                         sender=msg.get("sender", {}).get("id", ""),
+                        chat_type=chat_type,
+                        mentions=mentions if isinstance(mentions, list) else [],
                     )
             except Exception as e:
                 logger.error(f"[FeishuWS] 轮询异常: {e}")
