@@ -1,26 +1,134 @@
 """
-夸父安全层升级 (Safety Layer)
+夸父安全层
 
 职责：
-1. 命令安全分级（从 sandbox.py 的 command_risk_level 提升为独立模块）
-2. API key / 敏感信息脱敏（防止在日志/记忆/回复中泄露）
-3. 危险操作确认机制（L0-L3 分级审批）
-4. 文件操作安全（核心目录保护 + 敏感文件保护）
-
-与 sandbox.py 的关系：
-- sandbox.py: 底层安全检查（路径保护、高危命令拦截）
-- safety.py: 上层安全策略（命令分级、API脱敏、操作审批）
+1. 路径安全保护（原 sandbox.py 路径白名单功能）
+2. 命令安全分级（命令危险等级判断）
+3. API key / 敏感信息脱敏
+4. 危险操作确认机制（L0-L3 分级审批）
+5. 文件操作安全（核心目录保护 + 敏感文件保护）
 """
 
 import json
 import os
-import time
 import re
+import shlex
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional, Pattern
+from typing import Any, List, Optional, Pattern
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
+CORE_DIR = ROOT_DIR / "core"
+
+# ==== 路径保护（从 sandbox.py 合并） ====
+
+# 只读保护区 — 禁止写入
+PROTECTED_DIRS: List[Path] = [
+    CORE_DIR,                       # core/ 不可写
+    ROOT_DIR / "CORE_CHARTER.md",   # 宪章文件不可改
+    ROOT_DIR / "IDENTITY.md",        # 身份文件不可改
+]
+
+# 允许的文件操作目录（白名单）
+ALLOWED_WRITE_DIRS: List[Path] = [
+    ROOT_DIR / "strategy",
+    ROOT_DIR / "skills",
+    ROOT_DIR / "memory",
+    ROOT_DIR / "tests",
+    ROOT_DIR / "logs",
+]
+
+
+def is_path_allowed_for_write(path: str) -> tuple[bool, str]:
+    """检查路径是否允许写入。
+
+    Returns:
+        (True, "") 或 (False, "拒绝原因")
+    """
+    resolved = Path(path).resolve()
+
+    # 检查是否在保护区内
+    for protected in PROTECTED_DIRS:
+        if protected.is_dir():
+            if resolved == protected or str(resolved).startswith(str(protected) + "/"):
+                return False, f"拒绝写入 core/ 保护区: {protected}"
+        else:
+            if resolved == protected:
+                return False, f"拒绝修改核心文件: {protected}"
+
+    # 检查是否在白名单目录内
+    for allowed in ALLOWED_WRITE_DIRS:
+        if str(resolved).startswith(str(allowed)):
+            return True, ""
+
+    return False, f"路径不在白名单中: {resolved}"
+
+
+def register_allowed_dir(path: str) -> None:
+    """动态注册新的可写目录。仅 evolution.py 可调用。"""
+    p = Path(path).resolve()
+    if p not in ALLOWED_WRITE_DIRS:
+        ALLOWED_WRITE_DIRS.append(p)
+
+
+# ==== 命令执行安全（从 sandbox.py 合并） ====
+
+HIGH_RISK_COMMANDS = [
+    "rm -rf /", "mkfs", "dd if=", ":(){ :|:& };:",  # shell shock
+    "wget.*|sh", "curl.*|sh",                        # pipe to shell
+]
+
+SENSITIVE_PATTERNS_CMD = [
+    r"rm\s+(-rf?\s+)?/[^a-zA-Z]",                   # 删除根目录文件
+    r"chmod\s+777\s+/",                               # 开放根目录权限
+    r">\s*/dev/[hs]d",                                # 直接写磁盘
+]
+
+
+def validate_command(command: str) -> tuple[bool, str, str]:
+    """验证命令安全性。
+
+    Returns:
+        (is_safe, risk_level, reason)
+        risk_level: "safe" / "warning" / "dangerous"
+    """
+    # 高危命令
+    for hc in HIGH_RISK_COMMANDS:
+        if hc in command:
+            return False, "dangerous", f"检测到高危命令模式: {hc}"
+
+    # 敏感模式
+    for pattern in SENSITIVE_PATTERNS_CMD:
+        if re.search(pattern, command):
+            return False, "warning", f"检测到敏感操作: {pattern}"
+
+    return True, "safe", ""
+
+
+def is_high_risk_write(path: str) -> tuple[bool, str]:
+    """检查文件写入是否为高风险操作。"""
+    p = Path(path).resolve()
+    for parent in p.parents:
+        # 检查 .git/ 目录
+        if parent.name == ".git":
+            return True, "写入 .git 目录"
+        # 检查 /etc, /usr, /bin 等系统目录
+        if str(parent) in ["/etc", "/usr", "/bin", "/sbin", "/boot"]:
+            return True, f"写入系统目录: {parent}"
+    return False, ""
+
+
+def get_sandbox_report() -> dict:
+    """返回沙盒状态报告。"""
+    return {
+        "protected_dirs": [str(p) for p in PROTECTED_DIRS],
+        "allowed_write_dirs": [str(p) for p in ALLOWED_WRITE_DIRS],
+        "core_size": sum(
+            f.stat().st_size for f in CORE_DIR.rglob("*") if f.is_file()
+        ),
+        "core_files": len(list(CORE_DIR.rglob("*"))),
+    }
 
 
 # ── 敏感信息类型 ──────────────────────────────────────────────────

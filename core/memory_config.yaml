@@ -16,7 +16,7 @@ merge_max_chars: 2000            # 合并后单条记忆最大字符数
 merge_use_llm: true              # 是否使用 LLM 做摘要合并（false = 文本拼接回退）
 
 # ── 搜索过滤 ──
-search_min_score: 0.3            # 搜索结果相关性低于此值自动丢弃
+search_min_score: 0.12            # 搜索结果相关性低于此值自动丢弃
 search_default_limit: 5          # 默认搜索返回条数
 
 # ── 存储限制 ──

@@ -33,6 +33,44 @@ class GatewayLoop:
         self._running = False
         self._thread: Optional[threading.Thread] = None
 
+        # 注册审批推送回调到 agent
+        self._register_approval_callback()
+
+    def _register_approval_callback(self):
+        """注册审批推送回调：审批 pending 时通过消息通道通知用户。"""
+        def _on_approval(tool: str, args: dict, req_id: str):
+            """审批请求回调 — 推送到所有消息通道。"""
+            title = tool
+            if tool == "terminal":
+                title = "终端: " + args.get("command", "")[:60]
+            detail = json.dumps(args, ensure_ascii=False)[:200]
+
+            msg = (
+                "🔐 **审批请求** `" + req_id + "`\n"
+                "工具: " + title + "\n"
+                "参数: " + detail + "\n\n"
+                '回复「批准 ' + req_id + '」或「拒绝 ' + req_id + '」'
+            )
+
+            # 推送到所有通道
+            for name in self.channels.list():
+                channel = self.channels.get(name)
+                if channel:
+                    try:
+                        kwargs = {}
+                        if hasattr(self, '_last_chat_id'):
+                            kwargs['chat_id'] = self._last_chat_id
+                        channel.send(msg, **kwargs)
+                    except Exception as e:
+                        print(f"[GatewayLoop] ⚠️ 审批推送失败 ({name}): {e}")
+
+        # 注入到 agent 的审批回调
+        if hasattr(self.agent, '_loop') and self.agent._loop:
+            self.agent._loop.on_approval_request = _on_approval
+        # 同时也注入到全局回调（approval.py 的 ON_APPROVAL_REQUEST_CB）
+        import core.approval as approval_mod
+        approval_mod.ON_APPROVAL_REQUEST_CB = lambda tool, args, req_id: _on_approval(tool, args, req_id)
+
     def start(self):
         """启动消息循环（后台线程）。"""
         if self._running:
@@ -68,15 +106,62 @@ class GatewayLoop:
                     return
                 time.sleep(0.2)
 
+    def _check_approval_decision(self, text: str) -> Optional[dict]:
+        """检查用户消息是否是审批决策。
+        
+        支持格式：
+        - 批准 abc123
+        - 拒绝 abc123
+        - approve abc123
+        - reject abc123
+        """
+        text = text.strip()
+        import re
+        m = re.match(r"^(批准|拒绝|approve|reject)\s+(\S+)", text, re.IGNORECASE)
+        if not m:
+            return None
+        action_word = m.group(1).lower()
+        req_id = m.group(2)
+        if action_word in ("批准", "approve"):
+            action = "approve"
+        else:
+            action = "reject"
+        return {"action": action, "req_id": req_id}
+
     def _handle_message(self, msg: Message):
         """处理单条消息。"""
         if not msg.text.strip():
             return
 
-        print(f"[GatewayLoop] 📩 {msg.platform}/{msg.chat_id}: {msg.text[:60]}")
+        text = msg.text.strip()
+        print(f"[GatewayLoop] 📩 {msg.platform}/{msg.chat_id}: {text[:60]}")
+
+        # 记录最近消息的来源（用于审批推送）
+        self._last_chat_id = msg.chat_id
+        self._last_platform = msg.platform
+
+        # 审批决策检测：批准/拒绝 + req_id
+        decision = self._check_approval_decision(text)
+        if decision:
+            # 执行审批决策，不进入 agent.run()
+            from core.approval import ApprovalManager
+            req_id = decision["req_id"]
+            if decision["action"] == "approve":
+                ok = ApprovalManager.approve(req_id)
+                reply = f"✅ 已批准 `{req_id}`" if ok else f"❌ 审批失败: {req_id} 不存在或已处理"
+            else:
+                ok = ApprovalManager.reject(req_id)
+                reply = f"⛔ 已拒绝 `{req_id}`" if ok else f"❌ 拒绝失败: {req_id} 不存在或已处理"
+            channel = self.channels.get(msg.platform)
+            if channel:
+                kwargs = {"chat_id": msg.chat_id}
+                if msg.raw and "context_token" in msg.raw:
+                    kwargs["context_token"] = msg.raw["context_token"]
+                channel.send(reply, **kwargs)
+            return
 
         try:
-            result = self.agent.run(msg.text)
+            result = self.agent.run(text)
             reply = result.get("result", "")
             if not reply:
                 return
@@ -84,7 +169,11 @@ class GatewayLoop:
             # 回消息到来源通道
             channel = self.channels.get(msg.platform)
             if channel:
-                channel.send(reply, chat_id=msg.chat_id)
+                # 传递 raw 中的 context_token 给 send（微信 iLink 需要）
+                kwargs = {"chat_id": msg.chat_id}
+                if msg.raw and "context_token" in msg.raw:
+                    kwargs["context_token"] = msg.raw["context_token"]
+                channel.send(reply, **kwargs)
                 print(f"[GatewayLoop] ✅ 已回复 {msg.platform}")
         except Exception as e:
             print(f"[GatewayLoop] ❌ 处理失败: {e}")

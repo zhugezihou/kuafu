@@ -169,7 +169,7 @@ class LLMClient:
     def __init__(self, providers: str | list[str] | None = None,
                  api_key: str | None = None, base_url: str | None = None,
                  model: str | None = None, max_tokens: int = 4096,
-                 temperature: float = 0.7, timeout: int = 120):
+                 temperature: float = 0.7, timeout: int = 15):
         # 构建后端列表
         if providers is None:
             providers = os.environ.get("KUAFFU_PROVIDERS", "deepseek").split(",")
@@ -189,18 +189,50 @@ class LLMClient:
                     cfg["model"] = model
             self.backends.append(LLMBackend(pid, cfg))
 
+        # 快速检测：主后端如果是 qwen/custom，检测连通性，不可用则冷却
+        # threaded ping 避免阻塞（最多等 1 秒）
+        failures: dict[str, float] = {}
+        main = self.backends[0] if self.backends else None
+        if main and main.provider_id in ("qwen", "custom") and main.base_url:
+            ping_result = [True]
+            def _ping():
+                try:
+                    req = urllib.request.Request(f"{main.base_url}/v1/models", method="GET")
+                    with urllib.request.urlopen(req, timeout=2):
+                        pass
+                except urllib.error.HTTPError:
+                    pass  # 4xx = server alive
+                except Exception:
+                    ping_result[0] = False
+            t = threading.Thread(target=_ping, daemon=True)
+            t.start()
+            t.join(timeout=0.5)  # 最多等 0.5 秒
+            if not ping_result[0] or t.is_alive():
+                failures[main.provider_id] = time.time() + 300
+
         self.max_tokens = max_tokens
         self.temperature = temperature
         self.timeout = timeout
-        self._failures: dict[str, float] = {}  # provider -> cooldown until
+        self._failures = failures
         self._lock = threading.Lock()
-        self._last_successful: str = ""  # 上次成功的 provider
+        self._last_successful: str = ""
+
+        # 按可用性选择初始后端
+        first_available = self._select_backend()
+        if not first_available:
+            first_available = self.backends[0] if self.backends else None
 
         # 兼容旧接口
-        self.backend = self.backends[0].provider_id if self.backends else "cloud"
-        self.api_key = self.backends[0].api_key if self.backends else ""
-        self.base_url = self.backends[0].base_url if self.backends else ""
-        self.model = self.backends[0].model if self.backends else ""
+        if first_available:
+            self.backend = first_available.provider_id
+            self.api_key = first_available.api_key
+            self.base_url = first_available.base_url
+            self.model = first_available.model
+        else:
+            self.backend = "cloud"
+            self.api_key = ""
+            self.base_url = ""
+            self.model = ""
 
     # ── 选择最佳后端 ───────────────────────────────────────────
 

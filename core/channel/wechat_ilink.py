@@ -24,6 +24,7 @@ import os
 import threading
 import time
 import uuid
+import base64
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -55,6 +56,7 @@ class WeChatILinkChannel(MessageChannel):
         self._uin: str = ""
         self._config: dict = {}
         self._poll_buf: str = ""  # get_updates_buf（游标）
+        self._last_qrcode_token: str = ""  # 最后一次获取的 qrcode token
 
         # 持久化路径
         data_dir = Path(os.environ.get("WECHAT_ILINK_DATA_DIR", ""))
@@ -77,30 +79,33 @@ class WeChatILinkChannel(MessageChannel):
         """发送请求到 iLink API。
 
         Args:
-            endpoint: API 端点（如 'get_bot_qrcode'），带 query 参数
-            body: POST 请求的 JSON body（仅 POST 方法使用）
+            endpoint: API 端点（如 'get_bot_qrcode'）
+            body: POST 请求的 JSON body
             timeout: 超时秒数
             method: HTTP 方法
 
         Returns:
             dict: 解析后的 JSON 响应
         """
-        # 部分 iLink 端点是 GET 请求（二维码获取/状态轮询）
-        if method == "GET":
-            url = f"{BASE_URL}/ilink/bot/{endpoint}"
-            headers = {}
-            if self._bot_token:
-                headers["Authorization"] = f"Bearer {self._bot_token}"
-                headers["X-WECHAT-UIN"] = self._uin
+        is_get = method == "GET"
+        url = f"{BASE_URL}/ilink/bot/{endpoint}"
+        headers = {
+            "iLink-App-ClientVersion": "1",
+        }
+        if self._bot_token:
+            # Bearer 用完整 token（包含 bot_id 前缀），不能只取 hex 部分
+            headers["Authorization"] = f"Bearer {self._bot_token}"
+            headers["AuthorizationType"] = "ilink_bot_token"
+            # X-WECHAT-UIN 每次请求重新生成（uint32 -> 十进制 -> base64）
+            import random
+            uin_raw = str(random.randint(0, 4294967295))
+            headers["X-WECHAT-UIN"] = base64.b64encode(uin_raw.encode()).decode()
+            headers["SKRouteTag"] = "1001"
+
+        if is_get:
             req = urllib.request.Request(url, headers=headers, method="GET")
         else:
-            url = f"{BASE_URL}/ilink/bot/{endpoint}"
-            headers = {
-                "Content-Type": "application/json; charset=utf-8",
-                "X-WECHAT-UIN": self._uin,
-            }
-            if self._bot_token:
-                headers["Authorization"] = f"Bearer {self._bot_token}"
+            headers["Content-Type"] = "application/json; charset=utf-8"
             data = json.dumps(body, ensure_ascii=False).encode("utf-8")
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
 
@@ -120,62 +125,111 @@ class WeChatILinkChannel(MessageChannel):
         except Exception as e:
             return {"errcode": -1, "errmsg": str(e)}
 
+    def get_qrcode_token(self) -> str:
+        """获取登录二维码 token（不是图片 URL）。
+        返回 qrcode token，用于轮询登录状态。
+        """
+        result = self._request("get_bot_qrcode?bot_type=3", {}, method="GET")
+        # iLink 返回 {"qrcode": "<token>", "qrcode_img_content": "<图片URL>"}
+        self._last_qrcode_token = result.get("qrcode", "")
+        return self._last_qrcode_token
+
+    def get_qrcode_img(self) -> str:
+        """获取二维码图片 URL（用于渲染/显示）。"""
+        result = self._request("get_bot_qrcode?bot_type=3", {}, method="GET")
+        img_url = result.get("qrcode_img_content", "")
+        token = result.get("qrcode", "")
+        self._last_qrcode_token = token
+        return img_url or token
+
     def is_logged_in(self) -> bool:
         """是否已登录（有有效 bot_token）。"""
         return bool(self._bot_token)
 
-    def get_qrcode_url(self) -> str:
-        """获取登录二维码 URL。返回图片 URL，扫码后确认登录。"""
-        result = self._request("get_bot_qrcode?bot_type=3", {}, method="GET")
-        # iLink 返回 {qrcode: "<token>", qrcode_img_content: "<url>"}
-        img_url = result.get("qrcode_img_content", "")
-        if img_url:
-            return img_url
-        return result.get("qrcode", "")
-
     def wait_for_login(self, timeout: int = 120) -> bool:
-        """等待扫码登录（轮询二维码状态）。
+        """等待扫码登录。
 
-        Args:
-            timeout: 超时秒数（默认 120s）
-
-        Returns:
-            是否登录成功
+        流程：
+        1. 获取二维码 → 打印
+        2. 用 qrcode token 直接尝试 getupdates（iLink 可能已绑定）
+        3. 如果 getupdates 返回 bot_token 或有效消息 → 登录成功
+        4. 否则回退到轮询 status（每 3 秒）
         """
-        qrcode_url = self.get_qrcode_url()
-        if not qrcode_url:
+        # 获取二维码
+        img_url = self.get_qrcode_img()
+        qrcode_token = self._last_qrcode_token
+        if not img_url or not qrcode_token:
             print("[WeChat] 获取二维码失败")
             return False
 
         print("[WeChat] 请用微信扫描二维码登录")
-        print(f"[WeChat] 二维码: {qrcode_url}")
-        # 尝试打印服务器二维码
-        self._render_qrcode(qrcode_url)
+        self._render_qrcode(img_url)
+        print(f"[WeChat] 二维码: {img_url}")
 
+        # 尝试用 qrcode token 直接 poll（某些 iLink 实现中 token 可直接用）
+        self._bot_token = qrcode_token
+        result = self._request("getupdates", {
+            "get_updates_buf": "",
+            "base_info": {"channel_version": "1.0.2"},
+        }, timeout=5)
+        if result.get("errcode") == 0:
+            # 成功！拿到了 bot_token（或 qrcode_token 本身就够用）
+            self._poll_buf = result.get("get_updates_buf", "")
+            now = time.time()
+            while time.time() - now < timeout:
+                result = self._request("getupdates", {
+                    "get_updates_buf": self._poll_buf,
+                    "base_info": {"channel_version": "1.0.2"},
+                }, timeout=30)
+                if result.get("errcode") == 0:
+                    self._poll_buf = result.get("get_updates_buf", self._poll_buf)
+                    messages = result.get("messages", [])
+                    if messages:
+                        for msg_data in messages:
+                            self._handle_incoming(msg_data)
+                        # 有消息说明登录成功，保存 token 并返回
+                        print("\n[WeChat] ✅ 登录成功（收到消息）")
+                        self._save_state()
+                        return True
+                # 检查是否返回了 bot_token（某些实现在 getupdates 中下发）
+                if result.get("bot_token"):
+                    self._bot_token = result["bot_token"]
+                if result.get("uin"):
+                    self._uin = result["uin"]
+                time.sleep(1)
+            print("\n[WeChat] 超时：未收到消息")
+            return False
+
+        # getupdates 失败，回退到轮询状态
+        print("[WeChat] 等待扫码确认...")
         start = time.time()
+        self._bot_token = ""  # 重置 token
         while time.time() - start < timeout:
             result = self._request(
-                f"get_qrcode_status?qrcode={qrcode_url}",
-                {}, method="GET",
+                f"get_qrcode_status?qrcode={qrcode_token}&bot_type=3",
+                {}, method="GET", timeout=5,
             )
             status = result.get("status", "")
             if status == "confirmed":
+                # 打印完整响应看字段
+                print(f"\n[WeChat] 登录响应: {json.dumps(result, ensure_ascii=False)[:500]}")
                 self._bot_token = result.get("bot_token", "")
                 self._uin = result.get("uin", "")
                 self._bot_open_id = result.get("bot_open_id", "")
+                self._ilink_bot_id = result.get("ilink_bot_id", "")
                 self._save_state()
-                print("[WeChat] ✅ 登录成功")
+                print(f"\n[WeChat] ✅ 登录成功 (token={self._bot_token[:30]}... uin={self._uin[:20]}...)")
                 return True
-            elif status == "expired":
-                print("[WeChat] 二维码已过期，重新生成")
-                return self.wait_for_login(timeout)
+            elif status == "scaned":
+                print("\r[WeChat] 已扫码，请在手机上确认", end="", flush=True)
+            else:
+                print(f"\r[WeChat] 等待扫码... ({int(timeout-(time.time()-start))}s)", end="", flush=True)
 
-            # 每 2 秒检查
-            time.sleep(2)
+            time.sleep(3)
             if not self._running:
                 return False
 
-        print("[WeChat] 登录超时")
+        print("\n[WeChat] 登录超时")
         return False
 
     @staticmethod
@@ -293,26 +347,25 @@ class WeChatILinkChannel(MessageChannel):
                 }
                 result = self._request("getupdates", body, timeout=30)
 
-                if result.get("errcode") == 0:
-                    # 保存游标
+                # 检查错误：errcode 存在且不为 0 才认为是错误
+                errcode = result.get("errcode", 0)
+                if errcode != 0:
+                    errmsg = result.get("errmsg", str(errcode))
+                    if "token" in errmsg.lower() or "session" in errmsg.lower() or errcode == -14:
+                        print(f"\n[WeChat] 会话过期 (errcode={errcode}), 需要重新登录")
+                        self._bot_token = ""
+                        self._poll_buf = ""
+                        self._save_state()
+                        if self.wait_for_login(timeout=120):
+                            continue
+                        break
+                    logger.warning(f"[WeChat] 轮询异常: {errmsg}")
+                else:
+                    # 成功：保存游标，处理消息
                     self._poll_buf = result.get("get_updates_buf", self._poll_buf)
-
-                    # 处理消息
-                    messages = result.get("messages", [])
+                    messages = result.get("msgs", result.get("messages", []))
                     for msg_data in messages:
                         self._handle_incoming(msg_data)
-                else:
-                    err = result.get("errmsg", "")
-                    if err:
-                        # token 过期需要重新登录
-                        if "token" in err.lower():
-                            print("[WeChat] token 过期，需要重新登录")
-                            self._bot_token = ""
-                            self._save_state()
-                            if self.wait_for_login(timeout=120):
-                                continue
-                            break
-                        logger.warning(f"[WeChat] 轮询异常: {err}")
 
             except Exception as e:
                 logger.error(f"[WeChat] 轮询异常: {e}")
@@ -330,6 +383,8 @@ class WeChatILinkChannel(MessageChannel):
             from_user = msg_data.get("from_user_id", "")
             ctx_token = msg_data.get("context_token", "")
             msg_id = msg_data.get("client_id", "")
+
+            print(f"[WeChat] 收到消息: type={msg_type} state={msg_state} from={from_user} text={str(msg_data.get('item_list', []))[:120]}")
 
             # 只处理用户发来的文本消息
             if msg_type != 1:

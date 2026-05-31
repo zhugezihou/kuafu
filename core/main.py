@@ -24,7 +24,7 @@ from typing import Any, Optional
 
 # 核心模块
 from core.identity import load_identity_statement, detect_identity_impersonation
-from core.sandbox import is_path_allowed_for_write, validate_command
+from core.safety import is_path_allowed_for_write, validate_command
 from core.memory_api import MemoryAPI
 from core.evolution import EvolutionEngine, EvolutionEvent
 from core.llm import LLMClient
@@ -37,20 +37,6 @@ try:
 except ImportError:
     FeishuBot = None
     _FEISHU_ENABLED = False
-
-# P1: 后台复盘线程（可选加载）
-try:
-    from autonomous.reviewer import ReviewerThread
-    _HAS_REVIEWER = True
-except ImportError:
-    _HAS_REVIEWER = False
-
-# P2: 自主决策模块（可选加载）
-try:
-    from autonomous.prioritizer import IdlePrioritizer, EvolutionScheduler
-    _HAS_PRIORITIZER = True
-except ImportError:
-    _HAS_PRIORITIZER = False
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
@@ -105,41 +91,12 @@ class KuafuAgent:
 
         self._setup()
 
-        # P0: 启动后台复盘线程（可选，daemon=True）
-        if _HAS_REVIEWER:
-            self._reviewer_thread = ReviewerThread(
-                llm_chat_fn=self.llm.chat,
-                memory_remember_fn=lambda key, content, tags: self.memory.remember(
-                    key=key, content=content, tags=tags
-                ),
-            )
-            self._reviewer_thread.start()
-        else:
-            self._reviewer_thread = None
-
-        # P2: 启动自主决策线程（daemon=True，周期性检查空闲状态）
-        self._prioritizer_thread: Optional[threading.Thread] = None
-        self._init_prioritizer()
-
-        # P3: 主动网络学习引擎（被动模式 — 用户输入指令后才启动）
-        self._web_learner: Optional[Any] = None
-        self._init_web_learner(passive=True)
-
-        # P4: 启动自检优化程序（可选，daemon=True，每 4 小时自动体检）
-        self._health_checker_thread: Optional[Any] = None
-        try:
-            from autonomous.self_health import HealthCheckerThread
-            self._health_checker = HealthCheckerThread(
-                memory_remember_fn=lambda key, content, tags: self.memory.remember(
-                    key=key, content=content, tags=tags
-                ),
-            )
-            self._health_checker_thread = self._health_checker
-            self._health_checker_thread.start()
-        except ImportError:
-            self._health_checker = None
-
-        # P5: WebHook 服务器（可选）
+        # 后台线程全部取消 — 冗余功能导致卡顿
+        # 用户有任务就执行，不需要后台空闲决策/健康检查/复盘
+        self._reviewer_thread = None
+        self._prioritizer_thread = None
+        self._web_learner = None
+        self._health_checker = None
         self._webhook_server = None
 
     def _setup(self):
@@ -152,84 +109,7 @@ class KuafuAgent:
             tags=["system", "startup"],
         )
 
-    # ---- P2: 自主决策初始化 ----
-
-    def _init_prioritizer(self):
-        """初始化自主决策系统（可选）。"""
-        if not _HAS_PRIORITIZER:
-            return
-        try:
-            import threading
-
-            # 创建 IdlePrioritizer，注入记忆和进化状态查询
-            self._idle_prioritizer = IdlePrioritizer(
-                memory_recall_fn=lambda query, limit=5: self.memory.recall(query, limit=limit),
-                evolution_stats_fn=self.evolution.get_evolution_stats,
-            )
-            # 创建进化调度器（包装 IdlePrioritizer 的进化时机决策）
-            self._evolution_scheduler = EvolutionScheduler(self._idle_prioritizer)
-
-            # 后台线程：每 5 分钟检查一次空闲决策
-            def _prioritizer_loop():
-                import time as _time
-                while True:
-                    _time.sleep(300)  # 5 分钟间隔
-                    try:
-                        decision = self._idle_prioritizer.decide()
-                        if decision:
-                            # 不再写入记忆（避免污染系统 prompt）
-                            # self.memory.remember(
-                            #     key=f"priority:{int(_time.time())}",
-                            #     content=f"【空闲决策】{decision.title} ({decision.priority_score:.0f}分)",
-                            #     tags=["decision", "prioritizer", decision.category],
-                            # )
-                            pass
-                    except Exception:
-                        pass
-
-            self._prioritizer_thread = threading.Thread(
-                target=_prioritizer_loop,
-                daemon=True,
-                name="kuafu-prioritizer",
-            )
-            self._prioritizer_thread.start()
-        except Exception as e:
-            self._prioritizer_thread = None
-            import logging
-            logging.warning(f"P2 Prioritizer 启动失败: {e}")
-
-    # ---- P3: 主动网络学习引擎 ----
-
-    def _init_web_learner(self, passive: bool = False):
-        """初始化主动网络学习引擎（被动模式 — 不自动启动 WebLearner 线程）。"""
-        try:
-            from autonomous.web_learner import WebLearner
-
-            self._web_learner = WebLearner(
-                llm_chat_fn=self.llm.chat,
-                memory_remember_fn=lambda key, content, tags: self.memory.remember(
-                    key=key, content=content, tags=tags or []
-                ),
-                memory_recall_fn=lambda query, limit=5: self.memory.recall(query, limit=limit),
-                evolution_emit_fn=lambda level, action, target, payload: (
-                    self.evolution.evaluate_and_evolve(
-                        task_result={"success": True, "task_type": target, "result": action},
-                        task=action,
-                        messages=[],
-                    )
-                    if hasattr(self.evolution, 'evaluate_and_evolve')
-                    else None
-                ),
-                learn_interval=21600,   # 6 小时
-                max_per_cycle=8,
-            )
-
-            if not passive:
-                self._web_learner.start(daemon=True)
-        except Exception as e:
-            self._web_learner = None
-            import logging
-            logging.warning(f"P3 WebLearner 启动失败: {e}")
+    # ---- 废弃方法保留（兼容旧代码） ----
 
     @property
     def identity(self) -> str:
@@ -239,7 +119,7 @@ class KuafuAgent:
     @property
     def sandbox(self) -> dict:
         """获取沙盒安全信息。"""
-        from core.sandbox import PROTECTED_DIRS, ALLOWED_WRITE_DIRS
+        from core.safety import PROTECTED_DIRS, ALLOWED_WRITE_DIRS
         return {
             "protected_dirs": [str(d) for d in PROTECTED_DIRS],
             "allowed_write_dirs": [str(d) for d in ALLOWED_WRITE_DIRS],
@@ -283,8 +163,13 @@ class KuafuAgent:
         stats = self.evolution.get_evolution_stats()
         parts.append("## 进化状态")
         parts.append(f"- 总进化次数: {stats['total_evolutions']}")
-        parts.append(f"- 各级进化数: {stats['by_level']}")
-        task_stats = self.evolution.get_task_stats()
+        # by_level 可能不存在（旧版 evolution 引擎）
+        by_level = stats.get('by_level', stats.get('recent_events', []))
+        if isinstance(by_level, list):
+            parts.append(f"- 进化记录数: {len(by_level)}")
+        elif isinstance(by_level, dict):
+            parts.append(f"- 各级进化数: {by_level}")
+        task_stats = self.evolution.get_task_stats() if hasattr(self.evolution, 'get_task_stats') else {"total": 0, "success_rate": 0}
         parts.append(f"- 已完成任务: {task_stats['total']}")
         parts.append(f"- 成功率: {task_stats['success_rate']}%")
         parts.append("")
@@ -682,11 +567,6 @@ class KuafuAgent:
             "memory": self.memory.get_stats() if hasattr(self.memory, 'get_stats') else {},
             "evolution": self.evolution.get_evolution_stats(),
         }
-        # P2 状态
-        if _HAS_PRIORITIZER and hasattr(self, '_prioritizer_thread'):
-            status["prioritizer"] = {
-                "alive": self._prioritizer_thread is not None and self._prioritizer_thread.is_alive(),
-            }
         return status
 
     @staticmethod

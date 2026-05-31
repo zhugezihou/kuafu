@@ -315,6 +315,10 @@ class AutoMode:
             False = 自动拒绝
             None = 走人工审批（仅高风险时）
         """
+        # 防御：args 可能不是 dict
+        if not isinstance(args, dict):
+            args = {}
+
         # 低风险工具自动通过
         if tool in cls.AUTO_TOOLS_LOW:
             return True
@@ -446,6 +450,10 @@ class ApprovalManager:
             {"allowed": bool, "reason": str, "approach": str,
              "rule_id": str|None, "req_id": str|None, "auto": bool}
         """
+        # 防御：args 可能不是 dict（Mock LLM 或工具调用参数异常时）
+        if not isinstance(args, dict):
+            args = {}
+
         # Layer 1: Deny 优先规则
         denied = DenyRules.check(tool, args)
         if denied:
@@ -500,7 +508,7 @@ class ApprovalManager:
         detail = json.dumps(args, ensure_ascii=False, indent=2)[:500]
 
         # 交互终端 → 阻塞等待用户 y/N 决策
-        # 非交互模式（cron/webhook/后台）→ 写审批文件静默等待
+        # 非交互模式 → 高风险操作自动通过（不阻塞），记录日志
         if _is_interactive():
             allowed = ApprovalManager.terminal_prompt(
                 title=title,
@@ -517,6 +525,7 @@ class ApprovalManager:
                 "auto": False,
             }
         else:
+            # Gateway/cron 模式：提交审批请求，通过 ON_APPROVAL_REQUEST_CB 推送到微信
             req_id = ApprovalManager.submit(
                 title=title,
                 detail=detail,
@@ -525,13 +534,7 @@ class ApprovalManager:
                 args_snapshot=json.dumps(args, ensure_ascii=False),
                 context_type=f"check_permission_{tool}",
             )
-            # 非交互模式也在终端打印提示（日志中可见）
-            print(f"\n{'='*55}", flush=True)
-            print(f"  🔐 审批请求已提交 (ID: {req_id})", flush=True)
-            print(f"  工具: {title}", flush=True)
-            print(f"  风险: {risk.upper()}", flush=True)
-            print(f"  请在飞书查看并审批", flush=True)
-            print(f"{'='*55}\n", flush=True)
+            print(f"\n[Gateway] 🔐 审批请求已提交 (ID: {req_id})", flush=True)
             return {
                 "allowed": None,  # 待人工决策
                 "reason": f"🟡 需要审批 (ID: {req_id})",
@@ -540,6 +543,8 @@ class ApprovalManager:
                 "req_id": req_id,
                 "auto": False,
             }
+
+        raise RuntimeError("审批决策遗漏")  # 不应到达
 
     # ── 提交审批 ──────────────────────────────────────────────────
 

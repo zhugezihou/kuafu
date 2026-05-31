@@ -134,7 +134,31 @@ class ModelManager:
 
     @property
     def active_provider(self) -> str:
-        return self._providers[0] if self._providers else "deepseek"
+        """返回第一个可用的 provider（快速检测连通性）。"""
+        for pid in self._providers:
+            cfg = self._configs.get(pid, self._default_config(pid))
+            # 本地后端（qwen/custom）需要 base_url 连通才认为可用
+            if pid in ("qwen", "custom"):
+                url = cfg.get("base_url", "").rstrip("/")
+                if url and self._ping(url):
+                    return pid
+                continue  # 跳过不可用的本地后端
+            # 云端后端只要有 api_key 就算可用
+            if cfg.get("api_key"):
+                return pid
+        # 全不可用时降级到 deepseek（即使没 key，给个机会出 401 而非死等）
+        return "deepseek"
+
+    @staticmethod
+    def _ping(base_url: str, timeout: int = 2) -> bool:
+        """快速检测后端是否可用。"""
+        import urllib.request
+        try:
+            req = urllib.request.Request(f"{base_url}/v1/models", method="GET")
+            with urllib.request.urlopen(req, timeout=timeout):
+                return True
+        except Exception:
+            return False
 
     def get_active_config(self) -> dict:
         pid = self.active_provider

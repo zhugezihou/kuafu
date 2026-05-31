@@ -23,6 +23,7 @@ import os
 import shutil
 import tempfile
 import time
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -75,6 +76,7 @@ class EvolutionState:
     def __init__(self, root_dir: Optional[Path] = None):
         self.root_dir = (root_dir or Path(__file__).resolve().parent.parent)
         self.state_path = self.root_dir / self.STATE_FILE
+        self._lock = threading.Lock()
         self._data: dict = self._load()
 
     # ── 公开接口 ──
@@ -446,16 +448,17 @@ class EvolutionState:
 
     def _save(self):
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.state_path.with_suffix(f".tmp.{os.getpid()}")
-        try:
-            tmp.write_text(
-                json.dumps(self._data, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            tmp.replace(self.state_path)
-        except OSError:
-            if tmp.exists():
-                tmp.unlink()
+        with self._lock:
+            tmp = self.state_path.with_suffix(f".tmp.{os.getpid()}")
+            try:
+                tmp.write_text(
+                    json.dumps(self._data, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                tmp.replace(self.state_path)
+            except OSError:
+                if tmp.exists():
+                    tmp.unlink()
 
     def _is_known(self, error_text: str) -> bool:
         if not error_text:

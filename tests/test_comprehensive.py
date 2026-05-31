@@ -45,7 +45,7 @@ def test_identity():
 # ============================================================
 def test_sandbox():
     print("\n【2/21】sandbox 沙盒系统（函数式）")
-    from core.sandbox import is_path_allowed_for_write, validate_command, is_high_risk_write
+    from core.safety import is_path_allowed_for_write, validate_command, is_high_risk_write
     ok, _ = is_path_allowed_for_write("strategy/test.md")
     check("strategy/ 允许写入", ok)
     ok, _ = is_path_allowed_for_write("core/test.py")
@@ -103,11 +103,11 @@ def test_evolution():
 def test_llm():
     print("\n【5/21】llm LLM客户端")
     from core.llm import LLMClient
-    client = LLMClient(backend="local", model="test-model")
+    client = LLMClient(providers=["deepseek"], model="deepseek-chat")
     check("LLMClient初始化正常", client is not None)
-    check("backend==local", client.backend == "local")
+    check("backend==deepseek", "deepseek" in client.backend)
     try:
-        client.switch({"backend": "local", "model": "gpt2"})
+        client.switch("local")
         check("switch()正常", True)
     except:
         check("switch()正常", True)
@@ -314,7 +314,7 @@ def test_project_structure():
     files = [
         "README.md",
         "core/__init__.py", "core/main.py", "core/agent_loop.py",
-        "core/identity.py", "core/llm.py", "core/sandbox.py",
+        "core/identity.py", "core/llm.py", "core/safety.py",
         "core/tool_registry.py", "core/session_store.py",
         "core/hooks.py", "core/evolution.py",
         "autonomous/__init__.py",
@@ -331,10 +331,10 @@ def test_project_structure():
 def test_importability():
     print("\n【21/21】模块独立可导入性")
     modules = [
-        "core.identity", "core.sandbox", "core.memory_api",
+        "core.identity", "core.safety", "core.memory_api",
         "core.llm", "core.evolution", "core.tool_registry",
         "core.subagent", "core.approval", "core.session_store",
-        "core.context_compress", "core.safety",
+        "core.context_compress",
         "core.cron_scheduler", "core.agent_loop",
         "core.prompt_template", "core.observer",
         "autonomous.learner", "autonomous.prioritizer",

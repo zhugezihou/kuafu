@@ -189,24 +189,18 @@ class AgentLoop:
         # 注册 delegate_task 工具（子 Agent 系统）
         self._register_delegate_tool()
 
-        # 加载 MCP Server 集成
-        self.mcp_bridge: Optional[MCPBridge] = None
-        self._init_mcp()
-
-        # 记忆维护计数器（每 10 轮触发一次去重/过期清理/合并）
-        self._mem_maintenance_counter = 0
-
-        # EvolutionEngine：自我进化（任务结束时判断是否生成技能）
-        from core.evolution_engine import EvolutionEngine as EvolEngineV2
-        self.evolution_engine = EvolEngineV2(root_dir=ROOT_DIR)
-
-        # Observer：运行时工具调用跟踪
-        self._observer = Observer()
-        self.evolution.register_observer(self._observer)
-
-        # 进化规则引擎（基于 Hindsight 置信度）
+        # ── 以下全部惰性初始化（用到才创建） ──
+        self.prompt_cache = None  # PromptCache()
+        self.compressor = None  # ContextCompressor()
+        self.budget_allocator = None  # BudgetAllocator()
+        self.tool_result_store = None  # ToolResultStore()
+        self.collapser = None  # ContextCollapse()
+        self.mcp_bridge = None  # MCPBridge()
+        self._observer = None  # Observer()
+        self.evolution_engine = None  # EvolutionEngine v2
         self._evolution_rules = None
-        self._init_evolution_rules()
+        self._budget_scan_count = 0
+        self._mem_maintenance_counter = 0
 
         # 注册 skill_rollback 工具
         self._register_skill_rollback()
@@ -220,15 +214,63 @@ class AgentLoop:
         except Exception as e:
             self._log(f"⚠️ Hook 系统初始化失败: {e}")
 
-        # ── Permission System（PreToolUse 权限检查） ──
+    def _lazy_init(self):
+        """惰性初始化（run() 第一次调用时才创建的组件）。"""
+        if self.compressor is not None:
+            return  # 已初始化
+
+        # ── Permission System ──
         self.permission_enabled = os.environ.get("KUAFFU_DISABLE_APPROVAL", "") != "1"
         self._pretooluse_cache: dict = {}
 
-        # ── 审批通知回调 （外部注入，如飞书推送） ──
+        # ── 审批通知回调 ──
         self.on_approval_request: Optional[Callable[[str, dict, str], None]] = None
-        # 签名: on_approval_request(tool_name, args, req_id) -> None
 
-        # ── 实时事件回调（供 Web UI 等外部订阅） ──
+        # ── 实时事件回调 ──
+        self.on_llm_start: Optional[Callable[[int], None]] = None
+        self.on_llm_end: Optional[Callable[[int, str], None]] = None
+        self.on_tool_start: Optional[Callable[[str, dict, float], None]] = None
+        self.on_tool_end: Optional[Callable[[str, str, float], None]] = None
+        self.on_turn: Optional[Callable[[int, dict], None]] = None
+        self.on_error: Optional[Callable[[str], None]] = None
+        self.on_finish: Optional[Callable[[dict], None]] = None
+
+        # 上下文压缩器 — 阈值根据后端动态设置
+        local_backend = getattr(self.llm, 'backend', 'cloud') == 'local'
+        ctx_threshold = 28000 if local_backend else 12000
+        self.compressor = ContextCompressor(
+            max_context_tokens=ctx_threshold,
+            keep_recent_rounds=5,
+            summarizer=LocalSummarizer(),
+        )
+
+        # Budget Allocator: Token 预算分配器
+        self.budget_allocator = BudgetAllocator(
+            policy=BudgetPolicy(total_budget=ctx_threshold),
+            on_critical=self._on_budget_critical,
+            on_warning=self._on_budget_warning,
+        )
+        self._budget_scan_count = 0
+
+        # Microcompact: 大型工具结果 → 磁盘存储
+        self.tool_result_store = ToolResultStore()
+
+        # ContextCollapse: 非破坏性上下文投影
+        self.collapser = ContextCollapse(
+            summarizer=LocalSummarizer(),
+            keep_recent_rounds=5,
+        )
+
+        # Observer：运行时工具调用跟踪
+        self._observer = Observer()
+        self.evolution.register_observer(self._observer)
+
+        # 进化规则引擎（基于 Hindsight 置信度）
+        self._evolution_rules = None
+
+        # MCP Server 集成
+        self.mcp_bridge: Optional[MCPBridge] = None
+        self._init_mcp()
         self.on_llm_start: Optional[Callable[[int], None]] = None
         self.on_llm_end: Optional[Callable[[int, str], None]] = None
         self.on_tool_start: Optional[Callable[[str, dict, float], None]] = None
@@ -381,13 +423,12 @@ class AgentLoop:
 
         使用 PromptManager 将 prompt 拆分为独立 section 组合。
         利用 PromptCache 对 L1(immutable) / L2(semi) / L3(variable) 分层缓存，
-        同一 session 后续调用减少 40-60% 的重复拼接。
-
-        缓存失效策略：
-        - L1: 同一 session 永不失效（identity, rules, config, format）
-        - L2: 工具 schema 不变则命中（core_tools, common_tools）
-        - L3: 每次重新生成（memory, skills, quality）
         """
+        # 确保惰性初始化
+        if self.prompt_cache is None:
+            self.prompt_cache = PromptCache()
+            self._lazy_init()
+
         from core.prompt_template import get_stability, STABILITY_L1_IMMUTABLE, STABILITY_L2_SEMI
 
         pm = PromptManager(task)
@@ -505,7 +546,9 @@ class AgentLoop:
 
         # ── 6. 配置（L1 半稳定，同一 session 固定） ──
         if self.llm:
-            config_content = f"- 后端: {self.llm.backend} | 模型: {self.llm.model}"
+            backend_name = getattr(self.llm, 'backend', '?')
+            model_name = getattr(self.llm, 'model', '?')
+            config_content = f"- 后端: {backend_name} | 模型: {model_name}"
             pm.add_section(
                 section_id="config",
                 title="配置",
@@ -795,6 +838,9 @@ class AgentLoop:
         errors = []
         messages = []
         turn_count = 0
+
+        # 惰性初始化：需要时才创建（减少启动开销）
+        self._lazy_init()
         final_result = ""
         final_summary = ""
 
@@ -1088,7 +1134,17 @@ class AgentLoop:
                 llm_content = response.get("content", "").strip()
                 for tc in response["tool_calls"]:
                     if tc["function"]["name"] == "finish":
-                        args = tc["function"]["arguments"]
+                        raw_args = tc["function"]["arguments"]
+                        # arguments 可能是 JSON 字符串或 dict
+                        if isinstance(raw_args, str):
+                            try:
+                                args = json.loads(raw_args)
+                            except json.JSONDecodeError:
+                                args = {"result": raw_args}
+                        elif isinstance(raw_args, dict):
+                            args = raw_args
+                        else:
+                            args = {"result": str(raw_args) if raw_args else ""}
                         if llm_content:
                             final_result = llm_content
                             final_summary = args.get("summary", llm_content[:200])
@@ -1120,7 +1176,17 @@ class AgentLoop:
 
                     # ── PreToolUse: 权限检查（Deny 规则 → 自动模式 → 人工审批） ──
                     if self.permission_enabled and fn_name not in ("finish", "delegate_task", "skill_rollback"):
-                        args_dict = tc.get("function", {}).get("arguments", {})
+                        raw_args = tc.get("function", {}).get("arguments", {})
+                        # 解析 arguments：可能是 JSON 字符串或 dict
+                        if isinstance(raw_args, str):
+                            try:
+                                args_dict = json.loads(raw_args)
+                            except json.JSONDecodeError:
+                                args_dict = {}
+                        elif isinstance(raw_args, dict):
+                            args_dict = raw_args
+                        else:
+                            args_dict = {}
                         # 触发 on_tool_before 钩子（同步，可阻止）
                         if self.hooks_enabled:
                             hook_results = trigger_sync("on_tool_before", {

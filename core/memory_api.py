@@ -15,6 +15,7 @@ import os
 import time
 import urllib.request
 import urllib.error
+import threading
 from pathlib import Path
 from typing import Optional
 import logging
@@ -47,7 +48,7 @@ DEFAULT_TTL_DAYS = 30                     # 默认过期天数
 DEFAULT_DEDUP_OVERLAP_RATIO = 0.6        # 去重关键词重叠阈值
 DEFAULT_MERGE_THRESHOLD = 3              # 同一 source/context 超此条数触发合并（v0.4.1 改为 3）
 DEFAULT_MAX_MEMORY_CHARS = 2000           # 单条记忆最大字符数
-DEFAULT_SEARCH_MIN_SCORE = 0.3           # 搜索结果最低相关度
+DEFAULT_SEARCH_MIN_SCORE = 0.15           # 搜索结果最低相关度
 DEFAULT_CLEANUP_INTERVAL = 10            # 每存储多少条触发一次清理
 DEFAULT_MERGE_USE_LLM = True             # 是否使用 LLM 做摘要合并
 
@@ -157,6 +158,7 @@ class FileMemoryBackend:
         self.tasks_dir = self.memory_dir / "tasks"
         self.tasks_dir.mkdir(parents=True, exist_ok=True)
         self._index_path = self.memory_dir / "index.json"
+        self._lock = threading.Lock()
         self._index = self._load_index()
         # v0.4.1 从配置文件加载所有配置
         cfg = _load_memory_config()

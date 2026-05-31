@@ -16,6 +16,7 @@
 import json
 import logging
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -52,10 +53,30 @@ class Session:
 class SessionStore:
     """会话存储。SQLite 后端。"""
 
-    def __init__(self, db_path: Optional[Path] = None):
+    _shared_conn: Optional[sqlite3.Connection] = None
+    _shared_db_path: Optional[Path] = None
+    _lock = threading.Lock()
+
+    def __init__(self, db_path: Optional[Path] = None, reuse_conn: bool = True):
         self.db_path = db_path or SESSION_DB
-        self._conn: Optional[sqlite3.Connection] = None
-        self._init_db()
+        # 复用已有数据库连接（避免文件描述符泄漏）
+        if SessionStore._shared_conn and SessionStore._shared_db_path == self.db_path:
+            self._conn = SessionStore._shared_conn
+        else:
+            self._conn: Optional[sqlite3.Connection] = None
+            self._init_db()
+            SessionStore._shared_conn = self._conn
+            SessionStore._shared_db_path = self.db_path
+
+    def _close_conn(self):
+        if self._conn:
+            try: self._conn.close()
+            except: pass
+            self._conn = None
+
+    def __del__(self):
+        if self._conn and self._conn is not SessionStore._shared_conn:
+            self._close_conn()
 
     @staticmethod
     def _clean_surrogates(text: str) -> str:
@@ -101,9 +122,27 @@ class SessionStore:
         self._conn.commit()
 
     def _get_cursor(self):
-        if not self._conn:
+        conn = self._conn or SessionStore._shared_conn
+        if not conn or not SessionStore._is_conn_open(conn):
             self._init_db()
-        return self._conn.cursor()
+            SessionStore._shared_conn = self._conn
+            conn = self._conn
+        self._conn = conn
+        # 确保 row_factory 正确（可能在多线程中被重置）
+        if conn.row_factory is not sqlite3.Row:
+            conn.row_factory = sqlite3.Row
+        return conn.cursor()
+
+    @staticmethod
+    def _is_conn_open(conn=None) -> bool:
+        """检查数据库连接是否打开。"""
+        try:
+            if conn is None:
+                return False
+            conn.execute("SELECT 1")
+            return True
+        except Exception:
+            return False
 
     # ── 会话管理 ──────────────────────────────────────────────────
 
@@ -123,23 +162,24 @@ class SessionStore:
 
     def append_message(self, session_id: str, role: str, content: str):
         """追加一条消息到会话。"""
-        cursor = self._get_cursor()
-        # 清理 surrogate 字符，避免 SQLite 写入失败
-        clean_content = self._clean_surrogates(content)
-        token_count = estimate_tokens(clean_content)
-        now = time.time()
+        with self._lock:
+            cursor = self._get_cursor()
+            # 清理 surrogate 字符，避免 SQLite 写入失败
+            clean_content = self._clean_surrogates(content)
+            token_count = estimate_tokens(clean_content)
+            now = time.time()
 
-        cursor.execute(
-            "INSERT INTO messages (session_id, role, content, timestamp, token_count) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (session_id, role, clean_content, now, token_count),
-        )
-        cursor.execute(
-            "UPDATE sessions SET message_count = message_count + 1, "
-            "total_tokens = total_tokens + ?, updated_at = ? WHERE id = ?",
-            (token_count, now, session_id),
-        )
-        self._conn.commit()
+            cursor.execute(
+                "INSERT INTO messages (session_id, role, content, timestamp, token_count) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (session_id, role, clean_content, now, token_count),
+            )
+            cursor.execute(
+                "UPDATE sessions SET message_count = message_count + 1, "
+                "total_tokens = total_tokens + ?, updated_at = ? WHERE id = ?",
+                (token_count, now, session_id),
+            )
+            self._conn.commit()
 
     def get_session(self, session_id: str) -> Optional[Session]:
         """获取会话信息。"""

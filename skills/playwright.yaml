@@ -1,25 +1,28 @@
-name: "playwright"
-description: |
-  使用 Playwright 进行浏览器自动化测试。支持 Chromium、Firefox、Webkit 浏览器，
+name: playwright
+description: '使用 Playwright 进行浏览器自动化测试。支持 Chromium、Firefox、Webkit 浏览器，
+
   可进行网页操作、截图、录制等
+
+  '
 keywords:
-  - "Playwright"
-  - "浏览器自动化"
-  - "测试"
-  - "web 自动化"
-  - "截图"
-  - "录制"
-  - "浏览器"
-  - "Chromium"
-  - "Firefox"
-  - "Webkit"
+- Playwright
+- 浏览器自动化
+- 测试
+- web 自动化
+- 截图
+- 录制
+- 浏览器
+- Chromium
+- Firefox
+- Webkit
 steps:
-  - "明确自动化任务目标（测试、截图、数据抓取等）"
-  - "选择目标浏览器（Chromium/Firefox/Webkit）"
-  - "编写或调用 Playwright 脚本"
-  - "执行测试并检查结果"
-  - "处理截图、日志等输出"
+- 明确自动化任务目标（测试、截图、数据抓取等）
+- 选择目标浏览器（Chromium/Firefox/Webkit）
+- 编写或调用 Playwright 脚本
+- 执行测试并检查结果
+- 处理截图、日志等输出
 examples:
-  - "使用 Playwright 打开网页并操作元素"
-  - "截取网页截图并保存"
-  - "录制自动化测试过程"
+- 使用 Playwright 打开网页并操作元素
+- 截取网页截图并保存
+- 录制自动化测试过程
+usage_count: 2
