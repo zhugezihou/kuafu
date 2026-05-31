@@ -50,9 +50,13 @@ def _is_interactive() -> bool:
     """判断当前是否在交互式终端中运行。
 
     检查顺序：
-    1. 环境变量 KUAFFU_INTERACTIVE=1 强制交互（kuafu.sh 启动时自动设置）
-    2. TTY 检测
+    1. KUAFFU_GATEWAY_RUNNING=1 强制非交互（gateway 模式）
+    2. 环境变量 KUAFFU_INTERACTIVE=1 强制交互（kuafu.sh 启动时自动设置）
+    3. TTY 检测
     """
+    # Gateway 模式下即使有 TTY 也走非交互审批
+    if os.environ.get("KUAFFU_GATEWAY_RUNNING") == "1":
+        return False
     return (
         os.environ.get("KUAFFU_INTERACTIVE") == "1"
         or (sys.stdin.isatty() and sys.stdout.isatty())

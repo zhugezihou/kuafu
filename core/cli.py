@@ -13,6 +13,7 @@
 
 import argparse
 import json
+import os
 import sys
 import time
 from datetime import datetime
@@ -420,6 +421,7 @@ def run_gateway(args: argparse.Namespace, agent: Any) -> int:
     from core.gateway import GatewayServer, install_service, uninstall_service
 
     if args.cmd == "start":
+        os.environ["KUAFFU_GATEWAY_RUNNING"] = "1"  # 标记 gateway 模式，审批走通道推送
         gw = GatewayServer(agent, host=args.host, port=args.port, api_key=args.key)
         if gw.start():
             print(f"Gateway 运行中: http://{args.host}:{args.port}")
