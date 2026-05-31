@@ -335,7 +335,7 @@ class FeishuWebSocketChannel(MessageChannel):
                     log_level=lark.LogLevel.ERROR,
                 )
 
-                print(f"[FeishuWS] WebSocket 已连接 (重连 #{reconnect_count})")
+                print(f"[FeishuWS] WebSocket 已连接 (重连 #{reconnect_count})", flush=True)
                 reconnect_count = 0
                 cli.start()  # 阻塞直到断开
 
