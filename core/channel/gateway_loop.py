@@ -37,20 +37,18 @@ class GatewayLoop:
         self._register_approval_callback()
 
     def _register_approval_callback(self):
-        """注册审批推送回调：审批 pending 时通过消息通道通知用户。"""
+        """注册审批推送回调：审批 pending 时通过消息通道通知用户。
+
+        飞书 → 带按钮的审批卡片
+        微信 → 文字短指令（回复 1 批准 / 0 拒绝）
+        """
         def _on_approval(tool: str, args: dict, req_id: str):
             """审批请求回调 — 推送到所有消息通道。"""
             title = tool
             if tool == "terminal":
                 title = "终端: " + args.get("command", "")[:60]
             detail = json.dumps(args, ensure_ascii=False)[:200]
-
-            msg = (
-                "🔐 **审批请求** `" + req_id + "`\n"
-                "工具: " + title + "\n"
-                "参数: " + detail + "\n\n"
-                '回复「批准 ' + req_id + '」或「拒绝 ' + req_id + '」'
-            )
+            args_summary = f"{title}\\n{detail}"
 
             # 推送到所有通道
             for name in self.channels.list():
@@ -65,16 +63,50 @@ class GatewayLoop:
                         kwargs = {}
                         if chat_id:
                             kwargs['chat_id'] = chat_id
-                        channel.send(msg, **kwargs)
+
+                        # 飞书 → 卡片按钮
+                        if name == "feishu" and hasattr(channel, 'send_approval_card'):
+                            channel.send_approval_card(
+                                approval_id=req_id,
+                                tool=title,
+                                args_summary=args_summary,
+                                chat_id=chat_id or "",
+                            )
+                        else:
+                            # 微信/其他 → 短指令文本
+                            short_id = req_id[-8:] if len(req_id) > 8 else req_id
+                            msg = (
+                                "🔐 **审批请求** `" + short_id + "`\\n"
+                                "工具: " + title + "\\n"
+                                "参数: " + detail + "\\n\\n"
+                                "回复 `1 " + short_id + "` 批准 / `0 " + short_id + "` 拒绝"
+                            )
+                            channel.send(msg, **kwargs)
                     except Exception as e:
                         print(f"[GatewayLoop] ⚠️ 审批推送失败 ({name}): {e}")
 
-        # 注入到 agent 的审批回调（注意 agent 本身就是 AgentLoop，没有 _loop 属性）
+        # 注入到 agent 的审批回调
         if hasattr(self.agent, 'on_approval_request'):
             self.agent.on_approval_request = _on_approval
-        # 同时也注入到全局回调（approval.py 的 ON_APPROVAL_REQUEST_CB）
+        # 同时也注入到全局回调
         import core.approval as approval_mod
         approval_mod.ON_APPROVAL_REQUEST_CB = lambda tool, args, req_id: _on_approval(tool, args, req_id)
+
+        # 设置飞书卡片回调：卡片按钮点击 → 执行审批
+        from core.channel.feishu_ws import ON_CARD_APPROVAL_CB as feishu_cb_global
+        import core.channel.feishu_ws as feishu_mod
+
+        def _on_card_approval(approval_id: str, action: str):
+            """飞书卡片按钮回调 — 执行审批决策。"""
+            from core.approval import ApprovalManager
+            if action == "approve":
+                ok = ApprovalManager.approve(approval_id)
+                print(f"[GatewayLoop] ✅ 飞书卡片批准 {approval_id}: {'成功' if ok else '失败（不存在或已处理）'}")
+            else:
+                ok = ApprovalManager.reject(approval_id)
+                print(f"[GatewayLoop] ❌ 飞书卡片拒绝 {approval_id}: {'成功' if ok else '失败（不存在或已处理）'}")
+
+        feishu_mod.ON_CARD_APPROVAL_CB = _on_card_approval
 
     def start(self):
         """启动消息循环（后台线程）。"""
@@ -113,15 +145,25 @@ class GatewayLoop:
 
     def _check_approval_decision(self, text: str) -> Optional[dict]:
         """检查用户消息是否是审批决策。
-        
+
         支持格式：
-        - 批准 abc123
-        - 拒绝 abc123
-        - approve abc123
-        - reject abc123
+        - 1 abc123 / 0 abc123（短指令）
+        - 批准 abc123 / 拒绝 abc123（文字指令）
+        - approve abc123 / reject abc123（英文指令）
+
+        短指令只匹配 req_id 后 8 位。
         """
         text = text.strip()
         import re
+        # 短指令：1 / 0 + req_id（可支持后8位短ID）
+        m = re.match(r"^([10])\s+(\S{4,})$", text)
+        if m:
+            raw_action = m.group(1)
+            raw_req_id = m.group(2)
+            # 如果是短ID（8位），尝试补全匹配
+            return {"action": "approve" if raw_action == "1" else "reject", "req_id": raw_req_id}
+
+        # 文字指令：批准 / 拒绝 + req_id
         m = re.match(r"^(批准|拒绝|approve|reject)\s+(\S+)", text, re.IGNORECASE)
         if not m:
             return None

@@ -539,7 +539,12 @@ class ApprovalManager:
                 "auto": False,
             }
         else:
-            # Gateway/cron 模式：等待通道回复审批
+            # Gateway/cron 模式：轮询等待审批结果
+            timeout = _get_approval_timeout()
+            deadline = time.time() + timeout
+            # 先返回 pending_approval 触发通知推送，再轮询等待
+            # agent_loop 会在收到 pending_approval 后调用 on_approval_request 推送通知
+            # 这里我们不阻塞 check_permission，而是由 agent_loop 处理等待逻辑
             return {
                 "allowed": None,  # 待人工决策
                 "reason": f"🟡 需要审批 (ID: {req_id})",
@@ -696,9 +701,20 @@ class ApprovalManager:
 
     @staticmethod
     def _resolve(req_id: str = "") -> Optional[ApprovalRequest]:
-        """解析请求 ID。空串时找最新 pending 的请求。"""
+        """解析请求 ID。空串时找最新 pending 的请求。
+
+        支持完整 req_id 或后 8 位短 ID 匹配。
+        """
         if req_id:
-            return _load(req_id)
+            req = _load(req_id)
+            if req:
+                return req
+            # 短 ID 匹配：遍历 pending 列表，匹配后 8 位
+            pending = ApprovalManager.list_pending()
+            for p in pending:
+                if p.id.endswith(req_id):
+                    return p
+            return None
         pending = ApprovalManager.list_pending()
         if not pending:
             return None

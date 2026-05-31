@@ -1245,6 +1245,75 @@ class AgentLoop:
                                     self.on_approval_request(fn_name, args_dict, perm.get("req_id", "?"))
                                 except Exception as e:
                                     self._log(f"⚠️ 审批通知推送失败: {e}")
+
+                            # 非交互模式下，阻塞等待审批结果
+                            req_id = perm.get("req_id", "")
+                            if req_id and perm["approach"] == "pending_approval":
+                                from core.approval import ApprovalManager, _get_approval_timeout
+                                import time as _t
+                                deadline = _t.time() + _get_approval_timeout()
+                                approved = None
+                                while _t.time() < deadline:
+                                    req = ApprovalManager._resolve(req_id)
+                                    if req:
+                                        if req.status == "approved":
+                                            approved = True
+                                            self._log(f"✅ {fn_name} 审批已通过 (ID: {req_id})")
+                                            break
+                                        elif req.status == "rejected":
+                                            approved = False
+                                            self._log(f"⛔ {fn_name} 审批已拒绝 (ID: {req_id})")
+                                            break
+                                    _t.sleep(0.5)
+                                if approved is True:
+                                    # 审批通过了，执行工具
+                                    tool_result = self.tools.execute(tc)
+
+                                    # ── 工具执行结束通知 ──
+                                    if self.on_tool_end:
+                                        tool_elapsed = time.time() - tool_start_ts
+                                        self.on_tool_end(fn_name, tc.get("function", {}).get("arguments", {}),
+                                                         tool_elapsed, "success" if tool_result.get("success", True) else "error")
+
+                                    # 安全脱敏
+                                    raw_output = str(tool_result.get("output", "(无输出)"))
+                                    safe_output = SafetyLayer.sanitize_text(raw_output)
+
+                                    tool_result_msg = (
+                                        f"✅ 工具执行成功: {fn_name}\n"
+                                        f"输出: {safe_output[:1000]}"
+                                    )
+                                    messages.append({
+                                        "role": "tool",
+                                        "tool_call_id": tc["id"],
+                                        "content": tool_result_msg,
+                                    })
+                                    self.sessions.append_message(
+                                        self.current_session_id, "tool", tool_result_msg[:500],
+                                    )
+                                    continue
+                                elif approved is False:
+                                    msg = f"⛔ 审批已拒绝: {fn_name}"
+                                    messages.append({
+                                        "role": "tool",
+                                        "tool_call_id": tc["id"],
+                                        "content": msg,
+                                    })
+                                    self.sessions.append_message(
+                                        self.current_session_id, "tool", msg[:500],
+                                    )
+                                    continue
+                                else:
+                                    msg = f"⏱ 审批超时: {fn_name} (ID: {req_id})"
+                                    messages.append({
+                                        "role": "tool",
+                                        "tool_call_id": tc["id"],
+                                        "content": msg,
+                                    })
+                                    self.sessions.append_message(
+                                        self.current_session_id, "tool", msg[:500],
+                                    )
+                                    continue
                             messages.append({
                                 "role": "tool",
                                 "tool_call_id": tc["id"],

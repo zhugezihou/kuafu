@@ -1,13 +1,17 @@
 """
-channel/feishu_ws.py — 飞书 WebSocket 直连通道（替代轮询）
+channel/feishu_ws.py — 飞书 WebSocket 通道
 
-使用 lark-oapi SDK 的 WebSocket 事件订阅。
-建立持久 WS 连接，飞书主动推送消息。
-无需轮询，零延迟。
+通过 lark-oapi SDK 连接飞书 WebSocket，收发消息和卡片交互。
+支持：
+- 接收群聊/私聊文本消息（@bot 过滤）
+- 发送文本消息
+- 发送审批卡片（interactive card）
+- 接收卡片按钮回调（批准/拒绝审批）
 
 环境变量：
   FEISHU_APP_ID — 飞书应用 App ID
   FEISHU_APP_SECRET — 飞书应用 App Secret
+  FEISHU_CHAT_ID — 默认飞书群聊天 ID
 """
 
 from __future__ import annotations
@@ -17,15 +21,20 @@ import logging
 import os
 import threading
 import time
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, Callable, Optional
 
 from core.channel.base import MessageChannel, Message, SendResult
 
 logger = logging.getLogger("kuafu.feishu_ws")
 
+# 审批按钮回调 — 外部注入
+ON_CARD_APPROVAL_CB: Optional[Callable[[str, str], None]] = None
+"""回调签名: (approval_id: str, action: str) -> None, action 为 'approve' 或 'reject'"""
+
 
 class FeishuWebSocketChannel(MessageChannel):
-    """飞书 WebSocket 直连通道。"""
+    """飞书 WebSocket 通道（lark-oapi SDK）。"""
 
     @property
     def name(self) -> str:
@@ -43,25 +52,41 @@ class FeishuWebSocketChannel(MessageChannel):
         self._ws_client: Any = None
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._card_approval_state: dict[str, threading.Event] = {}
+        """approval_id → Event，用于解阻塞等待审批的线程"""
 
     # ── 消息发送 ──────────────────────────────────────────────
 
     def send(self, text: str, **kwargs) -> SendResult:
-        """通过飞书 API 发送消息。"""
+        """通过飞书 API 发送文本消息。"""
         chat_id = kwargs.get("chat_id", "")
+        return self._send_api(chat_id, "text", {"text": text})
+
+    def send_card(self, card: dict, chat_id: str = "") -> SendResult:
+        """发送飞书消息卡片（interactive）。"""
+        return self._send_api(chat_id, "interactive", card)
+
+    def _send_api(self, chat_id: str, msg_type: str, content: dict | str) -> SendResult:
+        """飞书 API 消息发送底层方法。"""
         token = self._get_tenant_token()
         if not token:
             return SendResult(success=False, platform="feishu", error="token 获取失败")
 
         from urllib.request import Request, urlopen
+
         target = chat_id or os.environ.get("FEISHU_CHAT_ID", "")
         if not target:
             return SendResult(success=False, platform="feishu", error="chat_id 未指定")
 
+        if isinstance(content, str):
+            content_str = content
+        else:
+            content_str = json.dumps(content, ensure_ascii=False)
+
         body = json.dumps({
             "receive_id": target,
-            "msg_type": "text",
-            "content": json.dumps({"text": text}, ensure_ascii=False),
+            "msg_type": msg_type,
+            "content": content_str,
         }, ensure_ascii=False).encode("utf-8")
 
         req = Request(
@@ -106,7 +131,7 @@ class FeishuWebSocketChannel(MessageChannel):
         except Exception:
             return ""
 
-    # ── 消息接收（WS/轮询 混合模式） ──────────────────────────
+    # ── 消息接收 ──────────────────────────────────────────────
 
     def poll(self) -> list[Message]:
         with self._lock:
@@ -115,11 +140,11 @@ class FeishuWebSocketChannel(MessageChannel):
         return msgs
 
     def _on_message(self, text: str, msg_id: str = "", chat_id: str = "", sender: str = ""):
-        # 群聊消息必须包含 @bot 才处理（兼容所有 SDK 版本）
-        # 过滤逻辑：消息内容包含 @夸父 或 @Kuafu
+        # 群聊消息必须 @bot 才处理
+        # 检查多种 @ 格式：@夸父（中文名）、@Kuafu（英文名）
         if chat_id:
-            if '@夸父' not in text and '@Kuafu' not in text and '@kuafu' not in text:
-                print(f"[FeishuWS] 忽略非@bot消息: {text[:40]}")
+            if not any(tag in text for tag in ['@夸父', '@Kuafu', '@kuafu']):
+                print(f"[FeishuWS] 忽略非@bot消息: {text[:60]}")
                 return
         msg = Message(
             text=text,
@@ -130,6 +155,73 @@ class FeishuWebSocketChannel(MessageChannel):
         )
         with self._lock:
             self._inbox.append(msg)
+
+    # ── 审批卡片 ──────────────────────────────────────────────
+
+    def _build_approval_card(self, approval_id: str, tool: str, args_summary: str) -> dict:
+        """构建审批按钮卡片 JSON。"""
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": "🔐 审批请求"},
+                "template": "orange",
+            },
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": f"**工具**: `{tool}`\n**参数**: `{args_summary}`\n\n**ID**: `{approval_id}`",
+                },
+                {
+                    "tag": "action",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "✅ 批准"},
+                            "type": "primary",
+                            "value": {"approval_id": approval_id, "action": "approve"},
+                        },
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "❌ 拒绝"},
+                            "type": "danger",
+                            "value": {"approval_id": approval_id, "action": "reject"},
+                        },
+                    ],
+                },
+            ],
+        }
+
+    def send_approval_card(self, approval_id: str, tool: str, args_summary: str, chat_id: str = "") -> SendResult:
+        """发送审批卡片并注册等待事件。"""
+        ev = threading.Event()
+        self._card_approval_state[approval_id] = ev
+        card = self._build_approval_card(approval_id, tool, args_summary)
+        result = self.send_card(card, chat_id=chat_id)
+        if not result.success:
+            self._card_approval_state.pop(approval_id, None)
+        return result
+
+    def wait_approval(self, approval_id: str, timeout: float = 300) -> Optional[str]:
+        """阻塞等待审批结果。返回 'approve' 或 'reject'，超时返回 None。"""
+        ev = self._card_approval_state.get(approval_id)
+        if not ev:
+            return None
+        # 将卡片按钮回调写入事件
+        result_holder: list[Optional[str]] = [None]
+        import core.channel.feishu_ws as _feishu_mod
+        original_cb = _feishu_mod.ON_CARD_APPROVAL_CB
+
+        def _cb(aid: str, action: str):
+            if aid == approval_id:
+                result_holder[0] = action
+                ev.set()
+
+        _feishu_mod.ON_CARD_APPROVAL_CB = _cb
+
+        ev.wait(timeout=timeout)
+        _feishu_mod.ON_CARD_APPROVAL_CB = original_cb
+        self._card_approval_state.pop(approval_id, None)
+        return result_holder[0]
 
     # ── WS 启动（lark-oapi SDK） ──────────────────────────────
 
@@ -169,7 +261,6 @@ class FeishuWebSocketChannel(MessageChannel):
                         if not msg:
                             return
 
-                        # 兼容对象和 dict 两种格式
                         if isinstance(msg, dict):
                             msg_type = msg.get('msg_type', msg.get('message_type', ''))
                             if msg_type != 'text':
@@ -179,7 +270,6 @@ class FeishuWebSocketChannel(MessageChannel):
                             msg_id = msg.get('message_id', '')
                             chat_id = msg.get('chat_id', '')
                             sender = (msg.get('sender') or {}).get('id', '')
-                            mentions = msg.get('mentions', [])
                         else:
                             msg_type = getattr(msg, 'message_type', getattr(msg, 'msg_type', ''))
                             if msg_type != 'text':
@@ -189,7 +279,6 @@ class FeishuWebSocketChannel(MessageChannel):
                             msg_id = getattr(msg, 'message_id', '')
                             chat_id = getattr(msg, 'chat_id', '')
                             sender = getattr(getattr(msg, 'sender', None), 'id', '') if hasattr(msg, 'sender') else ''
-                            mentions = getattr(msg, 'mentions', [])
 
                         if not content_raw:
                             return
@@ -206,9 +295,32 @@ class FeishuWebSocketChannel(MessageChannel):
                         print(f"[FeishuWS] 处理消息异常: {e}")
                         traceback.print_exc()
 
+                def on_card_action(data) -> None:
+                    """收到飞书卡片按钮回调事件。"""
+                    try:
+                        action = getattr(data, 'action', None) if not isinstance(data, dict) else data.get('action')
+                        if not action:
+                            return
+                        value = getattr(action, 'value', {}) if not isinstance(action, dict) else action.get('value', {})
+                        if not value:
+                            return
+                        approval_id = value.get('approval_id') if isinstance(value, dict) else None
+                        action_type = value.get('action') if isinstance(value, dict) else None
+                        if not approval_id or not action_type:
+                            return
+                        print(f"[FeishuWS] 卡片按钮: {action_type} (ID: {approval_id})")
+                        cb = ON_CARD_APPROVAL_CB
+                        if cb:
+                            cb(str(approval_id), str(action_type))
+                    except Exception as e:
+                        import traceback
+                        print(f"[FeishuWS] 处理卡片回调异常: {e}")
+                        traceback.print_exc()
+
                 handler = (
                     EventDispatcherHandler.builder("", "")
                     .register_p2_im_message_receive_v1(on_message)
+                    .register_p2_card_action_trigger(on_card_action)
                     .build()
                 )
 
