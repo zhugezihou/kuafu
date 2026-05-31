@@ -57,16 +57,21 @@ class GatewayLoop:
                 channel = self.channels.get(name)
                 if channel:
                     try:
+                        chat_id = None
+                        if hasattr(self, '_last_chat_ids') and name in self._last_chat_ids:
+                            chat_id = self._last_chat_ids[name]
+                        elif hasattr(self, '_last_chat_id'):
+                            chat_id = self._last_chat_id
                         kwargs = {}
-                        if hasattr(self, '_last_chat_id'):
-                            kwargs['chat_id'] = self._last_chat_id
+                        if chat_id:
+                            kwargs['chat_id'] = chat_id
                         channel.send(msg, **kwargs)
                     except Exception as e:
                         print(f"[GatewayLoop] ⚠️ 审批推送失败 ({name}): {e}")
 
-        # 注入到 agent 的审批回调
-        if hasattr(self.agent, '_loop') and self.agent._loop:
-            self.agent._loop.on_approval_request = _on_approval
+        # 注入到 agent 的审批回调（注意 agent 本身就是 AgentLoop，没有 _loop 属性）
+        if hasattr(self.agent, 'on_approval_request'):
+            self.agent.on_approval_request = _on_approval
         # 同时也注入到全局回调（approval.py 的 ON_APPROVAL_REQUEST_CB）
         import core.approval as approval_mod
         approval_mod.ON_APPROVAL_REQUEST_CB = lambda tool, args, req_id: _on_approval(tool, args, req_id)
@@ -136,9 +141,11 @@ class GatewayLoop:
         text = msg.text.strip()
         print(f"[GatewayLoop] 📩 {msg.platform}/{msg.chat_id}: {text[:60]}")
 
-        # 记录最近消息的来源（用于审批推送）
-        self._last_chat_id = msg.chat_id
-        self._last_platform = msg.platform
+        # 记录最近消息的来源（用于审批推送） — 按通道分别保存
+        if not hasattr(self, '_last_chat_ids'):
+            self._last_chat_ids = {}
+        self._last_chat_ids[msg.platform] = msg.chat_id
+        self._last_chat_id = msg.chat_id  # 保留向后兼容
 
         # 审批决策检测：批准/拒绝 + req_id
         decision = self._check_approval_decision(text)
