@@ -511,8 +511,18 @@ class ApprovalManager:
             title = f"终端: {args.get('command', '')[:60]}"
         detail = json.dumps(args, ensure_ascii=False, indent=2)[:500]
 
+        # 无论是否交互，先提交审批请求并推送通道通知
+        req_id = ApprovalManager.submit(
+            title=title,
+            detail=detail,
+            risk=risk,
+            tool=tool,
+            args_snapshot=json.dumps(args, ensure_ascii=False),
+            context_type=f"check_permission_{tool}",
+        )
+        print(f"\n[Gateway] 🔐 审批请求已提交 (ID: {req_id})", flush=True)
+
         # 交互终端 → 阻塞等待用户 y/N 决策
-        # 非交互模式 → 高风险操作自动通过（不阻塞），记录日志
         if _is_interactive():
             allowed = ApprovalManager.terminal_prompt(
                 title=title,
@@ -525,20 +535,11 @@ class ApprovalManager:
                 "reason": f"{'✅' if allowed else '⛔'} 终端审批: {title}",
                 "approach": "terminal_prompt",
                 "rule_id": None,
-                "req_id": None,
+                "req_id": req_id,
                 "auto": False,
             }
         else:
-            # Gateway/cron 模式：提交审批请求，通过 ON_APPROVAL_REQUEST_CB 推送到微信
-            req_id = ApprovalManager.submit(
-                title=title,
-                detail=detail,
-                risk=risk,
-                tool=tool,
-                args_snapshot=json.dumps(args, ensure_ascii=False),
-                context_type=f"check_permission_{tool}",
-            )
-            print(f"\n[Gateway] 🔐 审批请求已提交 (ID: {req_id})", flush=True)
+            # Gateway/cron 模式：等待通道回复审批
             return {
                 "allowed": None,  # 待人工决策
                 "reason": f"🟡 需要审批 (ID: {req_id})",
@@ -767,10 +768,11 @@ def pretooluse_check(tool: str, args: dict, context: Optional[dict] = None) -> d
 
     result = ApprovalManager.check_permission(tool, args, context)
 
-    # 非交互模式下，审批请求通过全局回调广播（Web UI / SSE 等）
-    if result.get("approach") == "pending_approval" and ON_APPROVAL_REQUEST_CB:
+    # 如果有审批请求已提交，通过全局回调通知通道推送
+    req_id = result.get("req_id")
+    if req_id and ON_APPROVAL_REQUEST_CB:
         try:
-            ON_APPROVAL_REQUEST_CB(tool, args, result.get("req_id", ""))
+            ON_APPROVAL_REQUEST_CB(tool, args, req_id)
         except Exception:
             pass
 
