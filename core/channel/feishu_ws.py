@@ -115,12 +115,9 @@ class FeishuWebSocketChannel(MessageChannel):
         return msgs
 
     def _on_message(self, text: str, msg_id: str = "", chat_id: str = "", sender: str = ""):
-        # 群聊消息必须包含 @bot 才处理（兼容所有 SDK 版本）
-        # 过滤逻辑：消息内容包含 @夸父 或 @Kuafu
-        if chat_id:
-            if '@夸父' not in text and '@Kuafu' not in text and '@kuafu' not in text:
-                print(f"[FeishuWS] 忽略非@bot消息: {text[:40]}")
-                return
+        # 群聊消息必须 @bot 才处理
+        # 飞书 SDK 在 @bot 时消息文本中会包含 @_user_X 格式的 @，不再用 mentions 判断
+        # 所以直接信任上游的过滤，不过滤私聊
         msg = Message(
             text=text,
             msg_id=msg_id,
