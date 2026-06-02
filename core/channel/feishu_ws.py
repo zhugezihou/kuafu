@@ -351,20 +351,12 @@ class FeishuWebSocketChannel(MessageChannel):
                 def on_card_action(data) -> None:
                     """收到飞书卡片按钮回调事件。"""
                     try:
-                        import json as _js
-                        if hasattr(data, 'serialize'):
-                            _raw = _js.dumps(_js.loads(data.serialize()), ensure_ascii=False)[:500]
-                        else:
-                            _raw = str(data)[:500]
-                        print(f"[FeishuWS] 卡片回调原始数据: {_raw}")
-                        
                         event = data.event if hasattr(data, 'event') else data
                         action = getattr(event, 'action', None) if not isinstance(event, dict) else event.get('action')
                         if not action:
                             # 尝试从 data 直接取 action
                             action = getattr(data, 'action', None) if not isinstance(data, dict) else data.get('action')
                         if not action:
-                            print(f"[FeishuWS] 卡片回调: 无法获取 action")
                             return
                         value = getattr(action, 'value', {}) if not isinstance(action, dict) else action.get('value', {})
                         if not value:
@@ -372,6 +364,52 @@ class FeishuWebSocketChannel(MessageChannel):
                         approval_id = value.get('approval_id') if isinstance(value, dict) else None
                         action_type = value.get('action') if isinstance(value, dict) else None
                         print(f"[FeishuWS] 卡片按钮: {action_type} (ID: {approval_id})")
+
+                        # 先更新卡片：把按钮替换成已处理状态，防止重复点击
+                        token = self._get_tenant_token()
+                        if token and approval_id:
+                            result_text = "✅ 已批准" if action_type == "approve" else "❌ 已拒绝"
+                            template = "green" if action_type == "approve" else "red"
+                            updated_card = {
+                                "config": {"wide_screen_mode": True},
+                                "header": {
+                                    "title": {"tag": "plain_text", "content": f"{result_text}"},
+                                    "template": template,
+                                },
+                                "elements": [
+                                    {
+                                        "tag": "markdown",
+                                        "content": f"**审批ID**: `{approval_id}`\n**状态**: {result_text}",
+                                    },
+                                ],
+                            }
+                            # 获取卡片所在的 message_id（从回调数据中取）
+                            msg_id = ""
+                            if hasattr(data, 'event') and hasattr(data.event, 'message_id'):
+                                msg_id = data.event.message_id
+                            elif isinstance(data, dict) and data.get('event', {}).get('message_id'):
+                                msg_id = data['event']['message_id']
+                            if msg_id:
+                                try:
+                                    from urllib.request import Request as _Req, urlopen as _urlopen
+                                    patch_body = json.dumps({"card": updated_card}).encode("utf-8")
+                                    patch_req = _Req(
+                                        f"https://open.feishu.cn/open-apis/im/v1/messages/{msg_id}/card",
+                                        data=patch_body,
+                                        headers={
+                                            "Authorization": f"Bearer {token}",
+                                            "Content-Type": "application/json",
+                                        },
+                                        method="PATCH",
+                                    )
+                                    with _urlopen(patch_req, timeout=10) as _resp:
+                                        _result = json.loads(_resp.read())
+                                        print(f"[FeishuWS] 卡片更新结果: {_result.get('code')}")
+                                except Exception as e2:
+                                    print(f"[FeishuWS] 卡片更新失败: {e2}")
+                            else:
+                                print(f"[FeishuWS] 卡片回调无 message_id，无法更新卡片")
+
                         cb = ON_CARD_APPROVAL_CB
                         if cb:
                             cb(str(approval_id), str(action_type))
