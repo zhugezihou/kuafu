@@ -386,36 +386,28 @@ class FeishuWebSocketChannel(MessageChannel):
                                         msg_id = _ctx.open_message_id
                             if msg_id:
                                 try:
-                                    # 获取租户 token
                                     _token = self._get_tenant_token()
                                     if _token:
-                                        # 发送结果消息到卡片所在群聊
-                                        _evt = getattr(data, 'event', None)
-                                        _chat_id = ""
-                                        if _evt:
-                                            _ctx = getattr(_evt, 'context', None)
-                                            if _ctx and hasattr(_ctx, 'open_chat_id') and _ctx.open_chat_id:
-                                                _chat_id = _ctx.open_chat_id
-                                        if not _chat_id:
-                                            import os as _os
-                                            _chat_id = _os.environ.get("FEISHU_CHAT_ID", "oc_d860f9f653e3421db6ea419a81414cf6")
+                                        result_text_short = "✅ 已批准" if action_type == "approve" else "❌ 已拒绝"
                                         from urllib.request import Request as _Req, urlopen as _urlopen
-                                        result_body = json.dumps({
-                                            "receive_id": _chat_id,
+                                        reply_body = json.dumps({
+                                            "content": json.dumps({"text": f"{result_text_short} (ID: {approval_id})"}, ensure_ascii=False),
                                             "msg_type": "text",
-                                            "content": json.dumps({"text": f"{result_text} (ID: {approval_id})"}),
-                                        }, ensure_ascii=False).encode("utf-8")
-                                        _send_req = _Req(
-                                            "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
-                                            data=result_body,
+                                        }).encode("utf-8")
+                                        _reply_req = _Req(
+                                            f"https://open.feishu.cn/open-apis/im/v1/messages/{msg_id}/reply",
+                                            data=reply_body,
                                             headers={"Authorization": f"Bearer {_token}", "Content-Type": "application/json"},
                                             method="POST",
                                         )
-                                        with _urlopen(_send_req, timeout=10):
-                                            pass
-                                        print(f"[FeishuWS] 审批结果已发送至群聊")
+                                        with _urlopen(_reply_req, timeout=10) as _rr:
+                                            _rd = json.loads(_rr.read())
+                                            if _rd.get("code") == 0:
+                                                print(f"[FeishuWS] 审批结果已回复到卡片下方")
+                                            else:
+                                                print(f"[FeishuWS] 回复失败: code={_rd.get('code')}, msg={_rd.get('msg','')[:60]}")
                                 except Exception as e2:
-                                    print(f"[FeishuWS] 发送审批结果失败: {e2}")
+                                    print(f"[FeishuWS] 回复审批结果失败: {e2}")
 
                         cb = ON_CARD_APPROVAL_CB
                         if cb:
