@@ -352,7 +352,7 @@ DANGEROUS_COMMANDS = [
     (re.compile(r'\bchown\b'), "更改所有者"),
     (re.compile(r'\bpasswd\b'), "修改密码"),
     (re.compile(r'\busermod\b'), "修改用户"),
-    (re.compile(r'>\s*/dev/', re.IGNORECASE), "写入设备"),
+    (re.compile(r'>\s*/dev/(hd|sd|xvd|vd|nvme|mmcblk|loop|dm-)[a-z]', re.IGNORECASE), "写入设备"),
     (re.compile(r':\(\)\s*\{'), "fork bomb"),
     (re.compile(r'\bwget\s+|curl\s+-o|curl\s+--output'), "下载远程文件（需确认）"),
     (re.compile(r'\bgit\s+push\b'), "git 推送"),
