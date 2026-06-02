@@ -21,6 +21,7 @@ import logging
 import os
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -54,6 +55,7 @@ class FeishuWebSocketChannel(MessageChannel):
         self._thread: Optional[threading.Thread] = None
         self._bot_open_id: str = ""  # 保存 bot 自己的 open_id，用于 @bot 过滤
         self._card_approval_state: dict[str, threading.Event] = {}
+        self._seen_msg_ids: deque[str] = deque(maxlen=500)  # 已处理消息ID缓存，防止重连后重放
         """approval_id → Event，用于解阻塞等待审批的线程"""
 
     # ── 消息发送 ──────────────────────────────────────────────
@@ -141,6 +143,12 @@ class FeishuWebSocketChannel(MessageChannel):
         return msgs
 
     def _on_message(self, text: str, msg_id: str = "", chat_id: str = "", sender: str = "", chat_type: str = "", mentions: list | None = None):
+        # 去重：WS重连后飞书可能重放已处理的消息，跳过已见过的 msg_id
+        if msg_id and msg_id in self._seen_msg_ids:
+            return
+        if msg_id:
+            self._seen_msg_ids.append(msg_id)
+
         # 群聊消息必须 @bot 才处理（使用 SDK mentions 字段，不依赖文本显示名）
         # 私聊（p2p）消息无需 @，直接处理
         if chat_type == "group" or (chat_id and chat_type != "p2p"):
