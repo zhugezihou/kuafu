@@ -30,13 +30,7 @@ from core.evolution import EvolutionEngine, EvolutionEvent
 from core.llm import LLMClient
 from core.model_manager import ModelManager, ALIASES as MODEL_ALIASES
 from core.agent_loop import AgentLoop, detect_task_type
-
-# 飞书通知（仅发送，不启用轮询）
-try:
-    from core.feishu_bot import FeishuBot, FEISHU_ENABLED as _FEISHU_ENABLED
-except ImportError:
-    FeishuBot = None
-    _FEISHU_ENABLED = False
+from core.identity import load_identity_statement, detect_identity_impersonation
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
@@ -80,14 +74,6 @@ class KuafuAgent:
         self._task_count = 0
         self._conversation = None
         self._conversation_messages = []
-
-        # ── 飞书通知（仅发送，不启动轮询）──
-        self._feishu_bot = None
-        if _FEISHU_ENABLED and FeishuBot is not None:
-            try:
-                self._feishu_bot = FeishuBot()  # 从环境变量自动读取
-            except Exception:
-                self._feishu_bot = None
 
         self._setup()
 
@@ -282,7 +268,7 @@ class KuafuAgent:
         )
         self._loop = loop  # 暴露给 Web UI
         # 注入审批推送回调
-        self._inject_approval_notifier(loop)
+        # 注入审批推送回调（由 gateway_loop.py 的 ON_APPROVAL_REQUEST_CB 全局回调接管）
         # 注入 WebSocket 实时回调（由 Web UI 设置）
         if hasattr(self, '_ws_inject_cb') and self._ws_inject_cb:
             self._ws_inject_cb(loop)
@@ -422,7 +408,7 @@ class KuafuAgent:
         )
         self._loop = loop  # 暴露给 Web UI
         # 注入审批推送回调
-        self._inject_approval_notifier(loop)
+        # 注入审批推送回调（由 gateway_loop.py 的 ON_APPROVAL_REQUEST_CB 全局回调接管）
         # 注入 WebSocket 实时回调（由 Web UI 设置）
         if hasattr(self, '_ws_inject_cb') and self._ws_inject_cb:
             self._ws_inject_cb(loop)
@@ -515,27 +501,6 @@ class KuafuAgent:
         current_provider = getattr(self.llm, "backend", "deepseek")
         if current_provider != active:
             self.model_manager.switch(current_provider)
-
-    def _inject_approval_notifier(self, loop: AgentLoop) -> None:
-        """注入审批通知回调到 AgentLoop。
-
-        仅当接入飞书时注册回调；纯终端模式由 terminal_prompt 直接处理审批。
-        """
-        if self._feishu_bot is None:
-            return  # 纯终端模式，terminal_prompt 直接处理
-
-        def _notify(tool_name: str, args: dict, req_id: str):
-            msg = (
-                f"🔐 审批请求\n"
-                f"工具: {tool_name}\n"
-                f"参数: {json.dumps(args, ensure_ascii=False, indent=2)[:200]}\n"
-                f"审批ID: {req_id}\n"
-                f"---\n"
-                f"请回复同意或拒绝"
-            )
-            self._feishu_bot.send_text(msg)
-
-        loop.on_approval_request = _notify
 
     # ---- 模型切换 ----
 
