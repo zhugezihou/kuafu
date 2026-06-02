@@ -52,8 +52,11 @@ class GatewayLoop:
             detail = json.dumps(args, ensure_ascii=False)[:200]
             args_summary = f"{title}\\n{detail}"
 
-            # 推送到所有通道
-            for name in self.channels.list():
+            # 只推送到触发审批的通道
+            # _last_message_source 记录了最近一条用户消息来自哪个通道
+            triggered_platform = getattr(self, '_last_message_source', None) or "feishu"
+
+            for name in [triggered_platform]:
                 channel = self.channels.get(name)
                 if channel:
                     try:
@@ -189,6 +192,9 @@ class GatewayLoop:
 
         text = msg.text.strip()
         print(f"[GatewayLoop] 📩 {msg.platform}/{msg.chat_id}: {text[:60]}")
+
+        # 记录最近消息的来源通道（用于审批推送通道选择）
+        self._last_message_source = msg.platform
 
         # 记录最近消息的来源（用于审批推送） — 按通道分别保存
         if not hasattr(self, '_last_chat_ids'):
