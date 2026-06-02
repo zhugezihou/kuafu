@@ -351,16 +351,26 @@ class FeishuWebSocketChannel(MessageChannel):
                 def on_card_action(data) -> None:
                     """收到飞书卡片按钮回调事件。"""
                     try:
-                        action = getattr(data, 'action', None) if not isinstance(data, dict) else data.get('action')
+                        import json as _js
+                        if hasattr(data, 'serialize'):
+                            _raw = _js.dumps(_js.loads(data.serialize()), ensure_ascii=False)[:500]
+                        else:
+                            _raw = str(data)[:500]
+                        print(f"[FeishuWS] 卡片回调原始数据: {_raw}")
+                        
+                        event = data.event if hasattr(data, 'event') else data
+                        action = getattr(event, 'action', None) if not isinstance(event, dict) else event.get('action')
                         if not action:
+                            # 尝试从 data 直接取 action
+                            action = getattr(data, 'action', None) if not isinstance(data, dict) else data.get('action')
+                        if not action:
+                            print(f"[FeishuWS] 卡片回调: 无法获取 action")
                             return
                         value = getattr(action, 'value', {}) if not isinstance(action, dict) else action.get('value', {})
                         if not value:
                             return
                         approval_id = value.get('approval_id') if isinstance(value, dict) else None
                         action_type = value.get('action') if isinstance(value, dict) else None
-                        if not approval_id or not action_type:
-                            return
                         print(f"[FeishuWS] 卡片按钮: {action_type} (ID: {approval_id})")
                         cb = ON_CARD_APPROVAL_CB
                         if cb:
