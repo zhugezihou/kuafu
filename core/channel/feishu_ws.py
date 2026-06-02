@@ -52,6 +52,7 @@ class FeishuWebSocketChannel(MessageChannel):
         self._ws_client: Any = None
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._bot_open_id: str = ""  # 保存 bot 自己的 open_id，用于 @bot 过滤
         self._card_approval_state: dict[str, threading.Event] = {}
         """approval_id → Event，用于解阻塞等待审批的线程"""
 
@@ -143,7 +144,29 @@ class FeishuWebSocketChannel(MessageChannel):
         # 群聊消息必须 @bot 才处理（使用 SDK mentions 字段，不依赖文本显示名）
         # 私聊（p2p）消息无需 @，直接处理
         if chat_type == "group" or (chat_id and chat_type != "p2p"):
-            if not mentions:
+            bot_id = getattr(self, '_bot_open_id', None)
+            if not mentions or not any(
+                # SDK object: m.key 是 UserId 对象, 属性是 user_id / open_id / union_id
+                (hasattr(m, 'key') and (
+                    (isinstance(m.key, dict) and m.key.get("user_id", "") == bot_id)
+                    or (hasattr(m.key, 'user_id') and m.key.user_id == bot_id)
+                    or (hasattr(m.key, 'open_id') and m.key.open_id == bot_id)
+                    or (hasattr(m.key, 'id') and m.key.id == bot_id)
+                ))
+                # Mention 对象自身的 id (MentionEvent.id) 不是 user_id, 不匹配
+                # dict 形态的 mentions：兼容旧 SDK
+                or (isinstance(m, dict) and (
+                    m.get("user_id", "") == bot_id
+                    or m.get("open_id", "") == bot_id
+                    or m.get("id", "") == bot_id
+                    or m.get("key", {}).get("user_id", "") == bot_id
+                    or m.get("key", {}).get("open_id", "") == bot_id
+                ))
+                # name 匹配：任何时候都检查 name 作为兜底
+                or (isinstance(m, dict) and m.get("name", "") == "夸父")
+                or (hasattr(m, 'name') and m.name == "夸父")
+                for m in mentions
+            ):
                 print(f"[FeishuWS] 忽略非@bot消息: {text[:60]}")
                 return
         msg = Message(
@@ -242,11 +265,30 @@ class FeishuWebSocketChannel(MessageChannel):
     def _ws_loop(self):
         """WebSocket 事件循环（含自动重连）。"""
         try:
+            from urllib.request import Request, urlopen
+            import json
+            # 获取 bot 自己的 open_id，用于 @bot 过滤
+            token = self._get_tenant_token()
+            if token:
+                req = Request(
+                    "https://open.feishu.cn/open-apis/bot/v3/info",
+                    headers={"Authorization": f"Bearer {token}"},
+                    method="GET",
+                )
+                try:
+                    with urlopen(req, timeout=10) as resp:
+                        data = json.loads(resp.read().decode("utf-8"))
+                        if data.get("code") == 0:
+                            self._bot_open_id = (data.get("bot", {}) or {}).get("open_id", "")
+                            print(f"[FeishuWS] Bot open_id: {self._bot_open_id[:8]}...")
+                except Exception:
+                    pass
+
             import lark_oapi as lark
         except ImportError:
-            print("[FeishuWS] lark-oapi 未安装，回退到轮询模式")
-            self._fallback_poll_loop()
-            return
+            import sys
+            print("[FeishuWS] ❌ lark-oapi 未安装，无法启动飞书 WebSocket 通道。请安装: pip install lark-oapi")
+            sys.exit(1)
 
         reconnect_count = 0
         while self._running:
@@ -347,57 +389,6 @@ class FeishuWebSocketChannel(MessageChannel):
                     if not self._running:
                         return
                     time.sleep(0.5)
-
-    def _fallback_poll_loop(self):
-        """无 lark-oapi 时的轮询回退。"""
-        import urllib.request
-        from urllib.request import Request, urlopen
-
-        seen_ids: set[str] = set()
-        while self._running:
-            try:
-                token = self._get_tenant_token()
-                if not token:
-                    time.sleep(10)
-                    continue
-
-                url = "https://open.feishu.cn/open-apis/im/v1/messages" \
-                      f"?container_id_type=chat" \
-                      f"&container_id={os.environ.get('FEISHU_CHAT_ID', '')}" \
-                      f"&page_size=10&sort_type=ByCreateTimeDesc"
-                req = Request(url, headers={"Authorization": f"Bearer {token}"}, method="GET")
-                with urlopen(req, timeout=10) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
-                    items = data.get("data", {}).get("items", [])
-
-                for msg in reversed(items):
-                    msg_id = msg.get("message_id", "")
-                    if not msg_id or msg_id in seen_ids:
-                        continue
-                    seen_ids.add(msg_id)
-
-                    if msg.get("msg_type") != "text":
-                        continue
-
-                    body = msg.get("body", {})
-                    content = json.loads(body.get("content", "{}")).get("text", "")
-                    mentions = msg.get("mentions", [])
-                    chat_type = msg.get("chat_type", "")
-                    self._on_message(
-                        text=content,
-                        msg_id=msg_id,
-                        chat_id=msg.get("chat_id", ""),
-                        sender=msg.get("sender", {}).get("id", ""),
-                        chat_type=chat_type,
-                        mentions=mentions if isinstance(mentions, list) else [],
-                    )
-            except Exception as e:
-                logger.error(f"[FeishuWS] 轮询异常: {e}")
-
-            for _ in range(50):
-                if not self._running:
-                    return
-                time.sleep(0.1)
 
     def stop(self) -> None:
         """停止通道。"""
