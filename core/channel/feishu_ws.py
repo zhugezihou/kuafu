@@ -169,8 +169,25 @@ class FeishuWebSocketChannel(MessageChannel):
             ):
                 print(f"[FeishuWS] 忽略非@bot消息: {text[:60]}")
                 return
+
+        # 清洗 text：去掉 @夸父 / @中书令 等 bot 自身的 @ 前缀
+        # 飞书 WS 消息 content 中 @ 标记的文本格式为 "@name  "（末尾有空格）
+        cleaned = text
+        bot_id = getattr(self, '_bot_open_id', None)
+        if mentions and bot_id:
+            for m in mentions:
+                name = None
+                if hasattr(m, 'name') and m.name:
+                    name = m.name
+                elif isinstance(m, dict) and m.get("name"):
+                    name = m.get("name")
+                if name:
+                    # 去掉 "@name " 或 "@name" 前缀（飞书 @ 标记格式）
+                    import re as _re
+                    cleaned = _re.sub(rf"@{_re.escape(name)}\s*", "", cleaned, count=1).strip()
+
         msg = Message(
-            text=text,
+            text=cleaned,
             msg_id=msg_id,
             platform="feishu",
             chat_id=chat_id,
