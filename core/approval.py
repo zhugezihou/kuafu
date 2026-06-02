@@ -57,6 +57,9 @@ def _is_interactive() -> bool:
     # Gateway 模式下即使有 TTY 也走非交互审批
     if os.environ.get("KUAFFU_GATEWAY_RUNNING") == "1":
         return False
+    # 有飞书或微信通道注册时，也走非交互审批
+    if os.environ.get("FEISHU_APP_ID") or os.environ.get("WECHAT_ILINK_DATA_DIR"):
+        return False
     return (
         os.environ.get("KUAFFU_INTERACTIVE") == "1"
         or (sys.stdin.isatty() and sys.stdout.isatty())
@@ -326,6 +329,26 @@ class AutoMode:
         # 低风险工具自动通过
         if tool in cls.AUTO_TOOLS_LOW:
             return True
+
+        # terminal 低风险命令自动通过（读文件、查询、网络请求等）
+        if tool == "terminal":
+            cmd = args.get("command", "").strip()
+            lower_cmd = cmd.lower()
+            # 安全命令前缀
+            safe_prefixes = ("ls ", "cat ", "curl ", "echo ", "pwd", "whoami", "date",
+                             "head ", "tail ", "wc ", "sort ", "grep ", "find ", "which ",
+                             "pip list", "pip show", "python3 --version", "git status",
+                             "git log", "git diff", "git branch", "free ", "df ", "du ",
+                             "ps ", "top ", "env", "printenv", "uname", "id")
+            if any(lower_cmd.startswith(p) for p in safe_prefixes):
+                return True
+            # 危险命令拒绝
+            dangers = ["rm -rf /", "dd if=", "> /dev/sda", "mkfs", "fdisk", "chmod 777 /",
+                       "kill -9", "pkill", "shutdown", "reboot", "init 0", "poweroff"]
+            if any(d in lower_cmd for d in dangers):
+                cls._record_decision(tool, "high", False, 0.95,
+                                     f"危险命令: {cmd[:50]}")
+                return False
 
         # 中风险工具自动通过（write_file/patch 等可逆操作不再审批）
         if tool in cls.AUTO_TOOLS_MEDIUM:
