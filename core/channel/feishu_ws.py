@@ -351,10 +351,18 @@ class FeishuWebSocketChannel(MessageChannel):
                 def on_card_action(data) -> None:
                     """收到飞书卡片按钮回调事件。"""
                     try:
+                        import json as _js
+                        _data_str = str(data)[:800]
+                        if hasattr(data, 'serialize'):
+                            try:
+                                _data_str = _js.dumps(_js.loads(data.serialize()), ensure_ascii=False)[:800]
+                            except:
+                                pass
+                        print(f"[FeishuWS] 完整卡片回调: {_data_str}")
+                        
                         event = data.event if hasattr(data, 'event') else data
                         action = getattr(event, 'action', None) if not isinstance(event, dict) else event.get('action')
                         if not action:
-                            # 尝试从 data 直接取 action
                             action = getattr(data, 'action', None) if not isinstance(data, dict) else data.get('action')
                         if not action:
                             return
