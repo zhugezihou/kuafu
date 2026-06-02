@@ -366,6 +366,23 @@ class FeishuWebSocketChannel(MessageChannel):
                             _evt = data.event
                             _evt_attrs = [a for a in dir(_evt) if not a.startswith('_')]
                             print(f"[FeishuWS] 卡片回调 event 属性: {_evt_attrs}")
+                            # 打印 context 的完整内容
+                            if hasattr(_evt, 'context'):
+                                _ctx = _evt.context
+                                print(f"[FeishuWS] context type: {type(_ctx)}")
+                                _ctx_attrs = [a for a in dir(_ctx) if not a.startswith('_')]
+                                print(f"[FeishuWS] context 属性: {_ctx_attrs}")
+                                if hasattr(_ctx, 'serialize'):
+                                    try:
+                                        print(f"[FeishuWS] context serialize: {_js.dumps(_js.loads(_ctx.serialize()), ensure_ascii=False)[:500]}")
+                                    except:
+                                        print(f"[FeishuWS] context str: {str(_ctx)[:500]}")
+                            # 也打印整个 event serialize
+                            if hasattr(_evt, 'serialize'):
+                                try:
+                                    print(f"[FeishuWS] event serialize: {_js.dumps(_js.loads(_evt.serialize()), ensure_ascii=False)[:500]}")
+                                except:
+                                    pass
                         
                         event = data.event if hasattr(data, 'event') else data
                         action = getattr(event, 'action', None) if not isinstance(event, dict) else event.get('action')
