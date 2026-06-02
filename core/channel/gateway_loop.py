@@ -8,6 +8,8 @@ channel/gateway_loop.py — Gateway 消息循环
 from __future__ import annotations
 
 import logging
+import json
+import os
 import threading
 import time
 from typing import Any, Optional
@@ -60,25 +62,30 @@ class GatewayLoop:
                             chat_id = self._last_chat_ids[name]
                         elif hasattr(self, '_last_chat_id'):
                             chat_id = self._last_chat_id
-                        kwargs = {}
-                        if chat_id:
-                            kwargs['chat_id'] = chat_id
 
-                        # 飞书 → 卡片按钮
-                        if name == "feishu" and hasattr(channel, 'send_approval_card'):
-                            channel.send_approval_card(
-                                approval_id=req_id,
-                                tool=title,
-                                args_summary=args_summary,
-                                chat_id=chat_id or "",
-                            )
+                        # 飞书 → 卡片按钮，用朝堂群 ID 作为默认
+                        if name == "feishu":
+                            feishu_chat_id = chat_id or os.environ.get("FEISHU_CHAT_ID", "oc_d860f9f653e3421db6ea419a81414cf6")
+                            kwargs = {"chat_id": feishu_chat_id}
+                            if hasattr(channel, 'send_approval_card'):
+                                channel.send_approval_card(
+                                    approval_id=req_id,
+                                    tool=title,
+                                    args_summary=args_summary,
+                                    chat_id=feishu_chat_id,
+                                )
+                            else:
+                                channel.send("🔐 | " + title + " | " + detail, **kwargs)
                         else:
                             # 微信/其他 → 短指令文本
+                            kwargs = {}
+                            if chat_id:
+                                kwargs['chat_id'] = chat_id
                             short_id = req_id[-8:] if len(req_id) > 8 else req_id
                             msg = (
-                                "🔐 **审批请求** `" + short_id + "`\\n"
-                                "工具: " + title + "\\n"
-                                "参数: " + detail + "\\n\\n"
+                                "🔐 **审批请求** `" + short_id + "`\n"
+                                "工具: " + title + "\n"
+                                "参数: " + detail + "\n\n"
                                 "回复 `1 " + short_id + "` 批准 / `0 " + short_id + "` 拒绝"
                             )
                             channel.send(msg, **kwargs)
