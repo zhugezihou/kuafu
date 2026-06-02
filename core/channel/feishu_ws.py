@@ -403,7 +403,10 @@ class FeishuWebSocketChannel(MessageChannel):
                                             "content": card_content,
                                             "msg_type": "interactive",
                                         }).encode("utf-8")
-                                        def _do_patch():
+                                        import threading as _th
+                                        import time as _tm
+                                        def _delayed_patch():
+                                            _tm.sleep(1.5)
                                             _p_req = _Req(
                                                 f"https://open.feishu.cn/open-apis/im/v1/messages/{msg_id}",
                                                 data=_patch_body,
@@ -413,22 +416,13 @@ class FeishuWebSocketChannel(MessageChannel):
                                             try:
                                                 with _urlopen(_p_req, timeout=10) as _p_resp:
                                                     _p_data = json.loads(_p_resp.read())
-                                                    return _p_data.get("code", -1)
-                                            except:
-                                                return -1
-                                        # 第一次 PATCH
-                                        _code1 = _do_patch()
-                                        if _code1 == 0:
-                                            # 延迟 1.5 秒再 PATCH 一次（覆盖客户端回退）
-                                            import threading as _th
-                                            def _delayed_patch():
-                                                import time as _tm
-                                                _tm.sleep(1.5)
-                                                _do_patch()
-                                            _th.Thread(target=_delayed_patch, daemon=True).start()
-                                            print(f"[FeishuWS] 卡片已更新")
-                                        else:
-                                            print(f"[FeishuWS] 卡片更新失败: code={_code1}")
+                                                    if _p_data.get("code") == 0:
+                                                        print(f"[FeishuWS] 卡片更新成功")
+                                                    else:
+                                                        print(f"[FeishuWS] 卡片更新失败: code={_p_data.get('code')}")
+                                            except Exception:
+                                                pass
+                                        _th.Thread(target=_delayed_patch, daemon=True).start()
                                 except Exception as e2:
                                     print(f"[FeishuWS] 卡片更新异常: {e2}")
 
