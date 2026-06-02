@@ -386,43 +386,36 @@ class FeishuWebSocketChannel(MessageChannel):
                                         msg_id = _ctx.open_message_id
                             if msg_id:
                                 try:
-                                    # 获取租户 token，直接 PATCH 更新消息内容
+                                    # 获取租户 token
                                     _token = self._get_tenant_token()
                                     if _token:
-                                        card_content = json.dumps({
-                                            "config": {"wide_screen_mode": True},
-                                            "header": {
-                                                "title": {"tag": "plain_text", "content": result_text},
-                                                "template": template,
-                                            },
-                                            "elements": [
-                                                {"tag": "markdown", "content": f"**审批ID**: `{approval_id}`\n**状态**: {result_text}"},
-                                            ],
-                                        }, ensure_ascii=False)
+                                        # 发送结果消息到卡片所在群聊
+                                        _evt = getattr(data, 'event', None)
+                                        _chat_id = ""
+                                        if _evt:
+                                            _ctx = getattr(_evt, 'context', None)
+                                            if _ctx and hasattr(_ctx, 'open_chat_id') and _ctx.open_chat_id:
+                                                _chat_id = _ctx.open_chat_id
+                                        if not _chat_id:
+                                            import os as _os
+                                            _chat_id = _os.environ.get("FEISHU_CHAT_ID", "oc_d860f9f653e3421db6ea419a81414cf6")
                                         from urllib.request import Request as _Req, urlopen as _urlopen
-                                        _patch_body = json.dumps({
-                                            "content": card_content,
-                                            "msg_type": "interactive",
-                                        }).encode("utf-8")
-                                        _p_req = _Req(
-                                            f"https://open.feishu.cn/open-apis/im/v1/messages/{msg_id}",
-                                            data=_patch_body,
-                                            headers={
-                                                "Authorization": f"Bearer {_token}",
-                                                "Content-Type": "application/json",
-                                            },
-                                            method="PATCH",
+                                        result_body = json.dumps({
+                                            "receive_id": _chat_id,
+                                            "msg_type": "text",
+                                            "content": json.dumps({"text": f"{result_text} (ID: {approval_id})"}),
+                                        }, ensure_ascii=False).encode("utf-8")
+                                        _send_req = _Req(
+                                            "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
+                                            data=result_body,
+                                            headers={"Authorization": f"Bearer {_token}", "Content-Type": "application/json"},
+                                            method="POST",
                                         )
-                                        with _urlopen(_p_req, timeout=15) as _p_resp:
-                                            _p_data = json.loads(_p_resp.read())
-                                            _p_code = _p_data.get("code", -1)
-                                            _p_msg = _p_data.get("msg", "")[:60]
-                                            if _p_code != 0:
-                                                print(f"[FeishuWS] 卡片更新失败: code={_p_code}, msg={_p_msg}")
-                                            else:
-                                                print(f"[FeishuWS] 卡片更新成功: code={_p_code}")
+                                        with _urlopen(_send_req, timeout=10):
+                                            pass
+                                        print(f"[FeishuWS] 审批结果已发送至群聊")
                                 except Exception as e2:
-                                    print(f"[FeishuWS] 卡片更新异常: {e2}")
+                                    print(f"[FeishuWS] 发送审批结果失败: {e2}")
 
                         cb = ON_CARD_APPROVAL_CB
                         if cb:
