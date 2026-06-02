@@ -227,6 +227,11 @@ class FeishuWebSocketChannel(MessageChannel):
         self._card_approval_state[approval_id] = ev
         card = self._build_approval_card(approval_id, tool, args_summary)
         result = self.send_card(card, chat_id=chat_id)
+        if result.success and result.msg_id:
+            # 保存卡片对应的消息 ID，后续更新用
+            if not hasattr(self, '_card_msg_ids'):
+                self._card_msg_ids: dict[str, str] = {}
+            self._card_msg_ids[approval_id] = result.msg_id
         if not result.success:
             self._card_approval_state.pop(approval_id, None)
         return result
@@ -382,16 +387,19 @@ class FeishuWebSocketChannel(MessageChannel):
                                     },
                                 ],
                             }
-                            # 获取卡片所在的 message_id（从回调数据 context 中取）
+                            # 优先使用发送卡片时保存的 msg_id，再从回调 context 取
                             msg_id = ""
-                            _evt = getattr(data, 'event', None)
-                            if _evt:
-                                _ctx = getattr(_evt, 'context', None)
-                                if _ctx:
-                                    if hasattr(_ctx, 'open_message_id') and _ctx.open_message_id:
-                                        msg_id = _ctx.open_message_id
+                            if hasattr(self, '_card_msg_ids') and approval_id in self._card_msg_ids:
+                                msg_id = self._card_msg_ids[approval_id]
                             if not msg_id:
-                                print(f"[FeishuWS] 卡片回调无 message_id（context 无 open_message_id）")
+                                _evt = getattr(data, 'event', None)
+                                if _evt:
+                                    _ctx = getattr(_evt, 'context', None)
+                                    if _ctx:
+                                        if hasattr(_ctx, 'open_message_id') and _ctx.open_message_id:
+                                            msg_id = _ctx.open_message_id
+                            if not msg_id:
+                                print(f"[FeishuWS] 卡片回调无 message_id")
                             if msg_id:
                                 try:
                                     from urllib.request import Request as _Req, urlopen as _urlopen
