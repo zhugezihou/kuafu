@@ -56,6 +56,7 @@ class FeishuWebSocketChannel(MessageChannel):
         self._bot_open_id: str = ""  # 保存 bot 自己的 open_id，用于 @bot 过滤
         self._card_approval_state: dict[str, threading.Event] = {}
         self._seen_msg_ids: deque[str] = deque(maxlen=500)  # 已处理消息ID缓存，防止重连后重放
+        self._ws_start_time: float = time.time()  # WS 连接时间，用于过滤连接前的历史消息
         """approval_id → Event，用于解阻塞等待审批的线程"""
 
     # ── 消息发送 ──────────────────────────────────────────────
@@ -142,7 +143,19 @@ class FeishuWebSocketChannel(MessageChannel):
             self._inbox.clear()
         return msgs
 
-    def _on_message(self, text: str, msg_id: str = "", chat_id: str = "", sender: str = "", chat_type: str = "", mentions: list | None = None):
+    def _on_message(self, text: str, msg_id: str = "", chat_id: str = "", sender: str = "", chat_type: str = "", mentions: list | None = None, create_time: str = ""):
+        # 时间过滤：跳过 WS 连接前的历史消息
+        if create_time:
+            try:
+                # 飞书 create_time 是毫秒级时间戳
+                msg_ts = int(create_time) / 1000.0
+                start_ts = getattr(self, '_ws_start_time', time.time())
+                # 只处理 WS 连接前 5 秒内的消息（防止连接瞬间消息丢失）
+                if msg_ts < start_ts - 5:
+                    return
+            except (ValueError, TypeError):
+                pass
+
         # 去重：WS重连后飞书可能重放已处理的消息，跳过已见过的 msg_id
         if msg_id and msg_id in self._seen_msg_ids:
             return
@@ -333,6 +346,7 @@ class FeishuWebSocketChannel(MessageChannel):
                             chat_id = msg.get('chat_id', '')
                             sender = (msg.get('sender') or {}).get('id', '')
                             mentions = msg.get('mentions', [])
+                            create_time = msg.get('create_time', '')
                         else:
                             msg_type = getattr(msg, 'message_type', getattr(msg, 'msg_type', ''))
                             if msg_type != 'text':
@@ -343,6 +357,7 @@ class FeishuWebSocketChannel(MessageChannel):
                             chat_id = getattr(msg, 'chat_id', '')
                             sender = getattr(getattr(msg, 'sender', None), 'id', '') if hasattr(msg, 'sender') else ''
                             mentions = getattr(msg, 'mentions', [])
+                            create_time = getattr(msg, 'create_time', '')
 
                         if not content_raw:
                             return
@@ -355,6 +370,7 @@ class FeishuWebSocketChannel(MessageChannel):
                             sender=sender,
                             chat_type=chat_type,
                             mentions=mentions if isinstance(mentions, list) else [],
+                            create_time=create_time,
                         )
                     except Exception as e:
                         import traceback
