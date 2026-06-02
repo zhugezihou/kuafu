@@ -836,12 +836,13 @@ def check_approval_decision(text: str) -> Optional[dict]:
     """
     text = text.strip()
     import re
-    # 短指令：1 / 0 + req_id（可支持后8位短ID）
+    # 短指令：1 / 0 + 短ID（4位或以上）
     m = re.match(r"^([10])\s+(\S{4,})$", text)
     if m:
         raw_action = m.group(1)
         raw_req_id = m.group(2)
-        return {"action": "approve" if raw_action == "1" else "reject", "req_id": raw_req_id}
+        # 如果短ID不足完整长度，需要模糊匹配
+        return {"action": "approve" if raw_action == "1" else "reject", "req_id": raw_req_id, "fuzzy": True}
 
     # 文字指令：批准 / 拒绝 + req_id
     m = re.match(r"^(批准|拒绝|approve|reject)\s+(\S+)", text, re.IGNORECASE)
@@ -861,6 +862,35 @@ def handle_approval_decision(decision: dict, chat_id: str = "", channel=None, **
     from core.approval import ApprovalManager
     action = decision["action"]
     req_id = decision["req_id"]
+    fuzzy = decision.get("fuzzy", False)
+
+    # 模糊匹配：用短ID查找匹配的审批请求
+    if fuzzy and len(req_id) < 20:
+        pending = ApprovalManager.list_pending()
+        matches = [r for r in pending if r.id.endswith(req_id)]
+        if len(matches) == 1:
+            req_id = matches[0].id
+        elif len(matches) > 1:
+            reply = f"⚠️ 找到 {len(matches)} 个匹配的审批，请输入更长的 ID"
+            if channel and chat_id:
+                try:
+                    send_kwargs = {"chat_id": chat_id}
+                    send_kwargs.update(kwargs)
+                    channel.send(reply, **send_kwargs)
+                except Exception:
+                    pass
+            return reply
+        else:
+            reply = f"❌ 未找到匹配 {req_id} 的审批请求"
+            if channel and chat_id:
+                try:
+                    send_kwargs = {"chat_id": chat_id}
+                    send_kwargs.update(kwargs)
+                    channel.send(reply, **send_kwargs)
+                except Exception:
+                    pass
+            return reply
+
     if action == "approve":
         ok = ApprovalManager.approve(req_id)
         reply = f"✅ 已批准 `{req_id}`" if ok else f"❌ 审批失败: {req_id} 不存在或已处理"

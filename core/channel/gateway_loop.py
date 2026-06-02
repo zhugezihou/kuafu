@@ -80,16 +80,21 @@ class GatewayLoop:
                             else:
                                 channel.send("🔐 | " + title + " | " + detail, **kwargs)
                         else:
-                            # 微信/其他 → 短指令文本
+                            # 微信/其他 → 短指令文本，用4位短ID方便输入
                             kwargs = {}
                             if chat_id:
                                 kwargs['chat_id'] = chat_id
-                            short_id = req_id[-8:] if len(req_id) > 8 else req_id
+                            import hashlib as _hlib
+                            short_id = req_id[-4:] if len(req_id) > 4 else req_id
                             msg = (
-                                "🔐 **审批请求** `" + short_id + "`\n"
-                                "工具: " + title + "\n"
-                                "参数: " + detail + "\n\n"
-                                "回复 `1 " + short_id + "` 批准 / `0 " + short_id + "` 拒绝"
+                                "🔐 审批请求\n"
+                                + "━━━━━━━━━━━━━━━━\n"
+                                + f"工具: {title}\n"
+                                + f"详情: {detail[:100]}\n"
+                                + f"ID: {short_id}\n"
+                                + "━━━━━━━━━━━━━━━━\n"
+                                + f"回复「1 {short_id}」批准\n"
+                                + f"回复「0 {short_id}」拒绝"
                             )
                             channel.send(msg, **kwargs)
                     except Exception as e:
