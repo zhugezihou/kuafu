@@ -145,17 +145,6 @@ class FeishuWebSocketChannel(MessageChannel):
         # 私聊（p2p）消息无需 @，直接处理
         if chat_type == "group" or (chat_id and chat_type != "p2p"):
             bot_id = getattr(self, '_bot_open_id', None)
-            import json as _js
-            _mention_debug = []
-            for _m in (mentions or []):
-                if hasattr(_m, 'key') and hasattr(_m, 'name'):
-                    _kid = getattr(getattr(_m, 'key', None), 'user_id', '?')
-                    _mn = _m.name if hasattr(_m, 'name') else '?'
-                    _mention_debug.append(f"obj(name={_mn}, key.user_id={_kid})")
-                elif isinstance(_m, dict):
-                    import json as _js2
-                    _mention_debug.append(f"dict({_js2.dumps(_m, ensure_ascii=False)[:100]})")
-            print(f"[FeishuWS] DEBUG mentions={_mention_debug}, bot_id={bot_id}, text={text[:40]}")
             if not mentions or not any(
                 # SDK object: m.key 是 UserId 对象, 属性是 user_id / open_id / union_id
                 (hasattr(m, 'key') and (
@@ -181,21 +170,11 @@ class FeishuWebSocketChannel(MessageChannel):
                 print(f"[FeishuWS] 忽略非@bot消息: {text[:60]}")
                 return
 
-        # 清洗 text：去掉 @夸父 / @中书令 等 bot 自身的 @ 前缀
-        # 飞书 WS 消息 content 中 @ 标记的文本格式为 "@name  "（末尾有空格）
-        cleaned = text
-        bot_id = getattr(self, '_bot_open_id', None)
-        if mentions and bot_id:
-            for m in mentions:
-                name = None
-                if hasattr(m, 'name') and m.name:
-                    name = m.name
-                elif isinstance(m, dict) and m.get("name"):
-                    name = m.get("name")
-                if name:
-                    # 去掉 "@name " 或 "@name" 前缀（飞书 @ 标记格式）
-                    import re as _re
-                    cleaned = _re.sub(rf"@{_re.escape(name)}\s*", "", cleaned, count=1).strip()
+        # 清洗 text：去掉所有飞书 @mention 前缀（如 @夸父 / @中书令 / @user_1）
+        # 飞书 WS 消息 content.text 中 @ 标记在不同场景下可能渲染不同的显示名，
+        # 因此统一用正则去掉 text 首部的 @mention，只保留实际用户输入内容。
+        import re as _re
+        cleaned = _re.sub(r"^@[^\s]+\s*", "", text, count=1).strip()
 
         msg = Message(
             text=cleaned,
