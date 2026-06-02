@@ -359,6 +359,13 @@ class FeishuWebSocketChannel(MessageChannel):
                             except:
                                 pass
                         print(f"[FeishuWS] 完整卡片回调: {_data_str}")
+                        # 打印 data 的所有非私有属性
+                        _attrs = [a for a in dir(data) if not a.startswith('_')]
+                        print(f"[FeishuWS] 卡片回调属性: {_attrs}")
+                        if hasattr(data, 'event'):
+                            _evt = data.event
+                            _evt_attrs = [a for a in dir(_evt) if not a.startswith('_')]
+                            print(f"[FeishuWS] 卡片回调 event 属性: {_evt_attrs}")
                         
                         event = data.event if hasattr(data, 'event') else data
                         action = getattr(event, 'action', None) if not isinstance(event, dict) else event.get('action')
