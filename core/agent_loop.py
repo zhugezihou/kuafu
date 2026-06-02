@@ -1216,9 +1216,28 @@ class AgentLoop:
                                     })
                                 continue
 
+                        # ── 安全 terminal 命令快速放行（不经过审批系统） ──
+                        _USE_FAST_PATH = False
+                        if fn_name == "terminal" and isinstance(args_dict, dict) and self.permission_enabled:
+                            cmd_str = args_dict.get("command", "")
+                            if isinstance(cmd_str, str):
+                                _safe = ("ls ", "cat ", "curl ", "echo ", "pwd", "whoami", "date",
+                                         "head ", "tail ", "wc ", "sort ", "grep ", "find ", "which ",
+                                         "pip list", "pip show", "python3 --version", "git status",
+                                         "git log", "git diff", "git branch", "free ", "df ", "du ",
+                                         "ps ", "top ", "env", "printenv", "uname", "id")
+                                if any(cmd_str.strip().lower().startswith(p) for p in _safe):
+                                    self._log(f"🔓 安全终端命令放行: {cmd_str[:60]}")
+                                    _USE_FAST_PATH = True
+
                         # Permission System 检查
-                        perm = pretooluse_check(fn_name, args_dict,
-                                                 {"task": task[:200], "turn": turn_count})
+                        if not _USE_FAST_PATH:
+                            perm = pretooluse_check(fn_name, args_dict,
+                                                     {"task": task[:200], "turn": turn_count})
+                        else:
+                            perm = {"allowed": True, "approach": "fast_path",
+                                    "reason": "✅ 安全终端命令（agent_loop 放行）",
+                                    "rule_id": None, "req_id": None, "auto": True}
 
                         # 触发 on_permission_check 钩子
                         if self.hooks_enabled:
