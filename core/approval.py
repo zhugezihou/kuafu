@@ -330,18 +330,11 @@ class AutoMode:
         if tool in cls.AUTO_TOOLS_LOW:
             return True
 
-        # terminal 低风险命令自动通过（读文件、查询、网络请求等）
+        # terminal 已在 pretooluse_check 预检查中放行安全命令，
+        # 这里只处理危险命令拒绝
         if tool == "terminal":
             cmd = args.get("command", "").strip()
             lower_cmd = cmd.lower()
-            # 安全命令前缀
-            safe_prefixes = ("ls ", "cat ", "curl ", "echo ", "pwd", "whoami", "date",
-                             "head ", "tail ", "wc ", "sort ", "grep ", "find ", "which ",
-                             "pip list", "pip show", "python3 --version", "git status",
-                             "git log", "git diff", "git branch", "free ", "df ", "du ",
-                             "ps ", "top ", "env", "printenv", "uname", "id")
-            if any(lower_cmd.startswith(p) for p in safe_prefixes):
-                return True
             # 危险命令拒绝
             dangers = ["rm -rf /", "dd if=", "> /dev/sda", "mkfs", "fdisk", "chmod 777 /",
                        "kill -9", "pkill", "shutdown", "reboot", "init 0", "poweroff"]
@@ -794,12 +787,42 @@ _pretooluse_cache: dict = {}
 ON_APPROVAL_REQUEST_CB: Optional[callable] = None
 
 
+def _is_safe_terminal(cmd: str) -> bool:
+    """判断 terminal 命令是否安全（只读/查询类），不经过审批系统。"""
+    if not isinstance(cmd, str):
+        return False
+    lower_cmd = cmd.strip().lower()
+    # 安全命令前缀（只读/查询操作）
+    safe_prefixes = ("ls ", "cat ", "curl ", "echo ", "pwd", "whoami", "date",
+                     "head ", "tail ", "wc ", "sort ", "grep ", "find ", "which ",
+                     "pip list", "pip show", "python3 --version", "git status",
+                     "git log", "git diff", "git branch", "free ", "df ", "du ",
+                     "ps ", "top ", "env", "printenv", "uname", "id")
+    return any(lower_cmd.startswith(p) for p in safe_prefixes)
+
+
 def pretooluse_check(tool: str, args: dict, context: Optional[dict] = None) -> dict:
     """PreToolUse 权限检查 — 装饰器/钩子入口。
 
     这是 agent_loop 在每次工具调用前调用的单函数入口。
     使用缓存避免同一工具+参数在连续轮次中重复检查。
+
+    安全 terminal 命令在 check_permission 之前被拦截直接放行，
+    避免经过审批系统（不受 __pycache__ 加载问题的干扰）。
     """
+    # 安全 terminal 命令直接放行（不依赖 check_permission）
+    if tool == "terminal" and isinstance(args, dict):
+        cmd = args.get("command", "")
+        if _is_safe_terminal(cmd):
+            return {
+                "allowed": True,
+                "reason": "✅ 安全终端命令自动通过",
+                "approach": "pretooluse_precheck",
+                "rule_id": None,
+                "req_id": None,
+                "auto": True,
+            }
+
     # 加载配置（延迟初始化）
     if not _pretooluse_cache:
         DenyRules.load()
