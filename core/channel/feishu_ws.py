@@ -395,9 +395,14 @@ class FeishuWebSocketChannel(MessageChannel):
                             if msg_id:
                                 try:
                                     from urllib.request import Request as _Req, urlopen as _urlopen
-                                    patch_body = json.dumps({"card": updated_card}).encode("utf-8")
+                                    # 用 PATCH /im/v1/messages/{message_id} 更新整个消息
+                                    patch_body = json.dumps({
+                                        "content": json.dumps(updated_card, ensure_ascii=False),
+                                        "msg_type": "interactive",
+                                    }).encode("utf-8")
+                                    _url = f"https://open.feishu.cn/open-apis/im/v1/messages/{msg_id}"
                                     patch_req = _Req(
-                                        f"https://open.feishu.cn/open-apis/im/v1/messages/{msg_id}/card",
+                                        _url,
                                         data=patch_body,
                                         headers={
                                             "Authorization": f"Bearer {token}",
@@ -407,7 +412,7 @@ class FeishuWebSocketChannel(MessageChannel):
                                     )
                                     with _urlopen(patch_req, timeout=10) as _resp:
                                         _result = json.loads(_resp.read())
-                                        print(f"[FeishuWS] 卡片更新结果: {_result.get('code')}")
+                                        print(f"[FeishuWS] 卡片更新结果: code={_result.get('code')}, msg={_result.get('msg','')[:60]}")
                                 except Exception as e2:
                                     print(f"[FeishuWS] 卡片更新失败: {e2}")
                             else:
