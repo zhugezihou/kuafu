@@ -351,39 +351,6 @@ class FeishuWebSocketChannel(MessageChannel):
                 def on_card_action(data) -> None:
                     """收到飞书卡片按钮回调事件。"""
                     try:
-                        import json as _js
-                        _data_str = str(data)[:800]
-                        if hasattr(data, 'serialize'):
-                            try:
-                                _data_str = _js.dumps(_js.loads(data.serialize()), ensure_ascii=False)[:800]
-                            except:
-                                pass
-                        print(f"[FeishuWS] 完整卡片回调: {_data_str}")
-                        # 打印 data 的所有非私有属性
-                        _attrs = [a for a in dir(data) if not a.startswith('_')]
-                        print(f"[FeishuWS] 卡片回调属性: {_attrs}")
-                        if hasattr(data, 'event'):
-                            _evt = data.event
-                            _evt_attrs = [a for a in dir(_evt) if not a.startswith('_')]
-                            print(f"[FeishuWS] 卡片回调 event 属性: {_evt_attrs}")
-                            # 打印 context 的完整内容
-                            if hasattr(_evt, 'context'):
-                                _ctx = _evt.context
-                                print(f"[FeishuWS] context type: {type(_ctx)}")
-                                _ctx_attrs = [a for a in dir(_ctx) if not a.startswith('_')]
-                                print(f"[FeishuWS] context 属性: {_ctx_attrs}")
-                                if hasattr(_ctx, 'serialize'):
-                                    try:
-                                        print(f"[FeishuWS] context serialize: {_js.dumps(_js.loads(_ctx.serialize()), ensure_ascii=False)[:500]}")
-                                    except:
-                                        print(f"[FeishuWS] context str: {str(_ctx)[:500]}")
-                            # 也打印整个 event serialize
-                            if hasattr(_evt, 'serialize'):
-                                try:
-                                    print(f"[FeishuWS] event serialize: {_js.dumps(_js.loads(_evt.serialize()), ensure_ascii=False)[:500]}")
-                                except:
-                                    pass
-                        
                         event = data.event if hasattr(data, 'event') else data
                         action = getattr(event, 'action', None) if not isinstance(event, dict) else event.get('action')
                         if not action:
@@ -415,12 +382,16 @@ class FeishuWebSocketChannel(MessageChannel):
                                     },
                                 ],
                             }
-                            # 获取卡片所在的 message_id（从回调数据中取）
+                            # 获取卡片所在的 message_id（从回调数据 context 中取）
                             msg_id = ""
-                            if hasattr(data, 'event') and hasattr(data.event, 'message_id'):
-                                msg_id = data.event.message_id
-                            elif isinstance(data, dict) and data.get('event', {}).get('message_id'):
-                                msg_id = data['event']['message_id']
+                            _evt = getattr(data, 'event', None)
+                            if _evt:
+                                _ctx = getattr(_evt, 'context', None)
+                                if _ctx:
+                                    if hasattr(_ctx, 'open_message_id') and _ctx.open_message_id:
+                                        msg_id = _ctx.open_message_id
+                            if not msg_id:
+                                print(f"[FeishuWS] 卡片回调无 message_id（context 无 open_message_id）")
                             if msg_id:
                                 try:
                                     from urllib.request import Request as _Req, urlopen as _urlopen
