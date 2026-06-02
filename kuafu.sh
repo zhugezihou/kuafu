@@ -15,11 +15,15 @@ set -e
 
 KUAFFU_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# 加载 .env 环境变量（覆盖系统环境，确保夸父使用自己的配置）
+# 加载 .env 环境变量（用 set -a + source 把变量导出）
+# 先过滤掉带 $ 或特殊字符的行避免 shell 解析报错
 if [ -f "$KUAFFU_DIR/.env" ]; then
-    set -a
-    source "$KUAFFU_DIR/.env"
-    set +a
+    while IFS= read -r line; do
+        [[ "$line" =~ ^#.*$ || -z "$line" ]] && continue
+        if [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+            export "$line" 2>/dev/null || true
+        fi
+    done < "$KUAFFU_DIR/.env"
 fi
 
 source "$KUAFFU_DIR/venv/bin/activate"
