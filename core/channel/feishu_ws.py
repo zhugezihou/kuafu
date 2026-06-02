@@ -145,6 +145,17 @@ class FeishuWebSocketChannel(MessageChannel):
         # 私聊（p2p）消息无需 @，直接处理
         if chat_type == "group" or (chat_id and chat_type != "p2p"):
             bot_id = getattr(self, '_bot_open_id', None)
+            import json as _js
+            _mention_debug = []
+            for _m in (mentions or []):
+                if hasattr(_m, 'key') and hasattr(_m, 'name'):
+                    _kid = getattr(getattr(_m, 'key', None), 'user_id', '?')
+                    _mn = _m.name if hasattr(_m, 'name') else '?'
+                    _mention_debug.append(f"obj(name={_mn}, key.user_id={_kid})")
+                elif isinstance(_m, dict):
+                    import json as _js2
+                    _mention_debug.append(f"dict({_js2.dumps(_m, ensure_ascii=False)[:100]})")
+            print(f"[FeishuWS] DEBUG mentions={_mention_debug}, bot_id={bot_id}, text={text[:40]}")
             if not mentions or not any(
                 # SDK object: m.key 是 UserId 对象, 属性是 user_id / open_id / union_id
                 (hasattr(m, 'key') and (
