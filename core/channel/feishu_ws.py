@@ -369,38 +369,54 @@ class FeishuWebSocketChannel(MessageChannel):
                         action_type = value.get('action') if isinstance(value, dict) else None
                         print(f"[FeishuWS] 卡片按钮: {action_type} (ID: {approval_id})")
 
-                        # 更新卡片：把按钮替换成已处理状态，防止重复点击
+                        # 用飞书 SDK 更新卡片为已处理状态（交互卡片 → 只读文本）
                         token = self._get_tenant_token()
                         if token and approval_id:
                             result_text = "✅ 已批准" if action_type == "approve" else "❌ 已拒绝"
-                            # 发一条新消息说明结果（比 PATCH 更新卡片更可靠）
-                            try:
-                                from urllib.request import Request as _Req, urlopen as _urlopen
-                                # 获取卡片所在群聊
-                                chat_id = ""
+                            template = "green" if action_type == "approve" else "red"
+                            # 获取卡片 message_id
+                            msg_id = ""
+                            if hasattr(self, '_card_msg_ids') and approval_id in self._card_msg_ids:
+                                msg_id = self._card_msg_ids.pop(approval_id)
+                            if not msg_id:
                                 _evt = getattr(data, 'event', None)
                                 if _evt:
                                     _ctx = getattr(_evt, 'context', None)
-                                    if _ctx and hasattr(_ctx, 'open_chat_id') and _ctx.open_chat_id:
-                                        chat_id = _ctx.open_chat_id
-                                if chat_id:
-                                    result_msg = f"**审批结果**: {result_text}\n**审批ID**: `{approval_id}`"
-                                    result_body = json.dumps({
-                                        "receive_id": chat_id,
-                                        "msg_type": "text",
-                                        "content": json.dumps({"text": result_msg}),
-                                    }, ensure_ascii=False).encode("utf-8")
-                                    _r = _Req(
-                                        "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
-                                        data=result_body,
-                                        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                                        method="POST",
-                                    )
-                                    with _urlopen(_r, timeout=10) as _resp:
-                                        pass
-                                    print(f"[FeishuWS] 审批结果消息已发送: {result_text}")
-                            except Exception as e2:
-                                print(f"[FeishuWS] 审批结果消息发送失败: {e2}")
+                                    if _ctx and hasattr(_ctx, 'open_message_id') and _ctx.open_message_id:
+                                        msg_id = _ctx.open_message_id
+                            if msg_id:
+                                try:
+                                    import lark_oapi
+                                    # 用 lark-oapi SDK 更新卡片内容
+                                    from lark_oapi.api.im.v1 import UpdateMessageRequest, UpdateMessageRequestBodyBuilder
+                                    # interactive 卡片 content 是 JSON 字符串
+                                    card_content = json.dumps({
+                                        "config": {"wide_screen_mode": True},
+                                        "header": {
+                                            "title": {"tag": "plain_text", "content": result_text},
+                                            "template": template,
+                                        },
+                                        "elements": [
+                                            {"tag": "markdown", "content": f"**审批ID**: `{approval_id}`\n**状态**: {result_text}"},
+                                        ],
+                                    }, ensure_ascii=False)
+                                    body = (UpdateMessageRequestBodyBuilder()
+                                        .content(card_content)
+                                        .msg_type("interactive")
+                                        .build())
+                                    _client = (lark_oapi.Client.builder()
+                                        .app_id(self.app_id).app_secret(self.app_secret)
+                                        .build())
+                                    _req = UpdateMessageRequest()
+                                    _req.message_id = msg_id
+                                    _req.body = body
+                                    _resp = _client.im.v1.message.update(_req)
+                                    if hasattr(_resp, 'code'):
+                                        print(f"[FeishuWS] 卡片更新结果: code={_resp.code}, msg={_resp.msg[:40] if hasattr(_resp, 'msg') else ''}")
+                                except Exception as e2:
+                                    import traceback
+                                    print(f"[FeishuWS] 卡片更新异常: {e2}")
+                                    traceback.print_exc()
 
                         cb = ON_CARD_APPROVAL_CB
                         if cb:
