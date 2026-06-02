@@ -388,26 +388,49 @@ class FeishuWebSocketChannel(MessageChannel):
                                 try:
                                     _token = self._get_tenant_token()
                                     if _token:
-                                        result_text_short = "✅ 已批准" if action_type == "approve" else "❌ 已拒绝"
+                                        card_content = json.dumps({
+                                            "config": {"wide_screen_mode": True},
+                                            "header": {
+                                                "title": {"tag": "plain_text", "content": result_text},
+                                                "template": "green" if action_type == "approve" else "red",
+                                            },
+                                            "elements": [
+                                                {"tag": "markdown", "content": f"**审批ID**: `{approval_id}`\n**状态**: {result_text}"},
+                                            ],
+                                        }, ensure_ascii=False)
                                         from urllib.request import Request as _Req, urlopen as _urlopen
-                                        reply_body = json.dumps({
-                                            "content": json.dumps({"text": f"{result_text_short} (ID: {approval_id})"}, ensure_ascii=False),
-                                            "msg_type": "text",
+                                        _patch_body = json.dumps({
+                                            "content": card_content,
+                                            "msg_type": "interactive",
                                         }).encode("utf-8")
-                                        _reply_req = _Req(
-                                            f"https://open.feishu.cn/open-apis/im/v1/messages/{msg_id}/reply",
-                                            data=reply_body,
-                                            headers={"Authorization": f"Bearer {_token}", "Content-Type": "application/json"},
-                                            method="POST",
-                                        )
-                                        with _urlopen(_reply_req, timeout=10) as _rr:
-                                            _rd = json.loads(_rr.read())
-                                            if _rd.get("code") == 0:
-                                                print(f"[FeishuWS] 审批结果已回复到卡片下方")
-                                            else:
-                                                print(f"[FeishuWS] 回复失败: code={_rd.get('code')}, msg={_rd.get('msg','')[:60]}")
+                                        def _do_patch():
+                                            _p_req = _Req(
+                                                f"https://open.feishu.cn/open-apis/im/v1/messages/{msg_id}",
+                                                data=_patch_body,
+                                                headers={"Authorization": f"Bearer {_token}", "Content-Type": "application/json"},
+                                                method="PATCH",
+                                            )
+                                            try:
+                                                with _urlopen(_p_req, timeout=10) as _p_resp:
+                                                    _p_data = json.loads(_p_resp.read())
+                                                    return _p_data.get("code", -1)
+                                            except:
+                                                return -1
+                                        # 第一次 PATCH
+                                        _code1 = _do_patch()
+                                        if _code1 == 0:
+                                            # 延迟 1.5 秒再 PATCH 一次（覆盖客户端回退）
+                                            import threading as _th
+                                            def _delayed_patch():
+                                                import time as _tm
+                                                _tm.sleep(1.5)
+                                                _do_patch()
+                                            _th.Thread(target=_delayed_patch, daemon=True).start()
+                                            print(f"[FeishuWS] 卡片已更新")
+                                        else:
+                                            print(f"[FeishuWS] 卡片更新失败: code={_code1}")
                                 except Exception as e2:
-                                    print(f"[FeishuWS] 回复审批结果失败: {e2}")
+                                    print(f"[FeishuWS] 卡片更新异常: {e2}")
 
                         cb = ON_CARD_APPROVAL_CB
                         if cb:
