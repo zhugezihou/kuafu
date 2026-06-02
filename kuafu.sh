@@ -14,6 +14,14 @@
 set -e
 
 KUAFFU_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# 加载 .env 环境变量（覆盖系统环境，确保夸父使用自己的配置）
+if [ -f "$KUAFFU_DIR/.env" ]; then
+    set -a
+    source "$KUAFFU_DIR/.env"
+    set +a
+fi
+
 source "$KUAFFU_DIR/venv/bin/activate"
 export PYTHONPATH="$KUAFFU_DIR${PYTHONPATH:+:$PYTHONPATH}"
 
