@@ -369,62 +369,38 @@ class FeishuWebSocketChannel(MessageChannel):
                         action_type = value.get('action') if isinstance(value, dict) else None
                         print(f"[FeishuWS] 卡片按钮: {action_type} (ID: {approval_id})")
 
-                        # 先更新卡片：把按钮替换成已处理状态，防止重复点击
+                        # 更新卡片：把按钮替换成已处理状态，防止重复点击
                         token = self._get_tenant_token()
                         if token and approval_id:
                             result_text = "✅ 已批准" if action_type == "approve" else "❌ 已拒绝"
-                            template = "green" if action_type == "approve" else "red"
-                            updated_card = {
-                                "config": {"wide_screen_mode": True},
-                                "header": {
-                                    "title": {"tag": "plain_text", "content": f"{result_text}"},
-                                    "template": template,
-                                },
-                                "elements": [
-                                    {
-                                        "tag": "markdown",
-                                        "content": f"**审批ID**: `{approval_id}`\n**状态**: {result_text}",
-                                    },
-                                ],
-                            }
-                            # 优先使用发送卡片时保存的 msg_id，再从回调 context 取
-                            msg_id = ""
-                            if hasattr(self, '_card_msg_ids') and approval_id in self._card_msg_ids:
-                                msg_id = self._card_msg_ids[approval_id]
-                            if not msg_id:
+                            # 发一条新消息说明结果（比 PATCH 更新卡片更可靠）
+                            try:
+                                from urllib.request import Request as _Req, urlopen as _urlopen
+                                # 获取卡片所在群聊
+                                chat_id = ""
                                 _evt = getattr(data, 'event', None)
                                 if _evt:
                                     _ctx = getattr(_evt, 'context', None)
-                                    if _ctx:
-                                        if hasattr(_ctx, 'open_message_id') and _ctx.open_message_id:
-                                            msg_id = _ctx.open_message_id
-                            if not msg_id:
-                                print(f"[FeishuWS] 卡片回调无 message_id")
-                            if msg_id:
-                                try:
-                                    from urllib.request import Request as _Req, urlopen as _urlopen
-                                    # 用 PATCH /im/v1/messages/{message_id} 更新整个消息
-                                    patch_body = json.dumps({
-                                        "content": json.dumps(updated_card, ensure_ascii=False),
-                                        "msg_type": "interactive",
-                                    }).encode("utf-8")
-                                    _url = f"https://open.feishu.cn/open-apis/im/v1/messages/{msg_id}"
-                                    patch_req = _Req(
-                                        _url,
-                                        data=patch_body,
-                                        headers={
-                                            "Authorization": f"Bearer {token}",
-                                            "Content-Type": "application/json",
-                                        },
-                                        method="PATCH",
+                                    if _ctx and hasattr(_ctx, 'open_chat_id') and _ctx.open_chat_id:
+                                        chat_id = _ctx.open_chat_id
+                                if chat_id:
+                                    result_msg = f"**审批结果**: {result_text}\n**审批ID**: `{approval_id}`"
+                                    result_body = json.dumps({
+                                        "receive_id": chat_id,
+                                        "msg_type": "text",
+                                        "content": json.dumps({"text": result_msg}),
+                                    }, ensure_ascii=False).encode("utf-8")
+                                    _r = _Req(
+                                        "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id",
+                                        data=result_body,
+                                        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                                        method="POST",
                                     )
-                                    with _urlopen(patch_req, timeout=10) as _resp:
-                                        _result = json.loads(_resp.read())
-                                        print(f"[FeishuWS] 卡片更新结果: code={_result.get('code')}, msg={_result.get('msg','')[:60]}")
-                                except Exception as e2:
-                                    print(f"[FeishuWS] 卡片更新失败: {e2}")
-                            else:
-                                print(f"[FeishuWS] 卡片回调无 message_id，无法更新卡片")
+                                    with _urlopen(_r, timeout=10) as _resp:
+                                        pass
+                                    print(f"[FeishuWS] 审批结果消息已发送: {result_text}")
+                            except Exception as e2:
+                                print(f"[FeishuWS] 审批结果消息发送失败: {e2}")
 
                         cb = ON_CARD_APPROVAL_CB
                         if cb:
