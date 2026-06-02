@@ -822,3 +822,56 @@ def format_pending_summary() -> str:
         )
     lines.append("\n输入「批准 `{id}`」或「拒绝 `{id}`」决策")
     return "\n".join(lines)
+
+
+def check_approval_decision(text: str) -> Optional[dict]:
+    """检查用户消息是否是审批决策。
+
+    支持格式：
+    - 1 abc123 / 0 abc123（短指令）
+    - 批准 abc123 / 拒绝 abc123（文字指令）
+    - approve abc123 / reject abc123（英文指令）
+
+    短指令只匹配 req_id 后 8 位。
+    """
+    text = text.strip()
+    import re
+    # 短指令：1 / 0 + req_id（可支持后8位短ID）
+    m = re.match(r"^([10])\s+(\S{4,})$", text)
+    if m:
+        raw_action = m.group(1)
+        raw_req_id = m.group(2)
+        return {"action": "approve" if raw_action == "1" else "reject", "req_id": raw_req_id}
+
+    # 文字指令：批准 / 拒绝 + req_id
+    m = re.match(r"^(批准|拒绝|approve|reject)\s+(\S+)", text, re.IGNORECASE)
+    if not m:
+        return None
+    action_word = m.group(1).lower()
+    req_id = m.group(2)
+    if action_word in ("批准", "approve"):
+        action = "approve"
+    else:
+        action = "reject"
+    return {"action": action, "req_id": req_id}
+
+
+def handle_approval_decision(decision: dict, chat_id: str = "", channel=None, **kwargs) -> str:
+    """执行审批决策并返回结果文本。如果 channel 和 chat_id 提供，会自动回复。"""
+    from core.approval import ApprovalManager
+    action = decision["action"]
+    req_id = decision["req_id"]
+    if action == "approve":
+        ok = ApprovalManager.approve(req_id)
+        reply = f"✅ 已批准 `{req_id}`" if ok else f"❌ 审批失败: {req_id} 不存在或已处理"
+    else:
+        ok = ApprovalManager.reject(req_id)
+        reply = f"⛔ 已拒绝 `{req_id}`" if ok else f"❌ 拒绝失败: {req_id} 不存在或已处理"
+    if channel and chat_id:
+        try:
+            send_kwargs = {"chat_id": chat_id}
+            send_kwargs.update(kwargs)
+            channel.send(reply, **send_kwargs)
+        except Exception:
+            pass
+    return reply

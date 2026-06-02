@@ -405,6 +405,17 @@ class WeChatILinkChannel(MessageChannel):
             if not text:
                 return
 
+            # 检查是否审批决策回复（1 req_id / 批准 req_id）
+            try:
+                from core.approval import check_approval_decision, handle_approval_decision
+                decision = check_approval_decision(text)
+                if decision:
+                    reply = handle_approval_decision(decision, from_user, self, context_token=ctx_token)
+                    print(f"[WeChat] 审批决策已处理: {reply}")
+                    return
+            except Exception as e:
+                print(f"[WeChat] 审批决策处理异常: {e}")
+
             # 构建消息对象，保存 context_token 用于回复
             msg = Message(
                 text=text,

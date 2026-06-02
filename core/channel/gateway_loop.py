@@ -203,23 +203,12 @@ class GatewayLoop:
         self._last_chat_id = msg.chat_id  # 保留向后兼容
 
         # 审批决策检测：批准/拒绝 + req_id
-        decision = self._check_approval_decision(text)
+        from core.approval import check_approval_decision as _check_dec, handle_approval_decision as _handle_dec
+        decision = _check_dec(text)
         if decision:
-            # 执行审批决策，不进入 agent.run()
-            from core.approval import ApprovalManager
-            req_id = decision["req_id"]
-            if decision["action"] == "approve":
-                ok = ApprovalManager.approve(req_id)
-                reply = f"✅ 已批准 `{req_id}`" if ok else f"❌ 审批失败: {req_id} 不存在或已处理"
-            else:
-                ok = ApprovalManager.reject(req_id)
-                reply = f"⛔ 已拒绝 `{req_id}`" if ok else f"❌ 拒绝失败: {req_id} 不存在或已处理"
             channel = self.channels.get(msg.platform)
-            if channel:
-                kwargs = {"chat_id": msg.chat_id}
-                if msg.raw and "context_token" in msg.raw:
-                    kwargs["context_token"] = msg.raw["context_token"]
-                channel.send(reply, **kwargs)
+            reply = _handle_dec(decision, msg.chat_id, channel)
+            print(f"[GatewayLoop] 审批决策已处理: {reply}")
             return
 
         try:
