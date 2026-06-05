@@ -3,7 +3,7 @@ mod agent;
 use agent::AgentManager;
 use serde_json::json;
 use std::sync::Mutex;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 struct AppState {
     agent: Mutex<AgentManager>,
