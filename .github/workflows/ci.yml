@@ -26,6 +26,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyyaml pytest pytest-cov pytest-timeout
 
+      - name: 测试收集验证
+        run: |
+          python -m pytest tests/test_approval_denyrules.py --collect-only -q
+
       - name: 全部单元测试（并行覆盖率收集）
         env:
           COVERAGE_FILE: .coverage.ci
