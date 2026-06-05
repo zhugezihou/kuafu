@@ -74,14 +74,16 @@ async fn send_task_stream(task: String, app: tauri::AppHandle) -> Result<String,
 }
 
 #[tauri::command]
-async fn get_status(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+async fn get_status() -> Result<serde_json::Value, String> {
     let client = reqwest::Client::new();
-    let resp = client
+    match client
         .get(format!("http://localhost:{}/api/status", 8081))
         .send()
         .await
-        .map_err(|_| json!({"status": "offline", "version": "?", "model": "?", "backend": "?", "evolution": {"total": 0}}))?;
-    resp.json().await.map_err(|e| e.to_string())
+    {
+        Ok(resp) => resp.json().await.map_err(|e| e.to_string()),
+        Err(_) => Ok(json!({"status": "offline", "version": "?", "model": "?", "backend": "?", "evolution": {"total": 0}})),
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
