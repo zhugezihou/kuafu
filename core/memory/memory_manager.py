@@ -141,7 +141,36 @@ class MemoryManager:
             ON opinions(topic)
         """)
         # Opinion FTS 已移除（用 LIKE 搜索代替，避免 FTS trigger 复杂性）
-        # facts 表增加 entity 列（Observation 需要用）
+        # facts 表
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS facts (
+                id TEXT PRIMARY KEY,
+                fact TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'experience',
+                source TEXT DEFAULT '',
+                importance REAL DEFAULT 0.5,
+                timestamp REAL NOT NULL,
+                entity TEXT DEFAULT ''
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_facts_category
+            ON facts(category)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_facts_importance
+            ON facts(importance DESC)
+        """)
+        # FTS5 全文索引（如果不存在）
+        try:
+            conn.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
+                    fact, content='facts', content_rowid='rowid'
+                )
+            """)
+        except Exception:
+            pass  # FTS5 可能不可用
+        # entity 列迁移（兼容旧库）
         try:
             conn.execute("ALTER TABLE facts ADD COLUMN entity TEXT DEFAULT ''")
         except Exception:
