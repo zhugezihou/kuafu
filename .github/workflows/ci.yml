@@ -189,7 +189,7 @@ jobs:
           # 下载 Windows 嵌入式 Python
           $url = "https://www.python.org/ftp/python/3.12.9/python-3.12.9-embed-amd64.zip"
           $zip = "$env:RUNNER_TEMP\python.zip"
-          $out = "$pwd\python"
+          $out = "$pwd\src-tauri\python"
           echo "下载嵌入式 Python 3.12.9..."
           curl.exe -L -o $zip $url
           echo "解压到 $out..."
