@@ -59,72 +59,57 @@ impl AgentManager {
         }
     }
 
-    fn python_exe(&self) -> PathBuf {
-        // 优先找打包的嵌入式 Python
-        let p = self.python_dir.join("python.exe");
-        if p.exists() {
-            return p;
+    /// 找一个能跑夸父的 Python（嵌入式优先，fallback 系统 Python）
+    fn find_working_python(&self) -> PathBuf {
+        let embedded = self.python_dir.join("python.exe");
+        if embedded.exists() {
+            let ok = Command::new(&embedded)
+                .args(["-c", "import yaml"])
+                .stdout(Stdio::null()).stderr(Stdio::null())
+                .status().map(|s| s.success()).unwrap_or(false);
+            if ok { return embedded; }
         }
-        // 回退到系统 python
-        PathBuf::from("python")
+        // 系统 Python 可能有 pyyaml
+        let system = PathBuf::from("python");
+        let ok = Command::new(&system)
+            .args(["-c", "import yaml"])
+            .stdout(Stdio::null()).stderr(Stdio::null())
+            .status().map(|s| s.success()).unwrap_or(false);
+        if ok { return system; }
+        // 都不可用,返回嵌入式 Python 拿具体错误
+        if embedded.exists() { embedded } else { system }
     }
 
     fn kuafu_dir(&self) -> PathBuf {
         self.python_dir.join("kuafu")
     }
 
-    /// 确认 pyyaml 可用，不可用时尝试安装
-    fn ensure_pyyaml(&self, python: &PathBuf) {
-        let check = Command::new(python)
-            .args(["-c", "import yaml"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        if let Ok(status) = check {
-            if status.success() {
-                return; // pyyaml 已可用
-            }
-        }
-        // 尝试安装 pyyaml
-        let _ = Command::new(python)
-            .args(["-m", "pip", "install", "pyyaml", "--quiet"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    }
-
     pub fn start(&self) -> Result<AgentStatus, String> {
         let mut proc = self.process.lock().map_err(|e| e.to_string())?;
-        if proc.is_some() {
-            if let Some(ref mut child) = proc.as_mut() {
-                if child.try_wait().ok().flatten().is_none() {
-                    return Ok(AgentStatus {
-                        running: true,
-                        pid: child.id().into(),
-                        gateway_port: GATEWAY_PORT,
-                        python_path: self.python_exe().to_string_lossy().to_string(),
-                        error: None,
-                    });
-                }
+        if let Some(ref mut child) = proc.as_mut() {
+            if child.try_wait().ok().flatten().is_none() {
+                return Ok(AgentStatus {
+                    running: true, pid: child.id().into(),
+                    gateway_port: GATEWAY_PORT,
+                    python_path: self.python_exe().to_string_lossy().to_string(),
+                    error: None,
+                });
             }
         }
 
-        let python = self.python_exe();
+        let python = self.find_working_python();
         let kuafu = self.kuafu_dir();
-        let kuafu_str = kuafu.to_string_lossy().to_string();
         let python_str = python.to_string_lossy().to_string();
+        let kuafu_str = kuafu.to_string_lossy().to_string();
 
         if !python.exists() {
-            return Err(format!("未找到 Python (尝试路径: {})。请先安装 Python", python_str));
+            return Err(format!("未找到 Python，请先安装 Python"));
         }
         if !kuafu.join("core").exists() {
-            return Err(format!("未找到夸父模块 (尝试路径: {})。安装包可能不完整", kuafu_str));
+            return Err(format!("未找到夸父模块 (尝试路径: {})", kuafu_str));
         }
 
         let cfg = self.config.lock().map_err(|e| e.to_string())?.clone();
-
-        // 确保 pyyaml 已安装
-        self.ensure_pyyaml(&python);
 
         let mut cmd = Command::new(&python);
         cmd.args(["-m", "core.cli", "gateway", "start", "--port", &GATEWAY_PORT.to_string()])
@@ -148,33 +133,27 @@ impl AgentManager {
         let mut child = cmd.spawn().map_err(|e| format!("启动夸父失败: {e}"))?;
         let pid = child.id();
 
-        // 等一会儿，看进程是否立即退出
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // 等一会儿看进程是否立即退出
+        std::thread::sleep(std::time::Duration::from_millis(800));
         if let Some(exit) = child.try_wait().ok().flatten() {
-            // 进程已退出 — 读 stderr 错误信息
             let mut stderr = String::new();
-            if let Some(ref mut stderr_pipe) = child.stderr {
-                let _ = stderr_pipe.read_to_string(&mut stderr);
+            if let Some(ref mut pipe) = child.stderr {
+                let _ = pipe.read_to_string(&mut stderr);
             }
-            let err_msg = if stderr.is_empty() {
-                format!("夸父进程启动后立即退出 (exit code: {})", exit.code().unwrap_or(-1))
+            let msg = if stderr.is_empty() {
+                format!("夸父启动失败 (exit code: {})", exit.code().unwrap_or(-1))
             } else {
                 format!("夸父启动失败: {}", stderr.trim())
             };
-            if let Ok(mut last) = self.last_error.lock() {
-                *last = err_msg.clone();
-            }
-            return Err(err_msg);
+            if let Ok(mut last) = self.last_error.lock() { *last = msg.clone(); }
+            return Err(msg);
         }
 
         *proc = Some(child);
-        if let Ok(mut last) = self.last_error.lock() {
-            last.clear();
-        }
+        if let Ok(mut last) = self.last_error.lock() { last.clear(); }
 
         Ok(AgentStatus {
-            running: true,
-            pid: Some(pid),
+            running: true, pid: Some(pid),
             gateway_port: GATEWAY_PORT,
             python_path: python_str,
             error: None,
@@ -192,9 +171,9 @@ impl AgentManager {
 
     pub fn status(&self) -> AgentStatus {
         let mut proc = self.process.lock().unwrap();
-        let (running, error_msg) = if let Some(ref mut child) = *proc {
+        let (running, err) = if let Some(ref mut child) = *proc {
             match child.try_wait() {
-                Ok(Some(_exit)) => (false, Some(self.get_last_error())),
+                Ok(Some(_)) => (false, Some(self.get_last_error())),
                 Ok(None) => (true, None),
                 Err(e) => (false, Some(format!("进程检查失败: {e}"))),
             }
@@ -202,17 +181,20 @@ impl AgentManager {
             (false, Some(self.get_last_error()))
         };
         AgentStatus {
-            running,
-            pid: proc.as_ref().map(|p| p.id()),
+            running, pid: proc.as_ref().map(|p| p.id()),
             gateway_port: GATEWAY_PORT,
-            python_path: self.python_exe().to_string_lossy().to_string(),
-            error: error_msg,
+            python_path: self.find_working_python().to_string_lossy().to_string(),
+            error: err,
         }
     }
 
     pub fn restart(&self) -> Result<AgentStatus, String> {
         self.stop()?;
         self.start()
+    }
+
+    fn python_exe(&self) -> PathBuf {
+        self.find_working_python()
     }
 
     fn get_last_error(&self) -> String {
