@@ -184,13 +184,4 @@ jobs:
         run: npm run build
 
       - name: Tauri 构建
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: desktop-v__VERSION__
-          releaseName: "夸父 Desktop v__VERSION__"
-          releaseBody: "夸父 Desktop 桌面客户端发布"
-          releaseDraft: true
-          prerelease: false
-          projectPath: kuafu-desktop
+        run: npm run tauri build
