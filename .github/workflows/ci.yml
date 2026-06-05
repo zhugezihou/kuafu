@@ -219,13 +219,12 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "TAG_NAME=desktop-v$ver"
 
       - name: 创建 Release
-        uses: softprops/action-gh-release@v2
+        shell: powershell
+        run: |
+          $tag = "desktop-v$env:VERSION"
+          gh release create $tag `
+            --title "夸父 Desktop v$env:VERSION" `
+            --notes "夸父 Desktop 桌面客户端发布" `
+            kuafu-desktop/src-tauri/target/release/bundle/nsis/*.exe
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ env.TAG_NAME }}
-          name: "夸父 Desktop v${{ env.VERSION }}"
-          body: "夸父 Desktop 桌面客户端发布"
-          files: kuafu-desktop/src-tauri/target/release/bundle/nsis/*.exe
-          draft: false
-          prerelease: false
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
