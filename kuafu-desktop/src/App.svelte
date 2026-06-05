@@ -61,7 +61,6 @@
   }
 
   async function checkHealth() {
-    // 直连 Gateway 的 /api/status 检查健康
     try {
       const resp = await fetch("http://localhost:8081/api/status", {
         signal: AbortSignal.timeout(5000),
@@ -73,16 +72,15 @@
         agentRunning.set(false);
       }
     } catch {
-      // Gateway 不可达 — 说明引擎挂了
+      // Gateway 不可达 — 读 Rust 端状态取错误信息
       agentRunning.set(false);
-      // 尝试自动重启
       try {
         const { invoke } = await import("@tauri-apps/api/core");
-        const status = await invoke("start_agent") as any;
-        if (status.running) {
-          agentRunning.set(true);
-          agentError.set(null);
-        }
+        const st = await invoke("agent_status") as any;
+        if (st.error) agentError.set(st.error);
+        // 尝试重新启动
+        const result = await invoke("start_agent") as any;
+        if (result.error) agentError.set(result.error);
       } catch {}
     }
   }
