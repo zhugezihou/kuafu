@@ -18,7 +18,7 @@ export interface Session {
   message_count: number;
 }
 
-/** 同步发送（简单任务） */
+/** 同步发送消息，等待夸父返回完整结果 */
 export async function sendMessage(
   task: string,
   mode = "standard"
@@ -32,7 +32,7 @@ export async function sendMessage(
   return data.result || data.error || "(无输出)";
 }
 
-/** 流式发送：前端直连 Gateway */
+/** 同步发送，一次性返回结果（夸父 Gateway 暂不支持 SSE 流式） */
 export async function sendMessageStream(
   task: string,
   onChunk: (text: string) => void,
@@ -45,7 +45,7 @@ export async function sendMessageStream(
     const resp = await fetch(`${GATEWAY_URL}/api/task`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ task, mode: "standard", sync: false }),
+      body: JSON.stringify({ task, mode: "standard", sync: true }),
       signal: controller.signal,
     });
 
@@ -56,13 +56,13 @@ export async function sendMessageStream(
     }
 
     const data = await resp.json();
-    if (data.status === "accepted") {
-      onChunk("任务已提交，正在执行...\n\n");
-      await pollForResult(onChunk, onDone);
+    if (data.result) {
+      // 一次性输出完整结果（夸父不支持逐 token 流式）
+      onChunk(data.result);
     } else {
-      onChunk(data.result || "");
-      onDone();
+      onChunk(data.error || "(无输出)");
     }
+    onDone();
   } catch (e: any) {
     if (e.name === "AbortError") {
       onChunk("\n\n错误: 请求超时");
@@ -73,27 +73,6 @@ export async function sendMessageStream(
   } finally {
     clearTimeout(timeout);
   }
-}
-
-/** 轮询等待结果 */
-async function pollForResult(
-  onChunk: (text: string) => void,
-  onDone: () => void,
-  maxRetries = 60
-): Promise<void> {
-  for (let i = 0; i < maxRetries; i++) {
-    await new Promise((r) => setTimeout(r, 1000));
-    try {
-      const resp = await fetch(`${GATEWAY_URL}/api/status`);
-      if (resp.ok && (await resp.json()).status === "ok") {
-        onChunk("✅ 任务完成");
-        onDone();
-        return;
-      }
-    } catch {}
-  }
-  onChunk("\n\n⚠ 等待超时");
-  onDone();
 }
 
 export async function getGatewayStatus(): Promise<any> {

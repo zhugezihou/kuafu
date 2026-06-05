@@ -113,7 +113,10 @@ impl AgentManager {
 
         // 构建环境变量
         let mut cmd = Command::new(&python);
-        cmd.args(["-m", "core.main", "gateway", "start", "--port", &GATEWAY_PORT.to_string()])
+        cmd.args([
+            "-m", "core.cli", "gateway", "start",
+            "--port", &GATEWAY_PORT.to_string(),
+        ])
             .current_dir(&kuafu)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
