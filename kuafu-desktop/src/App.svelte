@@ -27,11 +27,20 @@
 
   // 启动时加载上次的会话和配置
   $effect(() => {
-    // 从 localStorage 恢复上次会话
     loadSession();
     startAgent();
+
+    // 窗口关闭/重载时停止夸父引擎
+    const handleBeforeUnload = () => {
+      import("@tauri-apps/api/core").then(({ invoke }) => {
+        invoke("stop_agent").catch(() => {});
+      });
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+
     return () => {
       if (healthCheckInterval) clearInterval(healthCheckInterval);
+      handleBeforeUnload();
     };
   });
 

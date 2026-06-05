@@ -133,18 +133,6 @@ pub fn run() {
                 agent: Mutex::new(agent_mgr),
             });
 
-            // 窗口关闭时自动停止夸父引擎
-            let app_handle = app.handle().clone();
-            app.on_window_event(move |window, event| {
-                if let tauri::WindowEvent::CloseRequested { .. } = event {
-                    if let Some(state) = app_handle.try_state::<AppState>() {
-                        if let Ok(agent) = state.agent.lock() {
-                            let _ = agent.stop();
-                        }
-                    }
-                }
-            });
-
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
