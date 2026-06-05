@@ -157,7 +157,7 @@ jobs:
 
   desktop-build:
     runs-on: ${{ matrix.platform }}
-    needs: unit-tests
+    if: always()
     strategy:
       fail-fast: false
       matrix:
