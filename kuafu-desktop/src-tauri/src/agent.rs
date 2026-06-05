@@ -36,6 +36,17 @@ pub struct AgentStatus {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SetupStatus {
+    pub python_found: bool,
+    pub pyyaml_installed: bool,
+    pub kuafu_found: bool,
+    pub gateway_running: bool,
+    pub python_path: String,
+    pub error: Option<String>,
+    pub setup_complete: bool,
+}
+
 pub struct AgentManager {
     process: Mutex<Option<Child>>,
     python_dir: PathBuf,
@@ -59,31 +70,142 @@ impl AgentManager {
         }
     }
 
-    /// 找一个能跑夸父的 Python（嵌入式优先，fallback 系统 Python）
-    fn find_working_python(&self) -> PathBuf {
-        let embedded = self.python_dir.join("python.exe");
-        if embedded.exists() {
-            let ok = Command::new(&embedded)
-                .args(["-c", "import yaml"])
-                .stdout(Stdio::null()).stderr(Stdio::null())
-                .status().map(|s| s.success()).unwrap_or(false);
-            if ok { return embedded; }
-        }
-        // 系统 Python 可能有 pyyaml
-        let system = PathBuf::from("python");
-        let ok = Command::new(&system)
-            .args(["-c", "import yaml"])
-            .stdout(Stdio::null()).stderr(Stdio::null())
-            .status().map(|s| s.success()).unwrap_or(false);
-        if ok { return system; }
-        // 都不可用,返回嵌入式 Python 拿具体错误
-        if embedded.exists() { embedded } else { system }
+    /// 获取嵌入式 Python 路径
+    fn embedded_python(&self) -> PathBuf {
+        self.python_dir.join("python.exe")
     }
 
     fn kuafu_dir(&self) -> PathBuf {
         self.python_dir.join("kuafu")
     }
 
+    /// 检测系统 Python
+    fn find_system_python() -> Option<PathBuf> {
+        for name in &["python3", "python"] {
+            let p = PathBuf::from(name);
+            let ok = Command::new(&p)
+                .args(["--version"])
+                .stdout(Stdio::null()).stderr(Stdio::null())
+                .status().map(|s| s.success()).unwrap_or(false);
+            if ok { return Some(p); }
+        }
+        None
+    }
+
+    /// 检查环境状态
+    pub fn check_setup(&self) -> SetupStatus {
+        let embedded = self.embedded_python();
+        let embedded_exists = embedded.exists();
+        let system_py = Self::find_system_python();
+
+        // 找一个可用的 Python
+        let (python_path, python_found) = if embedded_exists {
+            (embedded.to_string_lossy().to_string(), true)
+        } else if let Some(ref p) = system_py {
+            (p.to_string_lossy().to_string(), true)
+        } else {
+            (String::new(), false)
+        };
+
+        if !python_found {
+            return SetupStatus {
+                python_found: false, pyyaml_installed: false,
+                kuafu_found: false, gateway_running: false,
+                python_path: String::new(),
+                error: Some("未找到 Python 环境，请先安装 Python 3.11+".into()),
+                setup_complete: false,
+            };
+        }
+
+        let py = PathBuf::from(&python_path);
+
+        // 检查 pyyaml
+        let pyyaml_ok = Command::new(&py)
+            .args(["-c", "import yaml"])
+            .stdout(Stdio::null()).stderr(Stdio::null())
+            .status().map(|s| s.success()).unwrap_or(false);
+
+        // 检查夸父模块
+        let kuafu = self.kuafu_dir();
+        let kuafu_ok = kuafu.join("core").exists();
+
+        // 检查 Gateway 是否在运行（用 TcpStream 代替 reqwest）
+        use std::net::TcpStream;
+        let gateway_ok = TcpStream::connect_timeout(
+            &"127.0.0.1:8081".parse().unwrap(),
+            std::time::Duration::from_millis(500),
+        ).is_ok();
+
+        let error = if !kuafu_ok {
+            Some("未找到夸父模块".into())
+        } else if !pyyaml_ok {
+            Some("缺少 PyYAML 依赖".into())
+        } else {
+            None
+        };
+
+        SetupStatus {
+            python_found: true,
+            pyyaml_installed: pyyaml_ok,
+            kuafu_found: kuafu_ok,
+            gateway_running: gateway_ok,
+            python_path,
+            error,
+            setup_complete: kuafu_ok && pyyaml_ok && !gateway_ok,
+        }
+    }
+
+    /// 自动修复环境
+    pub fn auto_setup(&self) -> Result<SetupStatus, String> {
+        let mut status = self.check_setup();
+
+        if !status.python_found {
+            return Err("未找到 Python，请手动安装 https://www.python.org/downloads/".into());
+        }
+
+        let py = PathBuf::from(&status.python_path);
+
+        // 安装 pyyaml
+        if !status.pyyaml_installed {
+            // 先尝试 pip install
+            let pip_result = Command::new(&py)
+                .args(["-m", "pip", "install", "pyyaml", "--quiet"])
+                .stdout(Stdio::null()).stderr(Stdio::null())
+                .status();
+            if let Ok(code) = pip_result {
+                if code.success() {
+                    status.pyyaml_installed = true;
+                }
+            }
+
+            // 如果 pip 失败，尝试 ensurepip 后再装
+            if !status.pyyaml_installed {
+                let _ = Command::new(&py)
+                    .args(["-m", "ensurepip", "--upgrade", "--quiet"])
+                    .stdout(Stdio::null()).stderr(Stdio::null())
+                    .status();
+                let _ = Command::new(&py)
+                    .args(["-m", "pip", "install", "pyyaml", "--quiet"])
+                    .stdout(Stdio::null()).stderr(Stdio::null())
+                    .status();
+                let check = Command::new(&py)
+                    .args(["-c", "import yaml"])
+                    .status().map(|s| s.success()).unwrap_or(false);
+                status.pyyaml_installed = check;
+            }
+        }
+
+        // 检查夸父模块（内置在 Desktop 打包中）
+        if !status.kuafu_found {
+            status.error = Some("夸父模块缺失，安装包可能不完整".into());
+            return Ok(status);
+        }
+
+        status.setup_complete = status.pyyaml_installed && status.kuafu_found;
+        Ok(status)
+    }
+
+    /// 启动夸父 Gateway
     pub fn start(&self) -> Result<AgentStatus, String> {
         let mut proc = self.process.lock().map_err(|e| e.to_string())?;
         if let Some(ref mut child) = proc.as_mut() {
@@ -91,22 +213,26 @@ impl AgentManager {
                 return Ok(AgentStatus {
                     running: true, pid: child.id().into(),
                     gateway_port: GATEWAY_PORT,
-                    python_path: self.python_exe().to_string_lossy().to_string(),
+                    python_path: self.find_python().to_string_lossy().to_string(),
                     error: None,
                 });
             }
         }
 
-        let python = self.find_working_python();
-        let kuafu = self.kuafu_dir();
-        let python_str = python.to_string_lossy().to_string();
-        let kuafu_str = kuafu.to_string_lossy().to_string();
-
-        if !python.exists() {
-            return Err(format!("未找到 Python，请先安装 Python"));
+        // 先自动修复环境
+        let setup = self.auto_setup()?;
+        if !setup.setup_complete {
+            let err = setup.error.unwrap_or_else(|| "环境准备未完成".into());
+            return Err(err);
         }
+
+        let python = PathBuf::from(&setup.python_path);
+        let kuafu = self.kuafu_dir();
+        let kuafu_str = kuafu.to_string_lossy().to_string();
+        let python_str = python.to_string_lossy().to_string();
+
         if !kuafu.join("core").exists() {
-            return Err(format!("未找到夸父模块 (尝试路径: {})", kuafu_str));
+            return Err(format!("未找到夸父模块 (路径: {})", kuafu_str));
         }
 
         let cfg = self.config.lock().map_err(|e| e.to_string())?.clone();
@@ -154,9 +280,7 @@ impl AgentManager {
 
         Ok(AgentStatus {
             running: true, pid: Some(pid),
-            gateway_port: GATEWAY_PORT,
-            python_path: python_str,
-            error: None,
+            gateway_port: GATEWAY_PORT, python_path: python_str, error: None,
         })
     }
 
@@ -183,7 +307,7 @@ impl AgentManager {
         AgentStatus {
             running, pid: proc.as_ref().map(|p| p.id()),
             gateway_port: GATEWAY_PORT,
-            python_path: self.find_working_python().to_string_lossy().to_string(),
+            python_path: self.find_python().to_string_lossy().to_string(),
             error: err,
         }
     }
@@ -193,8 +317,26 @@ impl AgentManager {
         self.start()
     }
 
-    fn python_exe(&self) -> PathBuf {
-        self.find_working_python()
+    fn find_python(&self) -> PathBuf {
+        let embedded = self.embedded_python();
+        // 检查嵌入式 Python 是否有 pyyaml
+        if embedded.exists() {
+            let ok = Command::new(&embedded)
+                .args(["-c", "import yaml"])
+                .stdout(Stdio::null()).stderr(Stdio::null())
+                .status().map(|s| s.success()).unwrap_or(false);
+            if ok { return embedded; }
+        }
+        // fallback 到系统 Python
+        if let Some(sys) = Self::find_system_python() {
+            let ok = Command::new(&sys)
+                .args(["-c", "import yaml"])
+                .stdout(Stdio::null()).stderr(Stdio::null())
+                .status().map(|s| s.success()).unwrap_or(false);
+            if ok { return sys; }
+        }
+        // 返回可用的
+        if embedded.exists() { embedded } else { PathBuf::from("python") }
     }
 
     fn get_last_error(&self) -> String {

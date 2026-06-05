@@ -52,6 +52,23 @@ fn update_agent_config(
     Ok(())
 }
 
+#[tauri::command]
+fn check_setup(state: tauri::State<AppState>) -> agent::SetupStatus {
+    state.agent.lock().map(|a| a.check_setup())
+        .unwrap_or(agent::SetupStatus {
+            python_found: false, pyyaml_installed: false,
+            kuafu_found: false, gateway_running: false,
+            python_path: String::new(),
+            error: Some("状态不可用".into()),
+            setup_complete: false,
+        })
+}
+
+#[tauri::command]
+fn auto_setup(state: tauri::State<AppState>) -> Result<agent::SetupStatus, String> {
+    state.agent.lock().map_err(|e| e.to_string())?.auto_setup()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -72,6 +89,8 @@ pub fn run() {
             restart_agent,
             agent_status,
             update_agent_config,
+            check_setup,
+            auto_setup,
         ])
         .run(tauri::generate_context!())
         .expect("夸父 Desktop 启动失败");
