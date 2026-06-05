@@ -1,10 +1,9 @@
 mod agent;
 
 use agent::AgentManager;
-use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 struct AppState {
     agent: Mutex<AgentManager>,
@@ -53,38 +52,12 @@ fn update_agent_config(
     Ok(())
 }
 
-#[tauri::command]
-async fn get_gateway_status() -> Result<serde_json::Value, String> {
-    let client = reqwest::Client::new();
-    match client
-        .get(format!("http://localhost:{}/api/status", 8081))
-        .send()
-        .await
-    {
-        Ok(resp) => resp.json().await.map_err(|e| e.to_string()),
-        Err(_) => Ok(json!({"status": "offline"})),
-    }
-}
-
-#[tauri::command]
-async fn get_sessions_from_gateway() -> Result<serde_json::Value, String> {
-    let client = reqwest::Client::new();
-    match client
-        .get(format!("http://localhost:{}/api/sessions", 8081))
-        .send()
-        .await
-    {
-        Ok(resp) => resp.json().await.map_err(|e| e.to_string()),
-        Err(_) => Ok(json!({"sessions": []})),
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
-            // 安全获取资源目录，失败时使用当前目录
+            // 安全获取资源目录
             let python_dir = match app.path().resource_dir() {
                 Ok(dir) => dir.join("python"),
                 Err(_) => PathBuf::from("python"),
@@ -101,8 +74,6 @@ pub fn run() {
             restart_agent,
             agent_status,
             update_agent_config,
-            get_gateway_status,
-            get_sessions_from_gateway,
         ])
         .run(tauri::generate_context!())
         .expect("夸父 Desktop 启动失败");
