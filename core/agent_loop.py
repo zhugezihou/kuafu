@@ -2056,7 +2056,7 @@ class AgentLoop:
         errors = []
 
         # 1. 创建白板实例
-        whiteboard = self.whiteboard or Whiteboard()
+        whiteboard = getattr(self, 'whiteboard', None) or Whiteboard()
 
         # 2. 构建系统提示（增加白板模式说明）
         system_prompt = self.build_system_prompt(task) + """
@@ -2226,10 +2226,14 @@ class AgentLoop:
                 final_result = response.get("content", "(无输出)")  # pragma: no cover
 
         # 6. 构建标准结果
+        try:
+            summary_text = whiteboard.read("completed")[:500] if whiteboard else final_result[:200]
+        except Exception:  # pragma: no cover
+            summary_text = final_result[:200]  # pragma: no cover
         task_result = {
             "success": len(errors) == 0,
             "result": final_result,
-            "summary": whiteboard.read("completed")[:500] if whiteboard else final_result[:200],
+            "summary": summary_text,
             "errors": errors,
             "tool_calls": len(messages),
             "task_type": "whiteboard",
