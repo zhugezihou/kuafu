@@ -4,13 +4,8 @@
 
   let version = $state("?");
 
-  onMount(async () => {
-    try {
-      const { getVersion } = await import("@tauri-apps/api/app");
-      version = await getVersion();
-    } catch {
-      version = "1.0.3";
-    }
+  onMount(() => {
+    version = "1.0.10";
   });
 </script>
 

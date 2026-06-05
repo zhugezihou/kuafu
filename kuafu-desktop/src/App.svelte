@@ -21,17 +21,23 @@
 
   let sidebarOpen = $state(true);
   let showSettings = $state(false);
+  let healthCheckInterval: ReturnType<typeof setInterval> | undefined;
 
   onMount(() => {
     loadSession();
-    // 尝试启动夸父引擎（不阻塞界面渲染）
     startAgentAsync();
+
+    // 每15秒检查引擎状态
+    healthCheckInterval = setInterval(checkHealth, 15000);
+
+    return () => {
+      if (healthCheckInterval) clearInterval(healthCheckInterval);
+    };
   });
 
   async function startAgentAsync() {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      // 先传配置
       const config = loadConfig();
       await invoke("update_agent_config", {
         config: {
@@ -42,12 +48,38 @@
           cloud_model: config.cloudModel,
         },
       });
-      // 再启动引擎
       const status = await invoke("start_agent") as any;
       agentRunning.set(status.running);
       if (status.error) agentError.set(status.error);
     } catch {
       // Tauri API 不可用时保持离线状态
+    }
+  }
+
+  async function checkHealth() {
+    // 直连 Gateway 的 /api/status 检查健康
+    try {
+      const resp = await fetch("http://localhost:8081/api/status", {
+        signal: AbortSignal.timeout(5000),
+      });
+      if (resp.ok) {
+        agentRunning.set(true);
+        agentError.set(null);
+      } else {
+        agentRunning.set(false);
+      }
+    } catch {
+      // Gateway 不可达 — 说明引擎挂了
+      agentRunning.set(false);
+      // 尝试自动重启
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const status = await invoke("start_agent") as any;
+        if (status.running) {
+          agentRunning.set(true);
+          agentError.set(null);
+        }
+      } catch {}
     }
   }
 
