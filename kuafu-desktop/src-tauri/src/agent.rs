@@ -69,8 +69,12 @@ impl AgentManager {
 
     /// 获取状态
     pub fn status(&self) -> AgentStatus {
-        let proc = self.process.lock().unwrap();
-        let running = proc.as_ref().map(|p| p.try_wait().ok().flatten().is_none()).unwrap_or(false);
+        let mut proc = self.process.lock().unwrap();
+        let running = if let Some(ref mut child) = *proc {
+            child.try_wait().ok().flatten().is_none()
+        } else {
+            false
+        };
         AgentStatus {
             running,
             pid: proc.as_ref().map(|p| p.id()),
