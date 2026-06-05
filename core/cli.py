@@ -247,80 +247,1019 @@ def run_model(args: argparse.Namespace, agent: Any) -> int:
         return 0
 
 
-def run_skill(args: argparse.Namespace, agent: Any = None) -> int:
-    def run_skill(args: argparse.Namespace, agent: Any = None) -> int:
-        """kuafu skill — 技能管理。"""
+def run_kfskill(args: argparse.Namespace, agent: Any = None) -> int:
+    """kuafu kfskill — 技能包操作。"""
+    from core.kfskill import (
+        create_skill, save_skill, load_skill, validate_kfskill,
+        export_to_json, KFSKILL_SPECIFICATION
+    )
+    from pathlib import Path
+
+    cmd = args.cmd
+
+    if cmd == "create":
+        name = args.name
+        description = args.description or f"通过 CLI 创建的技能: {name}"
+        category = args.category
+        author = args.author or os.environ.get("USER", "")
+        version = args.version or "1.0.0"
+        keywords = list(args.keywords) if args.keywords else []
+
+        # 交互式输入步骤
+        print(f"创建技能包: {name}")
+        print(f"描述: {description}")
+        print(f"分类: {category or '(未设置)'}")
+        print()
+        print("请输入执行步骤（每行一步，空行结束）:")
+        steps = []
+        i = 1
+        while True:
+            try:
+                line = input(f"  step {i}: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                break
+            if not line:
+                break
+            steps.append(line)
+            i += 1
+
+        if not steps:
+            print("❌ 至少需要 1 个执行步骤")
+            return 1
+
+        print("请输入注意事项/陷阱（每行一项，空行结束，直接回车跳过）:")
+        pitfalls = []
+        i = 1
+        while True:
+            try:
+                line = input(f"  pitfall {i}: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                break
+            if not line:
+                break
+            pitfalls.append(line)
+            i += 1
+
+        result = create_skill(
+            name=name, description=description, steps=steps,
+            category=category, keywords=keywords,
+            pitfalls=pitfalls if pitfalls else None,
+            version=version, author=author,
+            source="manual",
+        )
+        if not result["success"]:
+            print(f"❌ 创建失败: {result.get('error', '未知错误')}")
+            return 1
+
+        save_result = save_skill(result["data"])
+        if save_result["success"]:
+            print(f"✅ 技能包已创建: {save_result['path']}")
+        else:
+            print(f"❌ 保存失败: {save_result.get('error', '未知错误')}")
+        return 0
+
+    elif cmd == "list":
         from core.skill_manager import SkillManager
         mgr = SkillManager()
-
-        if args.cmd == "list":
-            local = mgr.list_local()
-            installed = mgr.list_installed_market()
-            print(f"本地技能 ({len(local)}):")
-            for s in local:
-                print(f"  {s.name:30s} {s.description[:50]}")
-            if installed:
-                print(f"\n市场安装 ({len(installed)}):")
-                for s in installed:
-                    print(f"  {s.name:30s} {s.description[:50]}")
-            return 0
-
-        elif args.cmd == "search":
-            query = args.query or ""
-            if not query:
-                market = mgr.fetch_market_index()
-                print(f"技能市场 ({len(market)} 个可用):")
-                for s in market[:20]:
-                    print(f"  {s.name:30s} [{s.category or '?'}] {s.description[:40]}")
-                return 0
-
-            local = mgr.search_local(query)
-            market = mgr.search_market(query)
-            print(f"本地匹配 ({len(local)}):")
-            for s in local:
-                print(f"  {s.name}")
-            print(f"\n市场匹配 ({len(market)}):")
-            for s in market:
-                print(f"  {s.name:30s} [{s.author or '?'}] {s.description[:50]}")
-            return 0
-
-        elif args.cmd == "install":
-            name = args.name or ""
-            if not name:
-                print("用法: kuafu skill install <skill_name|url>")
-                return 1
-            result = mgr.install(name)
-            if result["success"]:
-                print(f"✅ 已安装: {result['name']}")
-                fp = result.get("file", "")
-                if fp:
-                    print(f"   路径: {fp}")
-            else:
-                print(f"❌ 安装失败: {result.get('error', '未知错误')}")
-            return 0
-
-        elif args.cmd == "remove":
-            name = args.name or ""
-            if not name:
-                print("用法: kuafu skill remove <skill_name>")
-                return 1
-            if mgr.remove_local(name) or mgr.uninstall(name):
-                print(f"已删除: {name}")
-            else:
-                print(f"未找到: {name}")
-            return 0
-
-        elif args.cmd == "stats":
-            stats = mgr.get_stats()
-            print("技能统计:")
-            print(f"  本地: {stats['local']} 个")
-            print(f"  市场安装: {stats['installed_market']} 个")
-            print(f"  市场可用: {stats['available_market']} 个")
-            return 0
-
+        local = mgr.list_local()
+        category_filter = args.category or ""
+        if category_filter:
+            filtered = [s for s in local if s.category == category_filter]
         else:
-            print("可用: kuafu skill list / search / install / remove / stats")
+            filtered = local
+
+        if not filtered:
+            print(f"无技能包{'（分类: ' + category_filter + '）' if category_filter else ''}")
             return 0
+
+        print(f"技能包列表 ({len(filtered)}):")
+        print(f"  {'名称':<30} {'分类':<12} {'版本':<10} {'步骤':<5} {'使用':<5}")
+        print(f"  {'-'*62}")
+        for s in filtered:
+            ver = getattr(s, 'version', '?') or '?'
+            print(f"  {s.name:<30} {s.category or 'general':<12} {ver:<10} {s.steps:<5} {s.usage_count:<5}")
+        return 0
+
+    elif cmd == "validate":
+        file_path = args.file
+        result = load_skill(file_path)
+        if result["success"]:
+            data = result["data"]
+            print(f"✅ {data['name']} (v{data.get('version', '?')})")
+            print(f"   描述: {data['description']}")
+            print(f"   分类: {data.get('category', '—')}")
+            print(f"   步骤: {len(data.get('steps', []))} 个")
+            print(f"   格式: 合法")
+        else:
+            print(f"❌ 验证失败: {result.get('error', '未知错误')}")
+            if "data" in result:
+                data = result["data"]
+                print(f"   名称: {data.get('name', '?')}")
+                print(f"   步骤: {len(data.get('steps', []))} 个")
+        return 0
+
+    elif cmd == "export":
+        name = args.name
+        from core.skill_manager import SkillManager
+        mgr = SkillManager()
+        local = mgr.list_local()
+
+        skill = None
+        for s in local:
+            if s.name == name:
+                skill = s
+                break
+
+        if not skill:
+            print(f"❌ 未找到技能: {name}")
+            return 1
+
+        # 读取原文件
+        file_path = Path(skill.file_path) if Path(skill.file_path).is_absolute() else Path(skill.file_path)
+        result = load_skill(str(file_path))
+        if not result["success"]:
+            print(f"❌ 读取失败: {result.get('error', '未知错误')}")
+            return 1
+
+        data = result["data"]
+        json_out = export_to_json(data)
+        print(f"📦 {data['name']} — kfskill v{data.get('version', '1.0.0')}")
+        print(f"   描述: {data['description']}")
+        print(f"   作者: {data.get('author', '—')}")
+        print(f"   分类: {data.get('category', '—')}")
+        print(f"   关键词: {', '.join(data.get('keywords', []))}")
+        print(f"   步骤数: {len(data.get('steps', []))}")
+        print(f"   使用次数: {data.get('usage_count', 0)}")
+        print(f"   来源: {data.get('source', '?')}")
+        print(f"\n   文件: {file_path}")
+        return 0
+
+    elif cmd == "info":
+        name = args.name
+
+        # 先尝试作为文件路径
+        path = Path(name)
+        if path.exists() and path.suffix in (".yaml", ".yml", ".kfskill"):
+            result = load_skill(str(path))
+        else:
+            # 按名称搜索本地技能
+            from core.skill_manager import SkillManager
+            mgr = SkillManager()
+            local = mgr.list_local()
+            found = None
+            for s in local:
+                if s.name == name:
+                    file_path = Path(s.file_path) if Path(s.file_path).is_absolute() else Path(s.file_path)
+                    result = load_skill(str(file_path))
+                    found = True
+                    break
+            if not found:
+                print(f"❌ 未找到技能: {name}")
+                return 1
+
+        if not result["success"]:
+            print(f"❌ 加载失败: {result.get('error', '未知错误')}")
+            return 1
+
+        data = result["data"]
+        print(f"📦 {data['name']}")
+        print(f"   版本: {data.get('version', '?')}")
+        print(f"   描述: {data['description']}")
+        print(f"   作者: {data.get('author', '—')}")
+        print(f"   分类: {data.get('category', '—')}")
+        print(f"   关键词: {', '.join(data.get('keywords', [])) or '—'}")
+        print(f"   创建于: {time.strftime('%Y-%m-%d %H:%M', time.localtime(data.get('created_at', 0)))}")
+        print(f"   使用次数: {data.get('usage_count', 0)}")
+        print(f"   来源: {data.get('source', '?')}")
+        print(f"\n   执行步骤 ({len(data.get('steps', []))} 步):")
+        for i, step in enumerate(data.get("steps", []), 1):
+            print(f"     {i}. {step}")
+        pitfalls = data.get("pitfalls", [])
+        if pitfalls:
+            print(f"\n   注意事项 ({len(pitfalls)}:{' '})")
+            for p in pitfalls:
+                print(f"     ⚠  {p}")
+        deps = data.get("dependencies", {})
+        if deps:
+            print(f"\n   依赖:")
+            for dk, dv in deps.items():
+                print(f"     {dk}: {', '.join(dv) if isinstance(dv, list) else dv}")
+        return 0
+
+    return 0
+
+def run_skill(args: argparse.Namespace, agent: Any = None) -> int:
+    """kuafu skill — 技能管理（本地/市场/安装/卸载/版本/退化/回滚）。"""
+    from core.skill_manager import SkillManager
+    from pathlib import Path
+    import time as _time
+    ROOT_DIR = Path(__file__).resolve().parent.parent
+    SKILLS_DIR = ROOT_DIR / "skills"
+
+    mgr = SkillManager()
+
+    cmd = args.cmd
+
+    # ── list ──
+    if cmd == "list":
+        local = mgr.list_local()
+        installed = mgr.list_installed_market()
+
+        # 按分类筛选（需从 kfskill 读取 category）
+        category_filter = getattr(args, "category", "")
+
+        if category_filter:
+            filtered = []
+            for s in local:
+                try:
+                    import yaml
+                    fpath = Path(s.file_path) if Path(s.file_path).is_absolute() else ROOT_DIR / s.file_path
+                    data = yaml.safe_load(fpath.read_text(encoding="utf-8"))
+                    if data and data.get("category", "") == category_filter:
+                        filtered.append(s)
+                except Exception:
+                    filtered.append(s)
+            local = filtered
+
+        print(f"📦 技能列表 (共 {len(local)} 个)")
+        print(f"   {'名称':<30} {'分类':<12} {'步骤':<5} {'使用':<6} {'描述'}")
+        print(f"   {'-'*80}")
+        for s in local:
+            cat = getattr(s, 'category', '') or 'general'
+            desc = s.description[:40] if s.description else ''
+            print(f"   {s.name[:28]:<30} {cat:<12} {s.steps:<5} {s.usage_count:<6} {desc}")
+        if installed:
+            print(f"\n📦 市场安装 ({len(installed)}):")
+            for s in installed:
+                print(f"   {s.name[:28]:<30} {s.description[:50]}")
+        return 0
+
+    # ── search ──
+    elif cmd == "search":
+        query = getattr(args, "query", "") or ""
+        if not query:
+            market = mgr.fetch_market_index()
+            print(f"🌐 技能市场 ({len(market)} 个可用):")
+            print(f"   {'名称':<30} {'分类':<12} {'作者':<16} {'描述'}")
+            print(f"   {'-'*80}")
+            for s in market[:25]:
+                print(f"   {s.name[:28]:<30} {(s.category or '?'):<12} {(s.author or '?'):<16} {s.description[:40]}")
+            return 0
+
+        local = mgr.search_local(query)
+        market = mgr.search_market(query)
+        if not local and not market:
+            print(f"🔍 未找到匹配「{query}」的技能")
+            return 0
+
+        if local:
+            print(f"📦 本地匹配 ({len(local)}):")
+            for s in local:
+                print(f"   {s.name:30s} {s.description[:50]}")
+        if market:
+            print(f"\n🌐 市场匹配 ({len(market)}):")
+            for s in market:
+                print(f"   {s.name:30s} [{s.author or '?'}] {s.description[:50]}")
+        return 0
+
+    # ── install ──
+    elif cmd == "install":
+        name = getattr(args, "name", "") or ""
+        if not name:
+            print("用法: kuafu skill install <skill_name|url>")
+            return 1
+
+        # 如果是本地 .yaml/.kfskill 文件路径，直接复制
+        p = Path(name)
+        if p.exists() and p.suffix in (".yaml", ".yml", ".kfskill"):
+            dest = SKILLS_DIR / p.name
+            import shutil
+            shutil.copy2(str(p), str(dest))
+            # 读取名称
+            try:
+                import yaml
+                data = yaml.safe_load(dest.read_text(encoding="utf-8"))
+                skill_name = data.get("name", dest.stem) if data else dest.stem
+                print(f"✅ 已安装本地技能包: {skill_name}")
+                print(f"   文件: {dest}")
+            except Exception:
+                print(f"✅ 已复制: {dest}")
+            return 0
+
+        result = mgr.install(name)
+        if result["success"]:
+            print(f"✅ 已安装: {result['name']}")
+            fp = result.get("file", "")
+            if fp:
+                print(f"   路径: {fp}")
+        else:
+            print(f"❌ 安装失败: {result.get('error', '未知错误')}")
+        return 0
+
+    # ── remove ──
+    elif cmd == "remove":
+        name = getattr(args, "name", "") or ""
+        if not name:
+            print("用法: kuafu skill remove <skill_name>")
+            return 1
+        if mgr.remove_local(name) or mgr.uninstall(name):
+            print(f"🗑️  已删除: {name}")
+        else:
+            print(f"未找到: {name}")
+        return 0
+
+    # ── stats ──
+    elif cmd == "stats":
+        stats = mgr.get_stats()
+        print("📊 技能统计:")
+        print(f"   本地: {stats['local']} 个")
+        print(f"   市场安装: {stats['installed_market']} 个")
+        print(f"   市场可用: {stats['available_market']} 个")
+        print(f"   远程仓库: {stats.get('repos', 0)} 个 ({stats.get('repo_skills', 0)} 技能)")
+
+        # 分类统计
+        from collections import Counter
+        cats = Counter()
+        local = mgr.list_local()
+        for s in local:
+            try:
+                fpath = Path(s.file_path) if Path(s.file_path).is_absolute() else ROOT_DIR / s.file_path
+                import yaml
+                data = yaml.safe_load(fpath.read_text(encoding="utf-8"))
+                cat = (data or {}).get("category", "general") or "general"
+            except Exception:
+                cat = "general"
+            cats[cat] += 1
+        if cats:
+            print(f"\n   分类分布:")
+            for cat, cnt in cats.most_common():
+                print(f"     {cat:<15} {cnt} 个")
+        return 0
+
+    # ── version ──
+    elif cmd == "version":
+        from core.evolution_tracker import EvolutionTracker
+        tracker = EvolutionTracker(db_path=Path("memory/evolution.db"))
+
+        show_names = []
+        if getattr(args, "name", None):
+            show_names = [args.name]
+        else:
+            show_names = sorted(tracker.get_all_skills().keys())
+
+        if not show_names:
+            print("没有技能版本记录。")
+            print("  扫描: kuafu skill scan")
+            return 0
+
+        for name in show_names:
+            history = tracker.get_evolution_history(name)
+            if history:
+                print(f"📋 {name}")
+                print(f"   {'版本':<6} {'模式':<12} {'摘要':<30} {'时间':<20}")
+                print(f"   {'-'*68}")
+                for h in history:
+                    ts = _time.strftime("%m-%d %H:%M", _time.localtime(h["created_at"]))
+                    summary = (h["summary"] or "")[:28]
+                    parent = f"←{h['parent']}" if h.get("parent") else ""
+                    print(f"   v{h['version']:<4} {h['mode']:<12} {summary:<30} {ts:<20}")
+                print()
+            else:
+                print(f"📋 {name} (无版本记录)")
+        return 0
+
+    # ── scan ──
+    elif cmd == "scan":
+        from core.evolution_tracker import EvolutionTracker
+        tracker = EvolutionTracker(db_path=Path("memory/evolution.db"))
+        result = tracker.scan_skills_directory()
+        print(f"📂 扫描完成: {result['scanned']} 个文件")
+        print(f"   新增: {result['new']} | 更新: {result['updated']} | 未变更: {result['unchanged']}")
+        for d in result.get("details", []):
+            status = d.get("status", "")
+            if status == "error":
+                print(f"   ❌ {d.get('file', '?')}: {d.get('error', '?')}")
+            elif status == "new":
+                print(f"   🆕 {d.get('name', '?')} v{d.get('version', '?')}")
+            elif status == "updated":
+                print(f"   🔄 {d.get('name', '?')} v{d.get('version', '?')}")
+        return 0
+
+    # ── diff ──
+    elif cmd == "diff":
+        if not getattr(args, "name", None):
+            print("用法: kuafu skill diff <skill_name> [v1] [v2]")
+            return 1
+        from core.evolution_tracker import EvolutionTracker
+        tracker = EvolutionTracker(db_path=Path("memory/evolution.db"))
+        v1 = getattr(args, "v1", None) or 1
+        v2 = getattr(args, "v2", None) or 2
+        diff = tracker.diff_skill_versions(args.name, v1, v2)
+        if diff is None:
+            print(f"版本 {v1} 或 {v2} 不存在")
+        else:
+            print(f"差异 {args.name} v{v1} ↔ v{v2}:")
+            print(diff)
+        return 0
+
+    # ── restore ──
+    elif cmd == "restore":
+        if not getattr(args, "name", None) or not hasattr(args, "version") or not args.version:
+            print("用法: kuafu skill restore <skill_name> <version>")
+            return 1
+        from core.evolution_tracker import EvolutionTracker
+        tracker = EvolutionTracker(db_path=Path("memory/evolution.db"))
+        ok = tracker.restore_skill_file(args.name, args.version)
+        if ok:
+            print(f"✅ 已恢复 {args.name} 到 v{args.version}")
+        else:
+            print(f"❌ 恢复失败: 版本 {args.version} 不存在")
+        return 0
+
+    # ── log ──
+    elif cmd == "log":
+        from core.evolution_tracker import EvolutionTracker
+        tracker = EvolutionTracker(db_path=Path("memory/evolution.db"))
+        stats = tracker.get_stats()
+        print(f"📊 进化追踪统计:")
+        print(f"   技能版本链: {stats['total_skills']} 个技能")
+        print(f"   任务类型: {stats['total_task_types']} 种")
+        print(f"   已知错误: {stats['known_errors']} 个")
+        print(f"   进化事件: {stats['total_events']} 条")
+        print()
+        events = tracker.get_recent_events(limit=8)
+        if events:
+            print("最近进化事件:")
+            print(f"   {'等级':<10} {'动作':<40} {'时间':<15}")
+            print(f"   {'-'*65}")
+            for e in events:
+                ts = _time.strftime("%m-%d %H:%M", _time.localtime(e["created_at"]))
+                action = (e["action"] or "")[:38]
+                print(f"   {e['level']:<10} {action:<40} {ts:<15}")
+        return 0
+
+    # ── degrade ──
+    elif cmd == "degrade":
+        from core.evolution_tracker import EvolutionTracker
+        tracker = EvolutionTracker(db_path=Path("memory/evolution.db"))
+
+        if getattr(args, "name", None):
+            failures = getattr(args, "failures", None)
+            result = tracker.detect_degradation(args.name, recent_task_failures=failures)
+            if result:
+                print(f"⚠️  {args.name} 退化检测: {result['severity']}")
+                for s in result["signals"]:
+                    print(f"   📉 {s}")
+                if result.get("best_version"):
+                    print(f"   当前: v{result['current_version']} → 最佳: v{result['best_version']}")
+                if result.get("suggested_action"):
+                    print(f"   💡 {result['suggested_action']}")
+            else:
+                print(f"✅ {args.name} 未检测到退化")
+        else:
+            results = tracker.detect_all_degradations()
+            if results:
+                print(f"退化检测: {len(results)} 个技能检测到退化信号")
+                for r in results:
+                    print(f"   ⚠️  {r['skill_name']}: {r['severity']} — {'; '.join(r['signals'])}")
+                    if r.get("suggested_action"):
+                        print(f"       💡 {r['suggested_action']}")
+            else:
+                print("✅ 未检测到任何技能退化")
+        return 0
+
+    # ── rollback ──
+    elif cmd == "rollback":
+        from core.evolution_tracker import EvolutionTracker
+        tracker = EvolutionTracker(db_path=Path("memory/evolution.db"))
+
+        if getattr(args, "name", None):
+            result = tracker.auto_rollback(args.name)
+            if result:
+                print(f"✅ 已回滚 {args.name} v{result['from_version']} → v{result['to_version']}")
+                print(f"   严重度: {result['severity']}")
+                for s in result.get("signals", []):
+                    print(f"   📉 {s}")
+                if result.get("backup_file"):
+                    print(f"   💾 备份: {result['backup_file']}")
+            else:
+                print(f"ℹ️  {args.name} 无需回滚")
+        else:
+            results = tracker.auto_rollback_all()
+            if results:
+                print(f"自动回滚完成: {len(results)} 个技能已回滚")
+                for r in results:
+                    print(f"   ✅ {r['skill_name']} v{r['from_version']} → v{r['to_version']} ({r['severity']})")
+            else:
+                print("✅ 无需回滚")
+
+        # 回滚后重新扫描同步版本链
+        tracker.scan_skills_directory()
+        return 0
+
+    # ── deps ──
+    elif cmd == "deps":
+        name = getattr(args, "name", "") or ""
+        if not name:
+            print("用法: kuafu skill deps <skill_name> [--install]")
+            return 1
+
+        from core.skill_deps import (
+            get_deps_from_skill, check_dependencies,
+            install_dependencies, suggest_command, verify_installation,
+        )
+        import shutil
+
+        info = get_deps_from_skill(name)
+        if not info["exists"]:
+            print(f"❌ 未找到技能: {name}")
+            return 1
+
+        deps = info["dependencies"]
+        if not deps:
+            print(f"📦 {name} 没有声明的依赖")
+            return 0
+
+        print(f"📦 {name} 依赖检查:")
+        print()
+
+        # 显示依赖声明
+        tools = deps.get("tools", [])
+        packages = deps.get("packages", [])
+        env_vars = deps.get("env", [])
+        notes = deps.get("notes", [])
+
+        if tools:
+            print(f"   系统工具 ({len(tools)}):")
+            for t in tools:
+                installed = "✅" if shutil.which(t) else "❌"
+                print(f"     {installed} {t}")
+            print()
+        if packages:
+            print(f"   Python 包 ({len(packages)}):")
+            for p in packages:
+                from core.skill_deps import _parse_package_spec, _check_package
+                pkg_name, _ = _parse_package_spec(p)
+                ok = _check_package(pkg_name)
+                icon = "✅" if ok else "❌"
+                print(f"     {icon} {p}")
+            print()
+        if env_vars:
+            print(f"   环境变量 ({len(env_vars)}):")
+            for e in env_vars:
+                ok = bool(os.environ.get(e))
+                icon = "✅" if ok else "❌"
+                print(f"     {icon} {e}")
+            print()
+        if notes:
+            print(f"   说明:")
+            for n in notes:
+                print(f"     📝 {n}")
+            print()
+
+        # 检查结果
+        check = check_dependencies(info.get("data", {"dependencies": deps}))
+        if check.ok:
+            print("   ✅ 所有依赖已满足")
+        else:
+            print(f"   {check.summary()}")
+
+        # 安装建议
+        cmd_suggest = suggest_command({"dependencies": deps})
+        if cmd_suggest:
+            print()
+            print("   💡 安装命令:")
+            print(f"      {cmd_suggest}")
+
+        # --install 参数
+        if getattr(args, "install", False):
+            print()
+            print("   🔄 正在安装缺失依赖...")
+            install_result = install_dependencies(
+                {"dependencies": deps}, auto_confirm=True
+            )
+            if install_result["installed"]:
+                print(f"   ✅ 已安装: {', '.join(install_result['installed'])}")
+            if install_result["skipped"]:
+                print(f"   ⏭️  跳过: {', '.join(install_result['skipped'])}")
+            if install_result["failed"]:
+                for pkg, err in install_result["failed"]:
+                    print(f"   ❌ {pkg} 安装失败: {err}")
+            if install_result["warnings"]:
+                for w in install_result["warnings"]:
+                    print(f"   ⚠️  {w}")
+        return 0
+
+    # ── sandbox ──
+    elif cmd == "sandbox":
+        name = getattr(args, "name", "") or ""
+        if not name:
+            print("用法: kuafu skill sandbox <skill_name>")
+            return 1
+
+        from core.skill_sandbox import get_sandbox_config, sandbox_for_category
+
+        result = get_sandbox_config(name)
+        if not result:
+            print(f"❌ 未找到技能: {name}")
+            return 1
+
+        print(f"🛡️  技能沙箱: {name}")
+        print(f"   等级: {result['sandbox_level']}")
+        print()
+        print(result["prompt_rules"])
+
+        if result.get("warnings"):
+            print("   ⚠️  警告:")
+            for w in result["warnings"]:
+                print(f"     • {w}")
+        return 0
+
+    # ── edit ──
+    elif cmd == "edit":
+        name = getattr(args, "name", "") or ""
+        if not name:
+            print("用法: kuafu skill edit <skill_name>")
+            return 1
+
+        # 查找技能文件（本地 + 市场安装）
+        local = mgr.list_local()
+        installed = mgr.list_installed_market()
+        found = None
+        for s in local + installed:
+            if s.name == name:
+                found = s
+                break
+        if not found:
+            print(f"❌ 未找到技能: {name}")
+            return 1
+
+        fpath = Path(found.file_path) if Path(found.file_path).is_absolute() else ROOT_DIR / found.file_path
+        if not fpath.exists():
+            print(f"❌ 文件不存在: {fpath}")
+            return 1
+
+        # 用 $EDITOR 或默认 vi
+        editor = os.environ.get("EDITOR", "vi")
+        import subprocess
+        try:
+            subprocess.call([editor, str(fpath)])
+        except FileNotFoundError:
+            print(f"❌ 找不到编辑器: {editor}，请设置 $EDITOR 环境变量")
+            return 1
+        print(f"✅ 已保存: {fpath}")
+        return 0
+
+    # ── info ──
+    elif cmd == "info":
+        name = getattr(args, "name", "") or ""
+        if not name:
+            print("用法: kuafu skill info <skill_name>")
+            return 1
+
+        # 查找技能文件（本地 + 市场安装）
+        local = mgr.list_local()
+        installed = mgr.list_installed_market()
+        found = None
+        for s in local + installed:
+            if s.name == name:
+                found = s
+                break
+        if not found:
+            print(f"❌ 未找到技能: {name}")
+            return 1
+
+        try:
+            import yaml
+            fpath = Path(found.file_path) if Path(found.file_path).is_absolute() else ROOT_DIR / found.file_path
+            data = yaml.safe_load(fpath.read_text(encoding="utf-8")) or {}
+        except Exception as e:
+            print(f"❌ 读取失败: {e}")
+            return 1
+
+        print(f"📦 {data.get('name', name)}")
+        if data.get("version"):
+            print(f"   版本: {data['version']}")
+        print(f"   描述: {data.get('description', '—')}")
+        if data.get("category"):
+            print(f"   分类: {data['category']}")
+        if data.get("author"):
+            print(f"   作者: {data['author']}")
+        if data.get("keywords"):
+            print(f"   关键词: {', '.join(data['keywords'][:8])}")
+        if data.get("created_at"):
+            print(f"   创建于: {_time.strftime('%Y-%m-%d %H:%M', _time.localtime(data['created_at']))}")
+        if data.get("usage_count") is not None:
+            print(f"   使用次数: {data['usage_count']}")
+        print(f"\n   执行步骤 ({len(data.get('steps', []))} 步):")
+        for i, step in enumerate(data.get("steps", []), 1):
+            print(f"     {i}. {step}")
+        pitfalls = data.get("pitfalls", [])
+        if pitfalls:
+            print(f"\n   注意事项:")
+            for p in pitfalls:
+                print(f"     ⚠  {p}")
+        deps = data.get("dependencies", {})
+        if deps:
+            print(f"\n   依赖:")
+            for dk, dv in deps.items():
+                if isinstance(dv, list):
+                    print(f"     {dk}: {', '.join(dv)}")
+                else:
+                    print(f"     {dk}: {dv}")
+        print(f"\n   文件: {fpath}")
+        return 0
+
+    # ── publish ──
+    elif cmd == "publish":
+        name = getattr(args, "name", "") or ""
+        if not name:
+            print("用法: kuafu skill publish <skill_name> [选项]")
+            return 1
+
+        mode = getattr(args, "mode", "") or "local"
+        bump = getattr(args, "bump", "patch")
+
+        from core.skill_publisher import (
+            validate_skill, package_skill,
+            publish_to_github, publish_to_local,
+            get_next_version,
+        )
+        from core.kfskill import load_skill
+
+        # 检查 gh CLI（如果是 release 模式）
+        import shutil
+        if mode == "release" and not shutil.which("gh"):
+            print("❌ Release 模式需要安装 gh CLI")
+            print("  brew install gh  # macOS")
+            print("  apt install gh   # Linux")
+            return 1
+
+        # 阶段 1: 打包
+        print(f"📦 打包技能: {name}")
+        result = package_skill(name)
+        if not result["success"]:
+            print(f"❌ 打包失败:")
+            print(result.get("error", "未知错误"))
+            # 如果有验证报告，打印详情
+            report = result.get("report")
+            if report:
+                print()
+                print(report.summary())
+            return 1
+
+        plan = result["plan"]
+        report = result["report"]
+
+        # 打印验证报告
+        print()
+        print("📋 验证报告:")
+        for check_name, check_data in report.checks.items():
+            icon = "✅" if check_data["ok"] else "⚠️"
+            detail = f" — {check_data['detail']}" if check_data["detail"] else ""
+            print(f"   {icon} {check_name}{detail}")
+
+        print()
+        print(f"📤 发布计划:")
+        print(f"   技能: {plan.skill_name}")
+        print(f"   版本: {plan.version}")
+        print(f"   文件: {plan.file_path}")
+        print(f"   校验: {plan.checksum}")
+        print(f"   URL:  {plan.url}")
+        print()
+
+        # 阶段 2: 发布
+        if mode == "github":
+            # 推送到 GitHub 仓库
+            print("🔄 推送到 GitHub 市场仓库...")
+            create_release = getattr(args, "release", False)
+            result = publish_to_github(plan, create_release=create_release)
+            if result["success"]:
+                print(result["message"])
+                print(f"   URL: {result['skill_url']}")
+                if result.get("release") and result["release"].get("url"):
+                    print(f"   Release: {result['release']['url']}")
+            else:
+                print(f"❌ GitHub 发布失败: {result.get('error', '未知错误')}")
+                return 1
+
+        elif mode == "release":
+            # 推送到 GitHub 并创建 Release
+            print("🔄 创建 GitHub Release...")
+            result = publish_to_github(plan, create_release=True)
+            if result["success"]:
+                print(result["message"])
+                print(f"   URL: {result['skill_url']}")
+                if result.get("release") and result["release"].get("url"):
+                    print(f"   Release: {result['release']['url']}")
+            else:
+                print(f"❌ Release 发布失败: {result.get('error', '未知错误')}")
+                return 1
+
+        else:  # local（默认）
+            # 发布到本地文件
+            output = getattr(args, "output", "") or "/tmp/kuafu-skill-market"
+            result = publish_to_local(
+                str(Path(output) / "index.json"), plan
+            )
+            if result["success"]:
+                print(result["message"])
+                print(f"   索引: {result['index_path']}")
+                print(f"   技能: {result['skill_path']}")
+            else:
+                print(f"❌ 本地发布失败: {result.get('error', '未知错误')}")
+                return 1
+
+        # 版本提示
+        next_version = get_next_version(name, bump=bump)
+        print()
+        print(f"💡 下次发布: kuafu skill publish \"{name}\" --bump {bump}")
+        print(f"   新版本: {next_version}")
+        return 0
+
+    else:
+        print("用法: kuafu skill <子命令> [选项]")
+        print()
+        print("管理命令:")
+        print("  list [--category]    列出本地技能（支持分类筛选）")
+        print("  search <关键词>      搜索本地和远程市场")
+        print("  install <名称|URL>   安装技能（本地 .yaml/.kfskill 或远程市场）")
+        print("  remove <名称>        删除技能")
+        print("  stats                技能统计（含分类分布）")
+        print()
+        print("发布共享:")
+        print("  publish <名称> [--mode local|github|release] 完整发布技能（验证→打包→发布）")
+        print("           [--bump patch|minor|major] 版本递增")
+        print()
+        print("版本管理:")
+        print("  version [名称]       查看版本链")
+        print("  scan                 扫描 skills/ 同步版本链")
+        print("  diff <名称> [v1] [v2] 比较版本差异")
+        print("  restore <名称> <版本> 恢复指定版本")
+        print("  log                  查看进化追踪日志")
+        print()
+        print("质量管理:")
+        print("  degrade [名称]       检测技能退化")
+        print("  rollback [名称]      自动回滚退化技能")
+        print()
+        print("编辑查看:")
+        print("  info <名称>          查看技能详情")
+        print("  edit <名称>          用 $EDITOR 编辑技能文件")
+        print("  deps <名称> [--install] 检查/安装技能依赖")
+        print("  sandbox <名称>       查看技能沙箱配置")
+        return 0
+
+
+def run_repo(args: argparse.Namespace, agent: Any = None) -> int:
+    """kuafu repo — 远程技能仓库管理。"""
+    from core.skill_repo import RepoManager
+
+    mgr = RepoManager()
+    cmd = args.cmd
+
+    # ── list ──
+    if cmd == "list":
+        repos = mgr.list_repos()
+        if not repos:
+            print("❌ 未配置任何远程仓库")
+            print("  添加: kuafu repo add <名称> <URL>")
+            return 0
+
+        print(f"📡 远程技能仓库 ({len(repos)}):")
+        print(f"   {'名称':<20} {'状态':<8} {'缓存':<8} {'描述'}")
+        print(f"   {'-'*65}")
+        for r in repos:
+            repo_obj = mgr.get_repo(r["name"])
+            cached = repo_obj and repo_obj.cache_path.exists()
+            status = "✅" if r["enabled"] else "⬜"
+            cache_str = "已缓存" if cached else "—"
+            desc = r["description"][:35]
+            print(f"   {r['name']:<20} {status:<8} {cache_str:<8} {desc}")
+        print()
+        stats = mgr.get_stats()
+        print(f"   总计: {stats['total_repos']} 个仓库, {stats['total_skills']} 个技能")
+        return 0
+
+    # ── add ──
+    elif cmd == "add":
+        name = getattr(args, "name", "") or ""
+        url = getattr(args, "url", "") or ""
+        if not name or not url:
+            print("用法: kuafu repo add <名称> <仓库URL>")
+            return 1
+
+        description = getattr(args, "description", "") or ""
+        result = mgr.add_repo(name, url, description)
+        if result["success"]:
+            print(f"✅ 已添加仓库: {name}")
+            print(f"   URL: {url}")
+            print(f"   可达: {'是' if result.get('reachable') else '否，但已添加'}")
+            if result.get("skills_count", 0) > 0:
+                print(f"   技能数: {result['skills_count']}")
+        else:
+            print(f"❌ 添加失败: {result.get('error', '未知错误')}")
+        return 0
+
+    # ── remove ──
+    elif cmd == "remove":
+        name = getattr(args, "name", "") or ""
+        if not name:
+            print("用法: kuafu repo remove <名称>")
+            return 1
+        if mgr.remove_repo(name):
+            print(f"🗑️  已移除仓库: {name}")
+        else:
+            print(f"未找到仓库: {name}")
+        return 0
+
+    # ── search ──
+    elif cmd == "search":
+        query = getattr(args, "query", "") or ""
+        if not query:
+            # 列出所有仓库的可用技能
+            all_skills = mgr.list_all_skills()
+            if not all_skills:
+                print("❌ 无可用技能（仓库可能不可达）")
+                return 0
+            print(f"📦 远程技能 (共 {len(all_skills)} 个):")
+            print(f"   {'技能名称':<30} {'版本':<10} {'仓库':<16} {'分类':<12} {'描述'}")
+            print(f"   {'-'*85}")
+            for s in all_skills[:30]:
+                print(f"   {s['name'][:28]:<30} {s['version']:<10} {s['repo'][:14]:<16} "
+                      f"{(s['category'] or '?'):<12} {s['description'][:30]}")
+            if len(all_skills) > 30:
+                print(f"   ... 还有 {len(all_skills) - 30} 个")
+            return 0
+
+        results = mgr.search(query)
+        if not results:
+            print(f"🔍 远程仓库未找到匹配「{query}」的技能")
+            return 0
+
+        print(f"🔍 远程搜索「{query}」(找到 {len(results)} 个):")
+        print(f"   {'技能名称':<30} {'仓库':<16} {'版本':<8} {'分类':<10} {'描述'}")
+        print(f"   {'-'*85}")
+        for s in results[:20]:
+            print(f"   {s['name'][:28]:<30} {s['repo'][:14]:<16} {s['version']:<8} "
+                  f"{(s['category'] or '?'):<10} {s['description'][:32]}")
+        return 0
+
+    # ── refresh ──
+    elif cmd == "refresh":
+        results = mgr.refresh_all()
+        if not results:
+            print("❌ 无仓库可刷新")
+            return 0
+        print("🔄 刷新仓库缓存:")
+        for r in results:
+            icon = "✅" if r["success"] else "❌"
+            print(f"   {icon} {r['name']}: {r.get('source', '?')} ({r['skills_count']} 技能)")
+        return 0
+
+    # ── stats ──
+    elif cmd == "stats":
+        stats = mgr.get_stats()
+        print(f"📊 远程仓库统计:")
+        print(f"   仓库数: {stats['total_repos']}")
+        print(f"   远程技能数: {stats['total_skills']}")
+        print()
+        for r in stats["repos"]:
+            cache_info = ""
+            if r["cache_age_sec"] >= 0:
+                mins = r["cache_age_sec"] // 60
+                cache_info = f"(缓存 {mins} 分钟前)"
+            status_icon = "✅" if r["status"] == "ok" else "⏳"
+            print(f"   {status_icon} {r['name']}")
+            print(f"      技能: {r['skills']} 个 {cache_info}")
+            print(f"      URL: {r['url']}")
+        return 0
+
+    # ── clear-cache ──
+    elif cmd == "clear-cache":
+        name = getattr(args, "name", "") or ""
+        cleared = mgr.clear_cache(name=name if name else None)
+        if cleared > 0:
+            print(f"🧹 已清理 {cleared} 个缓存文件")
+        else:
+            print("无缓存可清理")
+        return 0
+
+    else:
+        print("用法: kuafu repo <子命令> [选项]")
+        print()
+        print("仓库管理:")
+        print("  list                  列出所有已配置的远程仓库")
+        print("  add <名称> <URL>      添加远程仓库")
+        print("  remove <名称>         移除仓库")
+        print()
+        print("技能搜索:")
+        print("  search [关键词]       搜索所有远程仓库的技能")
+        print()
+        print("维护:")
+        print("  refresh               强制刷新所有仓库缓存")
+        print("  stats                 查看仓库状态统计")
+        print("  clear-cache [名称]    清理缓存文件")
+        return 0
 
 
 def run_tools(args: argparse.Namespace, agent: Any) -> int:
@@ -460,6 +1399,119 @@ def run_gateway(args: argparse.Namespace, agent: Any) -> int:
     return 1
 
 
+def run_channel(args: argparse.Namespace, agent: Any) -> int:
+    """kuafu channel — 通道热加载管理（需 gateway 运行中）。"""
+    # 连接本地 gateway API
+    port = args.port or 8765
+    base = f"http://127.0.0.1:{port}"
+    import urllib.request
+    import json
+
+    def _api_get(path: str) -> dict:
+        try:
+            resp = urllib.request.urlopen(f"{base}{path}", timeout=5)
+            return json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            print(f"❌ Gateway 连接失败 ({base}): {e}")
+            print("   请先确认 kuafu gateway start 已在运行")
+            return {}
+
+    def _api_post(path: str, body: dict) -> dict:
+        try:
+            data = json.dumps(body).encode("utf-8")
+            req = urllib.request.Request(
+                f"{base}{path}",
+                data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            resp = urllib.request.urlopen(req, timeout=5)
+            return json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            print(f"❌ Gateway 请求失败 ({path}): {e}")
+            return {}
+
+    if args.cmd == "list":
+        result = _api_get("/api/channel/list")
+        channels = result.get("channels", [])
+        if not channels:
+            print("没有已注册的通道。")
+            print("  发现可用: kuafu channel discover")
+            print("  加载通道: kuafu channel load <name>")
+            return 0
+
+        print(f"{'名称':<20} {'状态':<10}")
+        print("-" * 30)
+        for ch in channels:
+            status = "✅ 运行中" if ch.get("running") else "⏹ 已停止"
+            print(f"{ch['name']:<20} {status}")
+        return 0
+
+    elif args.cmd == "discover":
+        # 先展示已注册的
+        list_result = _api_get("/api/channel/list")
+        registered = {ch["name"] for ch in list_result.get("channels", [])}
+
+        result = _api_get("/api/channel/discover")
+        discovered = result.get("discovered", {})
+        if not discovered:
+            print("未发现任何通道类。")
+            return 0
+
+        print(f"发现 {len(discovered)} 个通道类:")
+        for name, cls_name in discovered.items():
+            tag = " (已加载)" if name in registered else ""
+            print(f"  • {name:<20} {cls_name:<30}{tag}")
+        print()
+        print("加载: kuafu channel load <name>")
+        return 0
+
+    elif args.cmd == "load":
+        if not args.name:
+            print("用法: kuafu channel load <channel_name>")
+            print("  可用: kuafu channel discover")
+            return 1
+
+        result = _api_post("/api/channel/load", {"name": args.name})
+        if result.get("status") == "loaded":
+            print(f"✅ 通道已加载: {args.name}")
+        else:
+            error = result.get("error", "未知错误")
+            print(f"❌ 加载失败: {error}")
+        return 0
+
+    elif args.cmd == "remove":
+        if not args.name:
+            print("用法: kuafu channel remove <channel_name>")
+            return 1
+
+        result = _api_post("/api/channel/remove", {"name": args.name})
+        if result.get("status") == "removed":
+            print(f"✅ 通道已移除: {args.name}")
+        else:
+            error = result.get("error", "未知错误")
+            print(f"❌ 移除失败: {error}")
+        return 0
+
+    elif args.cmd == "reload":
+        if not args.name:
+            print("用法: kuafu channel reload <channel_name>")
+            return 1
+
+        result = _api_post("/api/channel/reload", {"name": args.name})
+        if result.get("status") == "reloaded":
+            print(f"✅ 通道已热重载: {args.name}")
+        else:
+            error = result.get("error", "未知错误")
+            print(f"❌ 重载失败: {error}")
+        return 0
+
+    else:
+        print("未知的 channel 子命令")
+        print("可用: list, discover, load, remove, reload")
+        return 1
+
+
 def run_setup(args: argparse.Namespace, agent: Any = None) -> int:
     """kuafu setup — 交互式配置向导。"""
     import sys as _sys
@@ -473,6 +1525,279 @@ def run_setup(args: argparse.Namespace, agent: Any = None) -> int:
     _sys.argv = [_sys.argv[0], str(setup_path)]
     exec(open(str(setup_path), encoding="utf-8").read())
     return 0
+
+
+def run_batch(args: argparse.Namespace, agent: Any) -> int:
+    """kuafu batch — 批量任务管理。"""
+    from core.batch_engine import BatchEngine
+
+    engine = BatchEngine(agent=agent, max_concurrent=3)
+
+    if args.cmd == "submit":
+        """提交批量任务。"""
+        # 从文件读取或直接参数
+        tasks = []
+
+        if args.file:
+            try:
+                filepath = Path(args.file)
+                text = filepath.read_text(encoding="utf-8")
+                # 按行分割（空行跳过，# 注释跳过）
+                tasks = [
+                    line.strip() for line in text.splitlines()
+                    if line.strip() and not line.strip().startswith("#")
+                ]
+            except Exception as e:
+                print(f"❌ 读取文件失败: {e}")
+                return 1
+        elif args.tasks:
+            tasks = args.tasks
+        else:
+            print("❌ 请指定 --file 或直接输入任务")
+            print("  用法: kuafu batch submit --file tasks.txt")
+            print("  用法: kuafu batch submit --task '任务1' --task '任务2'")
+            return 1
+
+        if not tasks:
+            print("❌ 没有有效的任务")
+            return 1
+
+        batch_id = engine.submit(tasks)
+        print(f"📦 批次已提交: {batch_id}")
+        print(f"   任务数: {len(tasks)}")
+        print(f"   并发: {engine.max_concurrent}")
+        print(f"   查看状态: kuafu batch status {batch_id}")
+        return 0
+
+    elif args.cmd == "status":
+        """查看批次状态。"""
+        import time as _time
+
+        if args.batch_id:
+            batch_ids = [args.batch_id]
+        else:
+            # 显示所有批次
+            batches = engine.get_all_batches(limit=10)
+            if not batches:
+                print("没有批次记录。")
+                return 0
+            print(f"最近批次 ({len(batches)}):")
+            print(f"  {'批次ID':<30} {'总数':>5} {'完成':>5} {'运行':>5} {'失败':>5} {'待处理':>5}")
+            print(f"  {'-' * 60}")
+            for b in batches:
+                print(f"  {b['batch_id']:<30} {b['total']:>5} {b['completed']:>5} "
+                      f"{b['running']:>5} {b['failed']:>5} {b['pending']:>5}")
+            return 0
+
+        for bid in batch_ids:
+            status = engine.get_status(bid)
+            if status.total == 0:
+                print(f"批次不存在: {bid}")
+                continue
+
+            print(f"批次: {bid}")
+            print(f"  进度: {status.completed}/{status.total} "
+                  f"(完成={status.completed} 运行={status.running} "
+                  f"失败={status.failed} 待处理={status.pending})")
+            print()
+
+            if status.results:
+                print(f"  明细:")
+                print(f"    {'#':<3} {'状态':<12} {'任务':<50} {'耗时':<8}")
+                print(f"    {'-' * 75}")
+                for r in status.results:
+                    task_preview = (r["task_text"] or "")[:48]
+                    dur = f"{r['duration']:.1f}s" if r["duration"] else "-"
+                    print(f"    {r['task_index']:<3} {r['status']:<12} {task_preview:<50} {dur:<8}")
+            print()
+        return 0
+
+    elif args.cmd == "cancel":
+        """取消批次。"""
+        if not args.batch_id:
+            print("用法: kuafu batch cancel <batch_id>")
+            return 1
+        count = engine.cancel_batch(args.batch_id)
+        print(f"已取消 {count} 个待处理任务")
+        return 0
+
+    elif args.cmd == "retry":
+        """重试失败任务。"""
+        if not args.batch_id:
+            print("用法: kuafu batch retry <batch_id>")
+            return 1
+        count = engine.retry_failed(args.batch_id)
+        print(f"已重试 {count} 个失败任务")
+        return 0
+
+    elif args.cmd == "clear":
+        """清理批次记录。"""
+        if not args.batch_id:
+            print("用法: kuafu batch clear <batch_id>")
+            return 1
+        count = engine.clear_batch(args.batch_id)
+        print(f"已清理 {count} 条记录")
+        return 0
+
+    else:
+        print("可用: kuafu batch submit / status / cancel / retry / clear")
+        return 0
+
+
+def run_evolution(args: argparse.Namespace, agent: Any = None) -> int:
+    """kuafu evolution — 进化系统管理。"""
+    from core.evolution_tracker import EvolutionTracker
+    from pathlib import Path
+    import time as _time
+
+    tracker = EvolutionTracker(db_path=Path("memory/evolution.db"))
+
+    if args.cmd == "stats":
+        """进化综合统计。"""
+        stats = tracker.get_stats(include_recent_events=True)
+
+        print("夸父进化系统 — 综合统计")
+        print("=" * 50)
+        print(f"技能版本链:  {stats.get('total_skills', 0)} 个技能")
+        print(f"任务类型:     {stats.get('total_task_types', 0)} 种")
+        print(f"已知错误:     {stats.get('known_errors', 0)} 个")
+        print(f"进化事件:     {stats.get('total_events', 0)} 条 (skill: {stats.get('skill_events', 0)})")
+        print()
+
+        recent = stats.get("recent_24h", {})
+        print(f"近24小时活动:")
+        print(f"  适应度评估: {recent.get('fitness_evals', 0)} 次")
+        print(f"  进化事件:   {recent.get('events', 0)} 条")
+        print()
+
+        # 任务类型 Top N
+        rows = tracker._execute(
+            "SELECT task_type, count, consecutive_fail, last_seen "
+            "FROM evolution_task_types ORDER BY count DESC LIMIT 5"
+        ).fetchall()
+        if rows:
+            print(f"高频任务类型 (Top 5):")
+            print(f"  {'类型':<20} {'次数':>6} {'连续失败':>8} {'最后活跃':<15}")
+            print(f"  {'-' * 50}")
+            for r in rows:
+                ts = _time.strftime("%m-%d %H:%M", _time.localtime(r["last_seen"]))
+                print(f"  {r['task_type']:<20} {r['count']:>6} {r['consecutive_fail']:>8} {ts:<15}")
+            print()
+
+        # 退化检测摘要
+        degradations = tracker.detect_all_degradations()
+        if degradations:
+            print(f"退化检测: {len(degradations)} 个技能有退化信号")
+            for d in degradations:
+                print(f"  ⚠️  {d['skill_name']}: {d['severity']} — {'; '.join(d['signals'])}")
+            print()
+
+        # 最近事件
+        events = stats.get("recent_events", [])
+        if events:
+            print(f"最近进化事件:")
+            print(f"  {'等级':<10} {'动作':<45} {'时间':<15}")
+            print(f"  {'-' * 70}")
+            for e in events[:8]:
+                ts = _time.strftime("%m-%d %H:%M", _time.localtime(e["created_at"]))
+                action = (e.get("action") or "")[:43]
+                print(f"  {e.get('level', '?'):<10} {action:<45} {ts:<15}")
+        return 0
+
+    elif args.cmd == "tasks":
+        """查看任务类型统计详情。"""
+        rows = tracker._execute(
+            "SELECT task_type, count, consecutive_fail, last_seen "
+            "FROM evolution_task_types ORDER BY count DESC"
+        ).fetchall()
+        if not rows:
+            print("没有任务类型记录。")
+            return 0
+
+        print(f"任务类型统计 ({len(rows)} 种):")
+        print(f"  {'类型':<25} {'次数':>6} {'连续失败':>8} {'失败率':>8} {'最后活跃':<15}")
+        print(f"  {'-' * 65}")
+        for r in rows:
+            ts = _time.strftime("%m-%d %H:%M", _time.localtime(r["last_seen"]))
+            fail_rate = tracker.get_recent_failure_rate(r["task_type"], n=10)
+            fail_str = f"{fail_rate:.0%}" if fail_rate > 0 else "-"
+            print(f"  {r['task_type']:<25} {r['count']:>6} {r['consecutive_fail']:>8} {fail_str:>8} {ts:<15}")
+        return 0
+
+    elif args.cmd == "errors":
+        """查看已知错误库。"""
+        rows = tracker._execute(
+            "SELECT error_text, count, skill_name FROM evolution_errors ORDER BY count DESC LIMIT 20"
+        ).fetchall()
+        if not rows:
+            print("没有已知错误记录。")
+            return 0
+
+        total = tracker.get_error_count()
+        print(f"已知错误库 ({total} 个):")
+        print(f"  {'错误(前60字)':<62} {'次数':>4} {'关联技能':<20}")
+        print(f"  {'-' * 90}")
+        for r in rows:
+            error_preview = (r["error_text"] or "")[:60]
+            skill = r["skill_name"] or "-"
+            print(f"  {error_preview:<62} {r['count']:>4} {skill:<20}")
+        return 0
+
+    elif args.cmd == "fitness":
+        """查看适应度评估日志。"""
+        # 所有有 fitness 记录的技能
+        rows = tracker._execute(
+            """SELECT skill_name, COUNT(*) as c,
+                      ROUND(AVG(score), 3) as avg_score,
+                      ROUND(MIN(score), 3) as min_score,
+                      ROUND(MAX(score), 3) as max_score
+               FROM evolution_fitness_log
+               GROUP BY skill_name
+               ORDER BY c DESC"""
+        ).fetchall()
+
+        if not rows:
+            print("没有适应度评估记录。")
+            return 0
+
+        total = tracker._execute("SELECT COUNT(*) as c FROM evolution_fitness_log").fetchone()["c"]
+        print(f"适应度评估日志 ({total} 条, {len(rows)} 个技能):")
+        print(f"  {'技能':<25} {'评估次数':>8} {'平均分':>8} {'最低':>8} {'最高':>8}")
+        print(f"  {'-' * 60}")
+        for r in rows:
+            print(f"  {r['skill_name']:<25} {r['c']:>8} {r['avg_score']:>8} {r['min_score']:>8} {r['max_score']:>8}")
+        return 0
+
+    elif args.cmd == "chart":
+        """进化终端可视化。"""
+        from core.evolution_viz import EvolutionVisualizer
+
+        viz = EvolutionVisualizer(tracker)
+
+        chart_type = getattr(args, "type", None) or "dashboard"
+
+        if chart_type == "dashboard":
+            print(viz.dashboard())
+        elif chart_type == "trend":
+            skill = getattr(args, "skill", None)
+            print(viz.fitness_trend(skill_name=skill))
+        elif chart_type == "tasks":
+            print(viz.task_type_chart())
+        elif chart_type == "timeline":
+            skill = getattr(args, "skill", None)
+            print(viz.skill_timeline(skill_name=skill))
+        elif chart_type == "degrade":
+            print(viz.degradation_summary())
+        elif chart_type == "all":
+            print(viz.full_report())
+        else:
+            print(f"未知图表类型: {chart_type}")
+            print("可用: dashboard / trend / tasks / timeline / degrade / all")
+        return 0
+
+    else:
+        print("可用: kuafu evolution stats / tasks / errors / fitness")
+        return 0
 
 
 # ── 子命令配置 ──────────────────────────────────────────────
@@ -565,28 +1890,266 @@ SUBCOMMANDS = {
             "status": {"help": "查看 Gateway 状态（systemctl）"},
         },
     },
+    "channel": {
+        "help": "消息通道热加载管理（list/discover/load/remove/reload）",
+        "handler": run_channel,
+        "subparsers": {
+            "list": {
+                "help": "列出已注册通道及运行状态",
+                "optional": [
+                    ("--port", {"type": int, "default": 8765, "help": "Gateway 端口"}),
+                ],
+            },
+            "discover": {
+                "help": "扫描所有可用通道类",
+                "optional": [
+                    ("--port", {"type": int, "default": 8765, "help": "Gateway 端口"}),
+                ],
+            },
+            "load": {
+                "help": "热加载通道",
+                "args": [("name", {"help": "通道名称"})],
+                "optional": [
+                    ("--port", {"type": int, "default": 8765, "help": "Gateway 端口"}),
+                ],
+            },
+            "remove": {
+                "help": "移除并停止通道",
+                "args": [("name", {"help": "通道名称"})],
+                "optional": [
+                    ("--port", {"type": int, "default": 8765, "help": "Gateway 端口"}),
+                ],
+            },
+            "reload": {
+                "help": "热重载通道（stop → start）",
+                "args": [("name", {"help": "通道名称"})],
+                "optional": [
+                    ("--port", {"type": int, "default": 8765, "help": "Gateway 端口"}),
+                ],
+            },
+        },
+    },
     "setup": {
         "help": "交互式配置向导（飞书/微信/LLM）",
         "handler": run_setup,
     },
+    "batch": {
+        "help": "批量任务管理（submit/status/cancel/retry/clear）",
+        "handler": run_batch,
+        "subparsers": {
+            "submit": {
+                "help": "提交批量任务",
+                "optional": [
+                    ("-f", "--file", {"help": "任务文件（每行一个任务）"}),
+                    ("-t", "--task", {"action": "append", "dest": "tasks", "help": "单条任务（可多次）"}),
+                ],
+            },
+            "status": {
+                "help": "查看批次状态",
+                "optional": [
+                    ("batch_id", {"nargs": "?", "help": "批次ID（可选，不指定则列出所有）"}),
+                ],
+            },
+            "cancel": {
+                "help": "取消待处理任务",
+                "args": [("batch_id", {"help": "批次ID"})],
+            },
+            "retry": {
+                "help": "重试失败任务",
+                "args": [("batch_id", {"help": "批次ID"})],
+            },
+            "clear": {
+                "help": "清理批次记录",
+                "args": [("batch_id", {"help": "批次ID"})],
+            },
+        },
+    },
+    "evolution": {
+        "help": "进化系统管理（stats/tasks/errors/fitness）",
+        "handler": run_evolution,
+        "subparsers": {
+            "stats": {
+                "help": "进化综合统计（技能/任务/事件/退化）",
+            },
+            "tasks": {
+                "help": "任务类型统计详情",
+            },
+            "errors": {
+                "help": "查看已知错误库",
+                "optional": [
+                    ("--limit", {"type": int, "default": 20, "help": "最大显示数"}),
+                ],
+            },
+            "fitness": {
+                "help": "查看适应度评估日志",
+            },
+            "chart": {
+                "help": "进化终端可视化（dashboard/trend/tasks/timeline/degrade/all）",
+                "optional": [
+                    ("--type", {"default": "dashboard", "help": "图表类型: dashboard/trend/tasks/timeline/degrade/all"}),
+                    ("--skill", {"default": "", "help": "技能名（trend/timeline 用）"}),
+                ],
+            },
+        },
+    },
     "skill": {
-        "help": "技能管理（本地/市场/安装/卸载）",
+        "help": "技能管理（本地/市场/安装/卸载/版本/退化/回滚）",
         "handler": run_skill,
         "subparsers": {
-            "list": {"help": "列出所有技能"},
+            "list": {
+                "help": "列出所有技能",
+                "optional": [
+                    ("--category", {"default": "", "help": "按分类筛选（coding/web/research/...）"}),
+                ],
+            },
             "search": {
                 "help": "搜索技能市场",
                 "optional": [("query", {"nargs": "?", "help": "搜索关键词"})],
             },
             "install": {
                 "help": "安装远程技能",
-                "args": [("name", {"help": "技能名称或 SKILL.md URL"})],
+                "args": [("name", {"help": "技能名称或文件路径/URL"})],
             },
             "remove": {
                 "help": "删除技能",
                 "args": [("name", {"help": "技能名称"})],
             },
-            "stats": {"help": "技能统计"},
+            "stats": {"help": "技能统计（含分类分布）"},
+            "info": {
+                "help": "查看技能详情",
+                "args": [("name", {"help": "技能名称"})],
+            },
+            "edit": {
+                "help": "用 $EDITOR 编辑技能文件",
+                "args": [("name", {"help": "技能名称"})],
+            },
+            "publish": {
+                "help": "完整发布技能（验证 → 打包 → 发布到本地/GitHub/Release）",
+                "args": [("name", {"help": "技能名称"})],
+                "optional": [
+                    ("--mode", {"default": "local", "choices": ["local", "github", "release"],
+                                "help": "发布模式: local=本地文件, github=推送到Git仓库, release=GitHub Release"}),
+                    ("--output", {"default": "", "help": "local 模式下输出目录（默认 /tmp/kuafu-skill-market）"}),
+                    ("--bump", {"default": "patch", "choices": ["major", "minor", "patch"],
+                                "help": "版本递增方式"}),
+                    ("--release", {"action": "store_true", "help": "创建 GitHub Release（仅 github 模式）"}),
+                ],
+            },
+            "deps": {
+                "help": "检查/安装技能依赖",
+                "args": [("name", {"help": "技能名称"})],
+                "optional": [
+                    ("--install", {"action": "store_true", "help": "自动安装缺失的 Python 包"}),
+                ],
+            },
+            "sandbox": {
+                "help": "查看技能沙箱配置",
+                "args": [("name", {"help": "技能名称"})],
+            },
+            "version": {
+                "help": "查看技能版本链",
+                "optional": [
+                    ("name", {"nargs": "?", "help": "技能名称（可选，不指定则列出所有）"}),
+                ],
+            },
+            "scan": {"help": "扫描 skills/ 目录，同步版本链"},
+            "diff": {
+                "help": "比较技能两个版本的内容差异",
+                "args": [("name", {"help": "技能名称"})],
+                "optional": [
+                    ("--v1", {"type": int, "default": 1, "help": "版本1（默认1）"}),
+                    ("--v2", {"type": int, "default": 2, "help": "版本2（默认2）"}),
+                ],
+            },
+            "restore": {
+                "help": "从版本链恢复技能文件到指定版本",
+                "args": [
+                    ("name", {"help": "技能名称"}),
+                    ("version", {"type": int, "help": "目标版本号"}),
+                ],
+            },
+            "log": {"help": "查看进化追踪日志"},
+            "degrade": {
+                "help": "检测技能退化",
+                "optional": [
+                    ("name", {"nargs": "?", "help": "技能名称（可选，不指定则扫描所有）"}),
+                    ("--failures", {"nargs": "*", "type": bool, "help": "最近任务成功/失败列表"}),
+                ],
+            },
+            "rollback": {
+                "help": "自动回滚退化的技能到历史最佳版本",
+                "optional": [
+                    ("name", {"nargs": "?", "help": "技能名称（可选，不指定则回滚所有）"}),
+                ],
+            },
+        },
+    },
+    "kfskill": {
+        "help": "技能包操作（create/list/validate/export/info）",
+        "handler": run_kfskill,
+        "subparsers": {
+            "create": {
+                "help": "创建 kfskill 技能包",
+                "args": [
+                    ("name", {"help": "技能名称"}),
+                ],
+                "optional": [
+                    ("--description", {"default": "", "help": "技能描述"}),
+                    ("--category", {"default": "", "help": "分类（coding/web/research/devops/media/writing）"}),
+                    ("--author", {"default": "", "help": "作者"}),
+                    ("--version", {"default": "1.0.0", "help": "版本号"}),
+                    ("--keywords", {"nargs": "*", "default": [], "help": "搜索关键词"}),
+                ],
+            },
+            "list": {
+                "help": "列出所有 kfskill 技能包",
+                "optional": [
+                    ("--category", {"default": "", "help": "按分类筛选"}),
+                ],
+            },
+            "validate": {
+                "help": "验证 kfskill 格式合法性",
+                "args": [("file", {"help": "技能包文件路径"})],
+            },
+            "export": {
+                "help": "将本地技能导出为 kfskill 格式",
+                "args": [("name", {"help": "技能名称"})],
+            },
+            "info": {
+                "help": "查看技能包详情",
+                "args": [("name", {"help": "技能名称或文件路径"})],
+            },
+        },
+    },
+    "repo": {
+        "help": "远程技能仓库管理（add/remove/list/search/refresh）",
+        "handler": run_repo,
+        "subparsers": {
+            "list": {"help": "列出所有已配置的远程仓库"},
+            "add": {
+                "help": "添加远程仓库",
+                "args": [
+                    ("name", {"help": "仓库名称"}),
+                    ("url", {"help": "仓库索引 JSON URL"}),
+                ],
+                "optional": [
+                    ("--description", {"default": "", "help": "仓库描述"}),
+                ],
+            },
+            "remove": {
+                "help": "移除远程仓库",
+                "args": [("name", {"help": "仓库名称"})],
+            },
+            "search": {
+                "help": "搜索远程仓库的技能",
+                "optional": [("query", {"nargs": "?", "help": "搜索关键词"})],
+            },
+            "refresh": {"help": "强制刷新所有仓库缓存"},
+            "stats": {"help": "查看仓库状态统计"},
+            "clear-cache": {
+                "help": "清理缓存文件",
+                "optional": [("name", {"nargs": "?", "help": "仓库名称（可选）"})],
+            },
         },
     },
     "tools": {

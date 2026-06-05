@@ -6,11 +6,12 @@
 首次安装后运行，引导用户配置：
 1. 选择 LLM 后端
 2. 输入 API Key
-3. 配置飞书 WebSocket 直连通道（可选）
-4. 配置微信 iLink 通道（腾讯官方，零配置）
+3. 配置消息通道（飞书/微信）
+4. 配置多媒体服务（可选）
 5. 测试连接
-6. 保存 .env
-7. 显示下一步指引
+6. 运行测试验证
+7. 保存 .env
+8. 显示下一步指引
 
 用法:
     python setup_wizard.py
@@ -25,7 +26,6 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent
 DOT_ENV = ROOT_DIR / ".env"
-DOT_ENV_EXAMPLE = ROOT_DIR / ".env.example"
 
 # ─── 颜色 ────────────────────────────────────────────────────────────────────
 try:
@@ -93,13 +93,13 @@ def print_err(text):
 
 # ─── Banner ───────────────────────────────────────────────────────────────────
 def show_banner():
-    banner = """
+    banner = r"""
     _                     __
    | |                   / _|
    | | __ ___   ____ _  | |_ _   _ _ __
-   | |/ _` |\\ \\ / / _` | |  _| | | | `__|
-   | | (_| |\\ V / (_| | | | | |_| | |  | |
-   |_|\\__,_| \\_/ \\__,_| |_|  \\__,_|_|  |_|
+   | |/ _` |\\ \ / / _` | |  _| | | | `__|
+   | | (_| |\ V / (_| | | | | |_| | |  | |
+   |_|\__,_| \_/ \__,_| |_|  \__,_|_|  |_|
 
    逐日不息 · 自我超越
 
@@ -130,7 +130,7 @@ def ask_backend() -> str:
 
     if backend == "local":
         print_info("本地模式需要安装 llama.cpp 并下载模型文件")
-        print_info("请参考: https://github.com/zhugezihou/kuafu?tab=readme-ov-file#本地部署")
+        print_info("请参考项目 README 中的本地部署章节")
 
     return backend
 
@@ -174,11 +174,10 @@ def ask_api_key(backend: str) -> str:
 
 # ─── 飞书通道配置 ────────────────────────────────────────────────────────────
 def ask_feishu() -> dict:
-    """配置飞书 WebSocket 直连通道（可选）。"""
-    print_step(3, "飞书 WebSocket 直连通道（可选）")
+    print_step(3, "飞书通道（可选）")
     print_info("夸父支持通过飞书 Bot 收发消息")
     print_info("需要在飞书开放平台创建应用: https://open.feishu.cn/app")
-    print_info("配置后 Gateway 启动时会自动建立 WebSocket 连接，无需轮询")
+    print_info("配置后 Gateway 启动时会自动建立 WebSocket 连接")
     print()
 
     if RICH_AVAILABLE:
@@ -227,7 +226,6 @@ def ask_feishu() -> dict:
     else:
         config["FEISHU_APP_SECRET"] = input("  飞书 App Secret: ").strip()
 
-    # 注意：WS 模式不需要 chat_id，但发送消息时需要指定目标
     chat_id = input("  默认发送群 Chat ID (oc_xxx，可选，回车跳过): ").strip()
     if chat_id:
         config["FEISHU_CHAT_ID"] = chat_id
@@ -236,10 +234,9 @@ def ask_feishu() -> dict:
     return config
 
 
-# ─── 微信 iLink 通道配置（腾讯官方） ──────────────────────────────────────
+# ─── 微信 iLink 通道配置 ─────────────────────────────────────────────────────
 def ask_wechat() -> dict:
-    """配置微信 iLink 通道（可选，零配置）。"""
-    print_step(4, "个人微信 iLink 通道（腾讯官方）")
+    print_step(4, "个人微信通道（可选）")
     print_info("夸父通过腾讯官方 iLink 协议连接个人微信")
     print_info("无需任何 Token 或 API Key，扫码即可登录")
     print_info("首次启动 Gateway 时自动打印二维码，微信扫码确认")
@@ -259,9 +256,97 @@ def ask_wechat() -> dict:
     return {}  # iLink 不需要配置
 
 
+# ─── 多媒体服务配置 ─────────────────────────────────────────────────────────
+def ask_multimedia() -> dict:
+    print_step(5, "多媒体服务（可选）")
+    print_info("夸父支持图像生成、图像理解、语音合成、语音识别。")
+    print_info("可以跳过此步，工具仍可用但无配置时会提示设置环境变量。")
+    print()
+
+    if RICH_AVAILABLE:
+        enable = Confirm.ask("  配置多媒体服务?", default=False)
+    else:
+        enable = input("  配置多媒体服务? (y/N): ").strip().lower() == "y"
+
+    if not enable:
+        print_info("跳过多媒体服务配置")
+        return {}
+
+    try:
+        from core.multimedia_config import MultimediaConfig
+    except ImportError:
+        print_warn("multimedia_config 模块不可用，跳过")
+        return {}
+
+    result = {}
+    categories = [
+        ("image_gen", "图像生成", "Image Generation", MultimediaConfig.list_image_gen_providers()),
+        ("vision", "图像理解", "Vision Analysis", MultimediaConfig.list_vision_providers()),
+        ("tts", "语音合成", "Text-to-Speech", MultimediaConfig.list_tts_providers()),
+        ("stt", "语音识别", "Speech-to-Text", MultimediaConfig.list_stt_providers()),
+    ]
+
+    for category, cn_name, en_name, providers in categories:
+        print()
+        print_info(f"── {cn_name} ({en_name}) ──")
+
+        if RICH_AVAILABLE:
+            setup = Confirm.ask(f"  配置{cn_name}?", default=False)
+        else:
+            setup = input(f"  配置{cn_name}? (y/N): ").strip().lower() == "y"
+
+        if not setup:
+            continue
+
+        cfg = {}
+        provider_keys = list(providers.keys())
+        if provider_keys:
+            print_info("  可用的服务商:")
+            for i, (k, desc) in enumerate(providers.items(), 1):
+                print_info(f"    {i}. {desc}")
+
+            if RICH_AVAILABLE:
+                from rich.prompt import IntPrompt
+                choice = IntPrompt.ask("  选择", default=1)
+            else:
+                try:
+                    choice = int(input(f"  选择 (1-{len(provider_keys)}, 默认1): ").strip() or "1")
+                except ValueError:
+                    choice = 1
+
+            idx = max(0, min(choice - 1, len(provider_keys) - 1))
+            cfg["provider"] = provider_keys[idx]
+        else:
+            cfg["provider"] = ""
+
+        if RICH_AVAILABLE:
+            api_url = Prompt.ask(f"  API URL (可选，留空用默认)", default="")
+        else:
+            api_url = input(f"  API URL (可选，留空用默认): ").strip()
+        if api_url:
+            cfg["api_url"] = api_url
+
+        print_info(f"  API Key（如已在环境变量中设置可跳过）")
+        if RICH_AVAILABLE:
+            api_key = Prompt.ask(f"  API Key (可选)", default="")
+        else:
+            api_key = input(f"  API Key (可选): ").strip()
+        if api_key:
+            cfg["api_key"] = api_key
+
+        result[category] = cfg
+
+    if result:
+        print_ok(f"已配置 {len(result)} 个多媒体服务")
+    else:
+        print_info("未配置任何多媒体服务")
+
+    return result
+
+
 # ─── 测试连接 ────────────────────────────────────────────────────────────────
 def test_connection(backend: str, api_key: str) -> bool:
-    print_step(5, "测试 LLM 连接")
+    print_step(6, "测试 LLM 连接")
     try:
         from core.llm import LLMClient
         if backend == "local":
@@ -289,10 +374,55 @@ def test_connection(backend: str, api_key: str) -> bool:
         return False
 
 
+# ─── 运行测试验证 ────────────────────────────────────────────────────────────
+def run_tests() -> bool:
+    print_step(7, "运行测试验证")
+    print_info("夸父自带 300+ 测试用例，运行确认代码完整性。")
+    print()
+
+    if RICH_AVAILABLE:
+        run_now = Confirm.ask("  现在运行测试? (首次建议运行)", default=True)
+    else:
+        resp = input("  现在运行测试? (Y/n): ").strip().lower()
+        run_now = resp != "n"
+
+    if not run_now:
+        print_info("跳过测试验证。可随时运行:")
+        print_info("  python -m pytest tests/ -x --tb=short -q")
+        return True
+
+    import subprocess
+    print_info("运行核心单元测试...")
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest",
+             "tests/test_bulk.py",
+             "-k", "TestEvolutionEngine or TestEvolutionState or TestIdentity or TestObserver",
+             "--tb=short", "-q"],
+            cwd=str(ROOT_DIR),
+            capture_output=True, text=True, timeout=120,
+        )
+        print(result.stdout)
+        if result.returncode == 0:
+            print_ok("核心测试全部通过")
+        else:
+            print_err(f"测试失败 ({result.returncode})")
+            print(result.stderr[:500])
+            return False
+    except subprocess.TimeoutExpired:
+        print_warn("测试超时（120s），跳过测试验证")
+    except FileNotFoundError:
+        print_warn("pytest 未安装，跳过测试验证")
+        print_info("安装: pip install pytest pytest-cov")
+
+    return True
+
+
 # ─── 保存配置 ────────────────────────────────────────────────────────────────
 def save_config(backend: str, api_key: str,
-                feishu: dict, wechat: dict):
-    print_step(6, "保存配置")
+                feishu: dict, wechat: dict, multimedia: dict = None):
+    print_step(8, "保存配置")
 
     config_lines = []
     if DOT_ENV.exists():
@@ -319,13 +449,24 @@ def save_config(backend: str, api_key: str,
         set_var("KUAFFU_BASE_URL", "https://api.deepseek.com")
         set_var("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 
-    # 飞书通道配置
+    # 通道配置
     for k, v in feishu.items():
         set_var(k, v)
-
-    # 微信通道配置
     for k, v in wechat.items():
         set_var(k, v)
+
+    # 多媒体配置
+    if multimedia:
+        for category, cfg in multimedia.items():
+            provider = cfg.get("provider", "")
+            api_url = cfg.get("api_url", "")
+            api_key_val = cfg.get("api_key", "")
+            if provider:
+                set_var(f"{category.upper()}_PROVIDER", provider)
+            if api_url:
+                set_var(f"{category.upper()}_API_URL", api_url)
+            if api_key_val:
+                set_var(f"{category.upper()}_API_KEY", api_key_val)
 
     with open(DOT_ENV, "w", encoding="utf-8") as f:
         f.write("\n".join(config_lines) + "\n")
@@ -333,40 +474,8 @@ def save_config(backend: str, api_key: str,
     print_ok(f"配置文件已保存: {DOT_ENV}")
 
 
-# ─── 下一步指引 ──────────────────────────────────────────────────────────────
-def show_next_steps(backend: str, has_feishu: bool, has_wechat: bool):
-    print_step(7, "下一步")
-
-    steps = [
-        "交互模式:  bash kuafu.sh",
-        "命令式:    bash kuafu.sh '你的任务'",
-    ]
-
-    if has_feishu or has_wechat:
-        steps.append("Gateway 启动:  bash kuafu.sh gateway start --port 8765")
-        steps.append("Gateway 自启:  bash kuafu.sh gateway install")
-
-    if backend == "local":
-        steps.insert(0, "首次运行前请下载模型:  bash scripts/download_model.sh")
-
-    for i, step in enumerate(steps, 1):
-        print_info(f"{i}. {step}")
-
-    if has_feishu:
-        print_ok("飞书通道已配置，Gateway 启动后自动连接")
-
-    if has_wechat:
-        print_ok("微信通道已配置，Gateway 启动后自动扫码登录（腾讯 iLink 官方协议）")
-
-    print()
-    print_info("文档: https://github.com/zhugezihou/kuafu")
-    print_ok("配置完成！夸父已就绪，逐日不息！")
-
-
+# ─── 本地模式前置检查 ────────────────────────────────────────────────────────
 def check_local_prerequisites():
-    """检查本地模式前置条件"""
-    print_step("进阶", "本地模式前置检查")
-
     import shutil
     has_nvidia = shutil.which("nvidia-smi") is not None
     has_llama = shutil.which("llama-server") is not None or \
@@ -374,7 +483,6 @@ def check_local_prerequisites():
 
     if not has_nvidia:
         print_warn("未检测到 nvidia-smi，本地推理需要 NVIDIA GPU 8GB+")
-
     if has_llama:
         print_ok("检测到 llama-server")
     else:
@@ -389,6 +497,33 @@ def check_local_prerequisites():
             print_info("模型目录存在，但未找到 .gguf 文件")
 
     return has_nvidia, has_llama
+
+
+# ─── 下一步指引 ──────────────────────────────────────────────────────────────
+def show_next_steps(backend: str, has_feishu: bool, has_wechat: bool):
+    print_step(9, "下一步")
+
+    steps = [
+        "交互模式:  bash kuafu.sh",
+        "命令式:    bash kuafu.sh '你的任务'",
+    ]
+
+    if has_feishu or has_wechat:
+        steps.append("Gateway 启动:  bash kuafu.sh gateway start --port 8765")
+
+    if backend == "local":
+        steps.insert(0, "首次运行前请下载模型:  bash scripts/download_model.sh")
+
+    for i, step in enumerate(steps, 1):
+        print_info(f"{i}. {step}")
+
+    print()
+    print_info("查看完整文档:")
+    print_info("  https://github.com/zhugezihou/kuafu")
+    print_info("开发者文档:")
+    print_info("  cat DEVELOPER.md | less")
+    print()
+    print_ok("配置完成！夸父已就绪，逐日不息！")
 
 
 # ─── 主入口 ──────────────────────────────────────────────────────────────────
@@ -408,7 +543,10 @@ def main():
         # 4. 微信通道（可选）
         wechat_config = ask_wechat()
 
-        # 5. 测试连接
+        # 5. 多媒体服务（可选）
+        multimedia_config = ask_multimedia()
+
+        # 6. 测试连接
         test_ok = test_connection(backend, api_key)
 
         if not test_ok:
@@ -421,14 +559,19 @@ def main():
                 print_info("已取消配置保存")
                 return
 
-        # 6. 保存
-        save_config(backend, api_key, feishu_config, wechat_config)
+        # 7. 运行测试验证
+        tests_ok = run_tests()
+        if not tests_ok:
+            print_warn("测试未全部通过，请检查代码")
 
-        # 7. 本地模式额外检查
+        # 8. 保存
+        save_config(backend, api_key, feishu_config, wechat_config, multimedia_config)
+
+        # 9. 本地模式额外检查
         if backend == "local":
             check_local_prerequisites()
 
-        # 8. 显示下一步
+        # 10. 显示下一步
         show_next_steps(
             backend,
             has_feishu=bool(feishu_config),

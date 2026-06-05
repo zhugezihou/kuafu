@@ -76,11 +76,37 @@ class EvolutionEngine:
         self.judge = Judge(llm.chat if llm else self._noop_llm)
         self.observers: list[Observer] = [Observer()]
 
+        # GEPA 进化算法引擎
+        from core.gepa_engine import GEPAEngine
+        self.gepa = GEPAEngine(llm_chat_fn=llm.chat if llm else None)
+        self._gepa_enabled = True
+
         # 日志/统计
         self._events: list[EvolutionEvent] = []
         self._total = 0
         self._last_trigger_time: float = 0.0
         self._cooldown = 10.0  # 秒，同类型任务冷却
+
+    def _get_state_entry(self, task_type: str) -> Optional[dict]:
+        """从 evolution_state 获取 task_type 的条目（兼容 SQLite 后端）。"""
+        try:
+            rows = self.evolution_state._db._execute(
+                "SELECT count, consecutive_fail, last_seen, last_n "
+                "FROM evolution_task_types WHERE task_type = ?",
+                (task_type,),
+            ).fetchall()
+            if rows:
+                import json
+                r = rows[0]
+                return {
+                    "count": r["count"],
+                    "consecutive_fail": r["consecutive_fail"],
+                    "last_seen": r["last_seen"],
+                    "last_n": json.loads(r["last_n"] or "[]"),
+                }
+        except Exception:
+            pass
+        return None
 
     # ── 新管道入口（供 agent_loop 调用） ──
 
@@ -119,13 +145,13 @@ class EvolutionEngine:
             return result
 
         # 冷却检查：同类型任务 30 秒内不重复触发
-        state_entry = self.evolution_state._data["task_types"].get(task_type)
+        state_entry = self._get_state_entry(task_type)
         now = time.time()
         if state_entry and (now - state_entry.get("last_seen", 0)) < self._cooldown:
             return result
 
         # Phase 3: Judge — 单次 LLM 调用
-        state_entry = self.evolution_state._data["task_types"].get(task_type)
+        state_entry = self._get_state_entry(task_type)
         decision = self.judge.evaluate(observation, state_entry)
 
         if not decision["worth_learning"]:
@@ -157,6 +183,55 @@ class EvolutionEngine:
         )
         self._events.append(event)
         self._append_log(event)
+
+        # Phase 5: GEPA 适应度评估（零 LLM 成本 + 可选 LLM 质量评分）
+        if self._gepa_enabled and skill and skill.get("name"):
+            try:
+                from core.gepa_engine import SkillGenome
+                genome = SkillGenome.from_skill_dict(skill, task_type=task_type)
+                # 用观察数据计算适应度（不强制 LLM，利用缓存在后续调用中逐步获取）
+                error_count = len(getattr(observation, 'errors', []) or [])
+                report = self.gepa.evaluate_with_report(
+                    genome,
+                    success_rate=1.0 if observation.success else 0.0,
+                    usage_count=1,
+                    error_before=max(1, error_count),
+                    error_after=0,
+                    last_used_days=0,
+                )
+                result["fitness"] = report["fitness"]
+                result["fitness_report"] = report["summary"]
+                # 记录 fitness 到 evolution_state 的 skill 版本记录中
+                self.evolution_state.record_skill_quality(
+                    skill["name"], report["fitness"]
+                )
+                # 记录 fitness 日志到 SQLite evolution_fitness_log
+                try:
+                    self.evolution_state._db.log_fitness(
+                        skill_name=skill["name"],
+                        score=report["fitness"],
+                        metrics=report.get("metrics"),
+                        success_rate=1.0 if observation.success else 0.0,
+                        usage_count=1,
+                        step_count=len(genome.steps),
+                        last_used_days=0,
+                        quality_score=report.get("metrics", {}).get("quality_score"),
+                    )
+                except Exception as log_e:
+                    logger.debug(f"fitness 日志记录跳过: {log_e}")
+                # 记录进化事件到 SQLite
+                try:
+                    self.evolution_state._db.record_event(
+                        level="skill" if result.get("skill_written") else "info",
+                        action=f"GEPA 评估: {skill['name']} 适应度={report['fitness']:.3f}",
+                        target=task_type,
+                        payload=json.dumps(report.get("metrics", {}), ensure_ascii=False)[:500],
+                    )
+                except Exception as ev_e:
+                    logger.debug(f"进化事件记录跳过: {ev_e}")
+                logger.debug(f"GEPA: {skill['name']} 适应度={report['fitness']:.3f}")
+            except Exception as e:
+                logger.warning(f"GEPA 评估失败: {e}")
 
         return result
 

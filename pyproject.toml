@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kuafu"
-version = "0.4.0"
+version = "1.0.0"
 description = "夸父 (Kuafu) — 一个自我进化的 AI Agent 框架"
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -53,3 +53,4 @@ include = ["kuafu*", "core*", "autonomous*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+norecursedirs = [".git", "skills", "memory"]

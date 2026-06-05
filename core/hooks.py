@@ -74,7 +74,7 @@ HOOKS_CONFIG_PATH = ROOT_DIR / "memory" / "hooks_config.json"
 # 事件类型定义
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# 全部 27 个钩子事件名
+# 全部 29 个钩子事件名
 HOOK_EVENTS = frozenset({
     "on_agent_start", "on_agent_end",
     "on_session_create", "on_session_end",
@@ -86,6 +86,7 @@ HOOK_EVENTS = frozenset({
     "on_skill_create", "on_skill_update",
     "on_context_exceed", "on_collapse", "on_cron_tick",
     "on_permission_check", "on_approval_result",
+    "on_safety_check", "on_safety_escalate",
     "on_budget_critical",
 })
 

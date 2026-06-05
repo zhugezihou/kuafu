@@ -174,6 +174,28 @@ class SkillManager:
         self._cache_time = now
         return skills
 
+    @staticmethod
+    def _check_skill_deps(install_result: dict):
+        """安装后检查技能依赖并打印信息。"""
+        file_path = install_result.get("file", "")
+        if not file_path or not Path(file_path).exists():
+            return
+        try:
+            import yaml
+            data = yaml.safe_load(Path(file_path).read_text(encoding="utf-8"))
+            if not data or "dependencies" not in data:
+                return
+            from core.skill_deps import check_dependencies, suggest_command
+            result = check_dependencies(data)
+            if not result.ok:
+                print(f"   📦 检测到依赖缺失:")
+                print(f"      {result.summary()}")
+                cmd = suggest_command(data)
+                if cmd:
+                    print(f"      💡 {cmd}")
+        except Exception:
+            pass
+
     def search_market(self, query: str) -> list[SkillInfo]:
         q = query.lower()
         all_skills = self.fetch_market_index()
@@ -194,8 +216,27 @@ class SkillManager:
 
     def install(self, name_or_url: str) -> dict:
         if name_or_url.startswith("http://") or name_or_url.startswith("https://"):
-            return self._install_from_url(name_or_url)
-        return self._install_by_name(name_or_url)
+            # 先尝试直接下载（原有逻辑）
+            result = self._install_from_url(name_or_url)
+            if result["success"]:
+                return result
+            # 下载失败时，尝试通过仓库解析
+            from core.skill_repo import RepoManager
+            repo = RepoManager()
+            return repo.install_from_url(name_or_url)
+        # 先查本地市场
+        result = self._install_by_name(name_or_url)
+        if result["success"]:
+            # 安装成功后检查依赖
+            self._check_skill_deps(result)
+            return result
+        # 再查远程仓库
+        from core.skill_repo import RepoManager
+        repo = RepoManager()
+        result = repo.install(name_or_url)
+        if result["success"]:
+            self._check_skill_deps(result)
+        return result
 
     def _install_by_name(self, name: str) -> dict:
         market = self.fetch_market_index()
@@ -284,8 +325,15 @@ class SkillManager:
         local_count = len(list(SKILLS_DIR.glob("*.yaml")))
         market_count = len(list(MARKET_DIR.glob("*.yaml"))) if MARKET_DIR.exists() else 0
         remote_count = len(self.fetch_market_index())
+
+        # 远程仓库统计
+        from core.skill_repo import RepoManager
+        repo_stats = RepoManager().get_stats()
+
         return {
             "local": local_count,
             "installed_market": market_count,
             "available_market": remote_count,
+            "repos": repo_stats["total_repos"],
+            "repo_skills": repo_stats["total_skills"],
         }

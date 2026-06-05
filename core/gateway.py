@@ -34,6 +34,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
     api_key: str = ""
     shutdown_event: Optional[threading.Event] = None
     start_time: float = 0.0
+    gateway_server: Any = None  # 引用 GatewayServer 实例，供通道管理 API 使用
 
     def _send_json(self, status: int, data: dict):
         self.send_response(status)
@@ -78,6 +79,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self._handle_cron_list()
         elif path == "/api/sessions":
             self._handle_sessions_list()
+        elif path == "/api/channel/discover":
+            self._handle_channel_discover()
+        elif path == "/api/channel/list":
+            self._handle_channel_list()
         else:
             self._send_json(404, {"error": "Not Found"})
 
@@ -102,6 +107,30 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self._handle_cron_stop()
         elif path == "/api/shutdown":
             self._handle_shutdown()
+        # ── 通道管理 API ──
+        elif path == "/api/channel/discover":
+            self._handle_channel_discover()
+        elif path == "/api/channel/load":
+            self._handle_channel_load()
+        elif path == "/api/channel/remove":
+            self._handle_channel_remove()
+        elif path == "/api/channel/reload":
+            self._handle_channel_reload()
+        elif path == "/api/channel/list":
+            self._handle_channel_list()
+        # ── 批量任务 API ──
+        elif path == "/api/batch/submit":
+            self._handle_batch_submit()
+        elif path == "/api/batch/status":
+            self._handle_batch_status()
+        elif path == "/api/batch/list":
+            self._handle_batch_list()
+        elif path == "/api/batch/cancel":
+            self._handle_batch_cancel()
+        elif path == "/api/batch/retry":
+            self._handle_batch_retry()
+        elif path == "/api/batch/clear":
+            self._handle_batch_clear()
         else:
             self._send_json(404, {"error": "Not Found"})
 
@@ -235,6 +264,197 @@ class GatewayHandler(BaseHTTPRequestHandler):
         if self.shutdown_event:
             self.shutdown_event.set()
 
+    # ── 通道管理 API ──────────────────────────────────────────
+
+    def _get_channel_mgr(self):
+        """获取 GatewayServer 的 ChannelManager。"""
+        gw = getattr(type(self), 'gateway_server', None)
+        if gw is None:
+            return None
+        return getattr(gw, 'channels', None)
+
+    def _handle_channel_discover(self):
+        """扫描所有可用的通道类。"""
+        from core.channel.manager import ChannelManager
+        registry = ChannelManager.discover_channels()
+        self._send_json(200, {
+            "discovered": {name: cls.__name__ for name, cls in registry.items()},
+        })
+
+    def _handle_channel_load(self):
+        """热加载一个通道。"""
+        body = self._read_body()
+        name = body.get("name", "")
+        if not name:
+            self._send_json(400, {"error": "Missing 'name' field"})
+            return
+
+        mgr = self._get_channel_mgr()
+        if not mgr:
+            self._send_json(400, {"error": "ChannelManager not available"})
+            return
+
+        ch = mgr.load_channel(name)
+        if ch:
+            self._send_json(200, {"status": "loaded", "name": name})
+        else:
+            self._send_json(500, {"error": f"Failed to load channel '{name}'"})
+
+    def _handle_channel_remove(self):
+        """移除并停止一个通道。"""
+        body = self._read_body()
+        name = body.get("name", "")
+        if not name:
+            self._send_json(400, {"error": "Missing 'name' field"})
+            return
+
+        mgr = self._get_channel_mgr()
+        if not mgr:
+            self._send_json(400, {"error": "ChannelManager not available"})
+            return
+
+        ok = mgr.remove(name)
+        if ok:
+            self._send_json(200, {"status": "removed", "name": name})
+        else:
+            self._send_json(404, {"error": f"Channel '{name}' not found"})
+
+    def _handle_channel_reload(self):
+        """热重载一个通道（stop → load → start）。"""
+        body = self._read_body()
+        name = body.get("name", "")
+        if not name:
+            self._send_json(400, {"error": "Missing 'name' field"})
+            return
+
+        mgr = self._get_channel_mgr()
+        if not mgr:
+            self._send_json(400, {"error": "ChannelManager not available"})
+            return
+
+        ok = mgr.reload_channel(name)
+        if ok:
+            self._send_json(200, {"status": "reloaded", "name": name})
+        else:
+            self._send_json(500, {"error": f"Failed to reload channel '{name}'"})
+
+    def _handle_channel_list(self):
+        """列出所有已注册通道及状态。"""
+        mgr = self._get_channel_mgr()
+        if not mgr:
+            self._send_json(200, {"channels": []})
+            return
+
+        channels_info = []
+        for name in mgr.list():
+            ch = mgr.get(name)
+            running = getattr(ch, '_running', False) if ch else False
+            channels_info.append({"name": name, "running": running})
+        self._send_json(200, {"channels": channels_info})
+
+    # ── 批量任务 API ───────────────────────────────────────────
+
+    def _handle_batch_submit(self):
+        """提交批量任务。"""
+        from core.batch_engine import BatchEngine
+        engine = BatchEngine(agent=self.agent)
+
+        body = self._read_body()
+        tasks = body.get("tasks", [])
+        if not tasks:
+            self._send_json(400, {"error": "Missing 'tasks' field (list of strings)"})
+            return
+
+        batch_id = body.get("batch_id", "")
+        mode = body.get("mode", "standard")
+
+        batch_id = engine.submit(tasks, mode=mode, batch_id=batch_id or None)
+        self._send_json(202, {
+            "status": "accepted",
+            "batch_id": batch_id,
+            "total": len(tasks),
+        })
+
+    def _handle_batch_status(self):
+        """查询批次状态。"""
+        from core.batch_engine import BatchEngine
+        engine = BatchEngine(agent=self.agent)
+
+        body = self._read_body()
+        batch_id = body.get("batch_id", body.get("batch", ""))
+        if not batch_id:
+            self._send_json(400, {"error": "Missing 'batch_id' field"})
+            return
+
+        status = engine.get_status(batch_id)
+        self._send_json(200, {
+            "batch_id": status.batch_id,
+            "total": status.total,
+            "completed": status.completed,
+            "running": status.running,
+            "failed": status.failed,
+            "pending": status.pending,
+            "results": status.results,
+        })
+
+    def _handle_batch_list(self):
+        """列出所有批次。"""
+        from core.batch_engine import BatchEngine
+        engine = BatchEngine(agent=self.agent)
+
+        limit = self._get_query_param("limit", 20)
+        batches = engine.get_all_batches(limit=int(limit))
+        self._send_json(200, {"batches": batches})
+
+    def _handle_batch_cancel(self):
+        """取消批次。"""
+        from core.batch_engine import BatchEngine
+        engine = BatchEngine(agent=self.agent)
+
+        body = self._read_body()
+        batch_id = body.get("batch_id", "")
+        if not batch_id:
+            self._send_json(400, {"error": "Missing 'batch_id' field"})
+            return
+
+        count = engine.cancel_batch(batch_id)
+        self._send_json(200, {"status": "cancelled", "count": count})
+
+    def _handle_batch_retry(self):
+        """重试失败任务。"""
+        from core.batch_engine import BatchEngine
+        engine = BatchEngine(agent=self.agent)
+
+        body = self._read_body()
+        batch_id = body.get("batch_id", "")
+        if not batch_id:
+            self._send_json(400, {"error": "Missing 'batch_id' field"})
+            return
+
+        count = engine.retry_failed(batch_id)
+        self._send_json(200, {"status": "retrying", "count": count})
+
+    def _handle_batch_clear(self):
+        """清理批次记录。"""
+        from core.batch_engine import BatchEngine
+        engine = BatchEngine(agent=self.agent)
+
+        body = self._read_body()
+        batch_id = body.get("batch_id", "")
+        if not batch_id:
+            self._send_json(400, {"error": "Missing 'batch_id' field"})
+            return
+
+        count = engine.clear_batch(batch_id)
+        self._send_json(200, {"status": "cleared", "count": count})
+
+    def _get_query_param(self, name: str, default: Any = None) -> Any:
+        """从 URL 查询参数中取值。"""
+        import urllib.parse as _up
+        qs = _up.parse_qs(_up.urlparse(self.path).query)
+        vals = qs.get(name, [])
+        return vals[0] if vals else default
+
     # ── 日志静默 ────────────────────────────────────────────
 
     def log_message(self, format, *args):
@@ -316,6 +536,7 @@ class GatewayServer:
             GatewayHandler.api_key = self.api_key
             GatewayHandler.shutdown_event = self._shutdown_event
             GatewayHandler.start_time = time.time()
+            GatewayHandler.gateway_server = self
 
             self._server = HTTPServer((self.host, self.port), GatewayHandler)
             self._server.timeout = 1.0  # 1秒超时，便于 shutdown 检查

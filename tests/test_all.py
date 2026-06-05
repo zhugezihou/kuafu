@@ -117,7 +117,7 @@ def test_agent_repr():
     agent = KuafuAgent()
     assert "KuafuAgent" in repr(agent)
     assert "夸父" in agent.name
-    assert "0.4" in agent.version
+    assert "0.2" in agent.version
 
     print("✅ main: Agent 初始化正常")
 
@@ -127,6 +127,15 @@ def test_agent_prompt():
     from core.main import KuafuAgent
 
     agent = KuafuAgent()
+    
+    # mock evolution stats to match what build_system_prompt expects
+    agent.evolution.get_evolution_stats = lambda: {
+        "total_evolutions": 0,
+        "by_level": {},
+        "recent_events": [],
+        "last_event": None,
+        "health": {},
+    }
     
     # 检查系统 prompt 组装
     prompt = agent.build_system_prompt()

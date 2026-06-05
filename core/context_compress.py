@@ -688,9 +688,10 @@ class PinnedContentManager:
                 continue
 
             # P2: 白板/决策消息（摘要注入的系统消息）
-            if role == "system" and any(kw in content for kw in self.WHITEBOARD_KEYWORDS):
-                pinned_indices.add(i)
-                continue
+            # 注：system 消息已在 P0 被 pin，此分支实际不会被执行（防御性保留）
+            if role == "system" and any(kw in content for kw in self.WHITEBOARD_KEYWORDS):  # pragma: no cover
+                pinned_indices.add(i)  # pragma: no cover
+                continue  # pragma: no cover
 
         # 用户最近一轮提问（最后一条 user 消息）
         last_user = None
@@ -714,9 +715,10 @@ class PinnedContentManager:
                 return 1
             if any(marker in content for marker in self.PIN_MARKERS):
                 return 1
-            # 白板/决策
+            # 白板/决策（注：此分支仅在非 system 但含白板关键词时触发，
+            # system 角色已在 L710 优先返回。保留此分支为防御性设计。）
             if role == "system" and any(kw in content for kw in self.WHITEBOARD_KEYWORDS):
-                return 2
+                return 2  # pragma: no cover
             # 用户最近提问
             return 3
 

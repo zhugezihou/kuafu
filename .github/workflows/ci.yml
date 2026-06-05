@@ -1,0 +1,153 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 设置 Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: 安装基础依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml pytest pytest-cov
+
+      - name: 全部单元测试（并行覆盖率收集）
+        env:
+          COVERAGE_FILE: .coverage.ci
+        run: |
+          coverage run --source=core --parallel-mode -m pytest \
+            tests/test_bulk.py \
+            -k "TestEvolutionEngine or TestEvolutionState or TestEvolutionEngineGepaCoverage or TestEvolutionRules" \
+            tests/test_approval_denyrules.py \
+            tests/test_approval_automode_approval.py \
+            tests/test_extra_coverage.py \
+            tests/test_safety_path.py \
+            tests/test_safety_denial.py \
+            tests/test_safety_safetylayer.py \
+            tests/test_evolution_tracker_core.py \
+            tests/test_evolution_tracker_advanced.py \
+            tests/test_evolution_tracker_gap.py \
+            tests/test_session_store.py \
+            tests/test_llm.py \
+            tests/test_context_compress.py \
+            tests/test_context_compress_gap.py \
+            tests/test_tool_registry_api.py \
+            tests/test_tool_registry.py \
+            tests/test_tool_registry_pure.py \
+            tests/test_aggregate_search.py \
+            tests/test_browser.py \
+            tests/test_downloader.py \
+            tests/test_judge.py \
+            tests/test_main.py \
+            tests/test_mcp_bridge.py \
+            tests/test_subagent.py \
+            tests/test_skill_deps.py \
+            tests/test_whiteboard.py \
+            tests/test_decomposer.py \
+            tests/test_executor.py \
+            --tb=short -q
+
+      - name: Agent Loop 测试（单独跑，避免 timeout 冲突）
+        env:
+          COVERAGE_FILE: .coverage.ci
+        run: |
+          coverage run --source=core --parallel-mode -m pytest \
+            tests/test_agent_loop_helpers.py \
+            tests/test_bulk.py -k "TestAgentLoop" \
+            --tb=short -q
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 设置 Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装基础依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml pytest pytest-cov
+
+      - name: 集成测试（端到端）
+        env:
+          KUAFFU_API_KEY: test-dummy-key
+        run: |
+          python -m pytest \
+            tests/test_all.py \
+            tests/test_comprehensive.py \
+            tests/test_evolution_pipeline.py \
+            tests/test_tool_integration.py \
+            --tb=short -q
+
+  coverage-report:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    if: always()
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 设置 Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装依赖
+        run: pip install pyyaml pytest pytest-cov
+
+      - name: 收集覆盖率（快速验证）
+        run: |
+          coverage run --source=core -m pytest \
+            tests/test_bulk.py \
+            -k "TestEvolutionEngine or TestEvolutionState or TestEvolutionEngineGepaCoverage or TestEvolutionRules" \
+            tests/test_approval_denyrules.py \
+            tests/test_approval_automode_approval.py \
+            tests/test_extra_coverage.py \
+            tests/test_safety_path.py \
+            tests/test_safety_denial.py \
+            tests/test_safety_safetylayer.py \
+            tests/test_evolution_tracker_core.py \
+            tests/test_evolution_tracker_advanced.py \
+            tests/test_evolution_tracker_gap.py \
+            tests/test_session_store.py \
+            tests/test_llm.py \
+            tests/test_context_compress.py \
+            tests/test_context_compress_gap.py \
+            tests/test_tool_registry_api.py \
+            tests/test_tool_registry.py \
+            tests/test_tool_registry_pure.py \
+            tests/test_aggregate_search.py \
+            tests/test_browser.py \
+            tests/test_downloader.py \
+            tests/test_judge.py \
+            tests/test_main.py \
+            tests/test_mcp_bridge.py \
+            tests/test_subagent.py \
+            tests/test_skill_deps.py \
+            tests/test_whiteboard.py \
+            tests/test_decomposer.py \
+            tests/test_executor.py \
+            tests/test_agent_loop_helpers.py \
+            tests/test_bulk.py -k "TestAgentLoop" \
+            --tb=short -q && \
+          coverage report --include="core/*.py" --sort=Cover

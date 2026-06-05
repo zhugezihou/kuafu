@@ -9,13 +9,6 @@
 
 ---
 
-## 核心理念
-
-- **进化 = 工作的自然产物**，不是额外操作
-- **核心不可破坏** — `core/` 目录只读保护区，任何 agent 实例都不可修改
-- **身份感知** — 知道自己是谁、用户是谁、边界在哪里
-- **零依赖哲学** — 核心仅依赖 `pyyaml`，网络操作直接用 Python 标准库
-
 ## 快速开始
 
 ### 安装
@@ -60,172 +53,122 @@ print(result['result'])
 
 ---
 
-## 架构
+## 架构亮点（v1.0）
+
+夸父 v1.0 参考 OpenAI Codex CLI 的 Rust 源码架构，引入了 14 项核心改造。
+
+### 四阶段工具执行
+
+```
+ToolOrchestrator.execute()
+  ├── Phase 1: PolicyManager.decide()
+  │   ├── Pre-check: 硬黑名单 / 只读 / 安全命令
+  │   ├── Layer 1: DenyRules — 硬拒绝
+  │   ├── Layer 2: AutoMode — 自动分类
+  │   ├── Layer 3: 人工审批
+  │   └── → emits on_permission_check / on_tool_rejected hooks
+  ├── Phase 2: SafetyLayer.get_tri_state()
+  │   └── Allow / Block / Escalate 三态决策
+  ├── Phase 3: ToolRegistry.execute()
+  └── Phase 4: Retry (可配置)
+```
+
+### 分层配置
+
+```
+Cloud Config → User Config → Project Config → CLI Overrides
+```
+
+### 事件驱动持久化
+
+```
+RolloutLog (JSONL 事件日志) + SessionStore (SQLite 快速查询)
+  ├── 游标分页查询
+  ├── 按事件类型过滤
+  └── 归档 + 恢复
+```
+
+### Agent 树
+
+```
+AgentPath 寻址系统（/root/child/grandchild）
+AgentRegistry 全局注册表
+LiveAgent 状态订阅（IDLE → RUNNING → COMPLETED/FAILED）
+```
+
+---
+
+## 核心理念
+
+- **进化 = 工作的自然产物**，不是额外操作
+- **核心不可破坏** — `core/` 目录只读保护区，任何 agent 实例都不可修改
+- **身份感知** — 知道自己是谁、用户是谁、边界在哪里
+
+---
+
+## 项目结构
 
 ```
 kuafu/
-├── core/                          ← 只读保护区
-│   ├── agent_loop.py              # Agent 执行循环 (ReAct)
-│   ├── main.py                    # Agent 入口 — CLI + 编排
-│   ├── llm.py                     # LLM 客户端 — 多后端支持
-│   ├── evolution.py               # 进化引擎 — 即兴进化
-│   ├── memory_api.py              # 记忆系统 — file/hindsight 双模
-│   ├── safety.py                  # 安全体系 — 命令分级 + 路径保护
-│   ├── identity.py                # 身份系统
-│   ├── subagent.py                # 子 Agent 系统
-│   ├── approval.py                # 审批系统
+├── core/                          # 核心执行引擎
+│   ├── agent_loop.py              # Agent 主循环 (2323行)
+│   ├── tool_registry.py           # 三级工具注册系统 (2172行)
+│   ├── tool_orchestrator.py       # 四阶段工具编排【新】
+│   ├── policy_manager.py          # 统一策略管理【新】
+│   ├── turn_context.py            # 不可变上下文【新】
+│   ├── rollout_log.py             # 事件日志【新】
+│   ├── exec_policy.py             # 命令执行策略【新】
+│   ├── agent_tree.py              # Agent 树系统【新】
+│   ├── config.py                  # 分层配置【新】
+│   ├── agents_md.py              # AGENTS.md 发现【新】
+│   ├── compact_hooks.py          # 压缩 Hook 接口【新】
+│   ├── turn_diff_tracker.py       # 文件变更追踪【新】
+│   ├── skill_discovery.py         # 隐式技能触发【新】
+│   ├── approval.py                # 审批系统 (Layer 1~3)
+│   ├── safety.py                  # 三态安全决策
+│   ├── context_compress.py        # 上下文压缩管线
 │   ├── session_store.py           # 会话存储 (SQLite)
-│   ├── tool_registry.py           # 三级工具注册中心
-│   ├── context_compress.py        # 上下文压缩
-│   ├── prompt_template.py         # 结构化 Prompt 组装
-│   ├── hooks.py                   # 事件钩子系统
-│   ├── observer.py                # 运行时观察者
-│   ├── cron_scheduler.py          # 定时任务调度
-│   ├── gateway.py                 # HTTP Gateway
-│   ├── cli.py                     # CLI 子命令
-│   ├── feishu_bot.py              # 飞书 API 发消息
-│   ├── mcp_bridge.py              # MCP 协议桥
-│   ├── webhook_server.py          # WebHook 事件驱动
-│   ├── budget_allocator.py        # Token 预算分配
-│   ├── evolution_state.py         # 进化状态管理
-│   ├── evolution_rules.py         # 进化规则引擎
-│   ├── judge.py                   # 进化评判器
-│   ├── skill_resolver.py          # 技能解析
-│   ├── skill_manager.py           # 技能管理器
-│   ├── model_manager.py           # 模型配置管理
-│   ├── channel/                   # 消息通道层
-│   │   ├── base.py                # 通道抽象基类
-│   │   ├── manager.py             # 通道管理器
-│   │   ├── gateway_loop.py        # 消息消费循环
-│   │   ├── feishu_ws.py           # 飞书 WebSocket 直连
-│   │   └── wechat_ilink.py        # 微信 iLink 通道
-│   └── memory/                    # 记忆子系统
-│       ├── memory_manager.py      # 记忆管理器
-│       ├── hindsight_lite.py      # Hindsight 引擎
-│       ├── sqlite_backend.py      # SQLite 后端
-│       ├── episodic_buffer.py     # 情景缓冲
-│       └── encoding_gate.py       # 编码门控
-├── autonomous/                    ← 可选增强
-│   ├── strategy_loader.py         # 策略加载器
-│   ├── learner.py                 # 自主学习
-│   ├── web_learner.py             # 网络学习
-│   ├── self_health.py             # 健康检查
-│   ├── reviewer.py                # 代码审查
-│   ├── skill_extractor.py         # 技能提取
-│   └── prioritizer.py             # 优先级排序
-├── tests/                         # 测试
-│   ├── test_all.py                # 核心测试
-│   ├── test_comprehensive.py      # 21 项综合测试
-│   ├── test_fix_beats.py          # 修复验证
-│   └── test_evolution_pipeline.py # 进化管道测试
-├── strategy/                      # 策略文件
-├── skills/                        # 技能库
-├── memory/                        # 运行时数据
-├── mobile/                        # 移动端 Web 服务器
-├── kuafu.sh                       # 启动入口
-├── setup_wizard.py                # 配置向导
-└── pyproject.toml                 # pip 安装配置
+│   ├── hooks.py                   # 29 个钩子事件点
+│   ├── memory/                    # 记忆系统 (四网络 + 两阶段提取)
+│   ├── subagent.py                # 子 Agent 系统
+│   ├── cli.py                     # CLI 入口
+│   └── main.py                    # Agent 入口
+├── autonomous/                    # 自主学习系统
+├── tests/                         # ~2100+ 测试
+├── kuafu.sh                       # 启动脚本
+└── install.sh                     # 安装脚本
 ```
 
-## 核心能力
+---
 
-### AI Agent 循环
-- **ReAct 循环引擎** — LLM + 工具调用，最大 20 轮交互
-- **上下文管理** — 自动压缩、预算分配、工具结果磁盘化
-- **结构化 Prompt** — 身份/工具/进化/记忆/规则多段组装
+## 配置
 
-### 工具系统
-- 15+ 内置工具：`terminal`、`read_file`、`write_file`、`patch`、`search_files`、`web_search`、`finish`、`delegate_task` 等
-- 三级架构：核心工具 / 紧凑工具（按需提升）/ 延迟发现工具
-
-### 进化引擎
-夸父使用 **D 方案（即兴进化）**：
-- 每轮任务完成后，LLM 当场判断「值不值得学」
-- 值得学的内容当场生成 `SKILL.md`
-- 进化规则引擎基于 Hindsight 置信度自适应调整
-
-### 消息通道
-- **飞书** — WebSocket 直连，@夸父 即可交互，审批通知推送
-- **微信** — 腾讯官方 iLink 协议，扫码登录
-- **Gateway HTTP API** — REST 接口，支持 `/api/task` 等端点
-
-### 子 Agent 系统
-- 隔离上下文，同步执行
-- 每个子 Agent 有独立对话 + 终端 + 工具集
-- 最大 3 并发，不可递归
-
-### 记忆系统
-| 模式 | 后端 | 能力 |
-|------|------|------|
-| `file` | JSON 文件 | 关键词匹配，零依赖，离线可用 |
-| `hindsight` | Hindsight Cloud API | 语义搜索、实体图谱、综合推理 |
-
-### 定时任务
-- 支持间隔调度（`30m`、`2h`）和 cron 表达式
-- 任务结果投递到飞书/微信
-- 支持脚本模式和无 agent 模式
-
-## 开发
+夸父支持从环境变量、YAML 文件、CLI 参数三层配置：
 
 ```bash
-source venv/bin/activate
+# 环境变量
+export KUAFFU_DISABLE_APPROVAL=1   # 禁用审批
+export KUAFFU_GATEWAY_RUNNING=1    # Gateway 模式
 
-# 运行全部测试
-python -m pytest tests/ -v
-
-# 运行核心测试
-python tests/test_all.py
-
-# 运行综合测试（21 项）
-python -m pytest tests/test_comprehensive.py -v
+# 配置文件 (~/.kuafu/config.yaml)
+cat ~/.kuafu/config.yaml
+approval:
+  timeout: 300
+  mode: gateway
+model:
+  provider: deepseek
+  name: deepseek-chat
 ```
 
-### 测试覆盖
+---
 
-```
-21 项综合测试覆盖：
-├── identity         — 身份声明加载
-├── sandbox          — 路径 + 命令安全检查
-├── memory_api       — 写入/检索/反思
-├── evolution        — 进化引擎
-├── llm              — 客户端初始化
-├── agent_loop       — 核心循环 + 工具
-├── subagent         — 子 Agent 委托
-├── main             — Agent 初始化
-├── session_store    — 会话存储
-├── approval         — 审批系统
-├── safety           — 安全体系
-├── hooks            — 事件钩子
-├── observer         — 运行时观察
-├── whiteboard       — 白板模式
-├── context_compress — 上下文压缩
-├── cron_scheduler   — 定时调度
-├── prompt_template  — Prompt 组装
-├── gateway/channel  — 消息通道
-├── autonomous       — 自主学习
-└── 进化管道         — 端到端进化
-```
+## 技术栈
 
-## 状态
+- **Python 3.10+** — 零额外依赖（标准库 + pyyaml）
+- **架构参考** — OpenAI Codex CLI (Apache-2.0)
 
-✅ **v0.4 — 完整功能版**
-
-| 模块 | 状态 |
-|------|------|
-| Agent 循环 | ✅ ReAct + 结构化 Prompt |
-| LLM 多后端 | ✅ DeepSeek / OpenAI / 本地 |
-| 记忆系统 | ✅ file + hindsight 双模 |
-| 进化引擎 | ✅ D 方案（即兴进化）|
-| 安全体系 | ✅ 命令分级 + 路径保护 |
-| 飞书通道 | ✅ WebSocket 直连 + @过滤 |
-| 微信通道 | ✅ iLink 扫码登录 |
-| Gateway API | ✅ HTTP REST 接口 |
-| 子 Agent | ✅ 隔离上下文，同步执行 |
-| 定时任务 | ✅ 间隔/cron/一次性 |
-| MCP 协议 | ✅ stdio 子进程集成 |
-| WebHook | ✅ HTTP 事件驱动 |
-| 测试覆盖 | ✅ 47+ 测试全部通过 |
+---
 
 ## License
 
-Apache 2.0
+Apache-2.0

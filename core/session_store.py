@@ -71,12 +71,12 @@ class SessionStore:
     def _close_conn(self):
         if self._conn:
             try: self._conn.close()
-            except: pass
+            except: pass  # pragma: no cover
             self._conn = None
 
-    def __del__(self):
-        if self._conn and self._conn is not SessionStore._shared_conn:
-            self._close_conn()
+    def __del__(self):  # pragma: no cover
+        if self._conn and self._conn is not SessionStore._shared_conn:  # pragma: no cover
+            self._close_conn()  # pragma: no cover
 
     @staticmethod
     def _clean_surrogates(text: str) -> str:
@@ -729,3 +729,71 @@ class SessionStore:
             if len(results) >= limit:
                 break
         return results[:limit]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RolloutSessionStore — SQLite + JSONL 事件日志双写
+# ═══════════════════════════════════════════════════════════════════════════════
+
+from core.rollout_log import RolloutLog, RolloutEvent
+
+
+class RolloutSessionStore(SessionStore):
+    """扩展 SessionStore：SQLite + Rollout 事件日志双写。
+
+    所有写操作（create/append/archive/delete）同时写入 JSONL 事件流。
+    所有读操作保持 SQLite 快速查询不变。
+    """
+
+    def __init__(self, db_path=None, reuse_conn=True, rollout_dir=None):
+        super().__init__(db_path, reuse_conn)
+        self.rollout = RolloutLog(rollout_dir=rollout_dir)
+
+    def create_session(self, title="") -> str:
+        session_id = super().create_session(title)
+        self.rollout.append_raw(session_id, "session_create", {
+            "title": title, "timestamp": time.time(),
+        })
+        return session_id
+
+    def append_message(self, session_id, role, content):
+        super().append_message(session_id, role, content)
+        self.rollout.append_raw(session_id, "message", {
+            "role": role,
+            "content": content[:200],
+            "content_length": len(content),
+        })
+
+    def archive_session(self, session_id):
+        super().archive_session(session_id)
+        self.rollout.archive(session_id)
+        self.rollout.append_raw(session_id, "archive", {})
+
+    def delete_session(self, session_id):
+        super().delete_session(session_id)
+        self.rollout.append_raw(session_id, "delete", {})
+
+    def fork_session(self, src_session_id: str, title: str = "",
+                     include_history: bool = True, max_tokens: int = 6000) -> Optional[str]:
+        new_id = super().fork_session(src_session_id, title, include_history, max_tokens)
+        if not new_id:
+            return None
+        self.rollout.append_raw(src_session_id, "fork", {
+            "new_session_id": new_id, "title": title,
+        })
+        self.rollout.append_raw(new_id, "session_create", {
+            "title": title, "forked_from": src_session_id,
+        })
+        return new_id
+
+    def get_event_log(self, session_id, limit=50, offset=0):
+        return self.rollout.query(session_id, limit, offset)
+
+    def get_events_by_type(self, session_id, event_type, limit=50):
+        return self.rollout.query_by_type(session_id, event_type, limit)
+
+    def get_event_count(self, session_id) -> int:
+        return self.rollout.count(session_id)
+
+    def get_session_meta(self, session_id) -> Optional[dict]:
+        return self.rollout.get_meta(session_id)

@@ -469,6 +469,60 @@ class SafetyLayer:
         return level in (CommandLevel.ATTENTION, CommandLevel.DANGEROUS)
 
     @staticmethod
+    def get_tri_state(command: str) -> dict:
+        """三态安全决策。
+
+        Returns:
+            {"decision": "allow" | "block" | "escalate",
+             "level": str, "risk_name": str, "reason": str,
+             "suggestions": list[str]}
+        """
+        level, risk_name, reason = SafetyLayer.classify_command(command)
+
+        if level == CommandLevel.FORBIDDEN:
+            return {
+                "decision": "block",
+                "level": level,
+                "risk_name": risk_name,
+                "reason": reason,
+                "suggestions": [f"命令被安全锁禁止: {reason}"],
+            }
+
+        if level == CommandLevel.DANGEROUS:
+            return {
+                "decision": "escalate",
+                "level": level,
+                "risk_name": risk_name,
+                "reason": reason,
+                "suggestions": [
+                    f"该操作可能造成不可逆影响: {reason}",
+                    "如果确认需要执行，使用终端手动操作",
+                    "或简化命令范围降低风险",
+                ],
+            }
+
+        if level == CommandLevel.ATTENTION:
+            return {
+                "decision": "escalate",
+                "level": level,
+                "risk_name": risk_name,
+                "reason": reason,
+                "suggestions": [
+                    f"该操作需确认: {reason}",
+                    "输入 y 继续，n 取消",
+                ],
+            }
+
+        # SAFE
+        return {
+            "decision": "allow",
+            "level": level,
+            "risk_name": "",
+            "reason": "",
+            "suggestions": [],
+        }
+
+    @staticmethod
     def needs_approval_with_denial(level: str, command: str) -> tuple[bool, str]:
         """判断是否需要用户确认（集成拒绝跟踪）。
 

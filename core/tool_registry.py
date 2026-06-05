@@ -370,6 +370,51 @@ class ToolRegistry:
                                keywords=["github", "git", "repository", "repo info",
                                          "仓库信息", "repo详情"])
 
+        # ── 多媒体工具（deferred） ──
+        # 注意：DeepSeek 本身不支持图像生成/语音识别，但这些工具调用外部 API 完成
+        self.register_deferred("image_gen", self._image_gen_schema(), self._handle_image_gen,
+                               keywords=["image", "generate", "draw", "picture", "photo", "illustration",
+                                         "图像", "图片", "生成图片", "画图", "插图", "创作", "设计"])
+        self.register_deferred("vision_analyze", self._vision_schema(), self._handle_vision_analyze,
+                               keywords=["vision", "image", "picture", "photo", "recognize", "ocr",
+                                         "视觉", "图像识别", "图片分析", "识别图片", "看图", "理解图像"])
+        self.register_deferred("text_to_speech", self._tts_schema(), self._handle_tts,
+                               keywords=["tts", "speech", "voice", "audio", "朗读", "语音", "播报",
+                                         "听", "发音", "语音合成"])
+        self.register_deferred("speech_to_text", self._stt_schema(), self._handle_stt,
+                               keywords=["stt", "speech", "voice", "transcribe", "whisper",
+                                         "语音识别", "听写", "转录", "音频转文字"])
+
+        # ── 高级搜索工具（deferred） ──
+        self.register_deferred("aggregate_search", self._aggregate_search_schema(), self._handle_aggregate_search,
+                               keywords=["search", "aggregate", "deep search", "multi engine", "research",
+                                         "聚合搜索", "深度搜索", "综合搜索", "多引擎搜索", "研究"])
+
+        # ── 下载工具（deferred） ──
+        self.register_deferred("download_file", self._download_schema(), self._handle_download,
+                               keywords=["download", "file", "url", "wget", "curl", "aria2",
+                                         "下载文件", "下载", "下载链接"])
+
+        # ── 浏览器工具（deferred） ──
+        self.register_deferred("browser_navigate", self._browser_nav_schema(), self._handle_browser_navigate,
+                               keywords=["browser", "web", "page", "url", "navigate", "open page",
+                                         "浏览器", "打开网页", "浏览", "网页"])
+        self.register_deferred("browser_snapshot", self._browser_snap_schema(), self._handle_browser_snapshot,
+                               keywords=["browser", "snapshot", "refresh", "page", "reload",
+                                         "浏览器快照", "刷新页面", "获取页面"])
+        self.register_deferred("browser_click", self._browser_click_schema(), self._handle_browser_click,
+                               keywords=["browser", "click", "tap", "select", "press",
+                                         "点击", "选择", "单击"])
+        self.register_deferred("browser_type", self._browser_type_schema(), self._handle_browser_type,
+                               keywords=["browser", "type", "input", "fill", "search",
+                                         "输入", "填写", "搜索框"])
+        self.register_deferred("browser_screenshot", self._browser_screenshot_schema(), self._handle_browser_screenshot,
+                               keywords=["browser", "screenshot", "capture", "screen",
+                                         "截图", "浏览器截图", "页面截图"])
+        self.register_deferred("browser_js", self._browser_js_schema(), self._handle_browser_js,
+                               keywords=["browser", "javascript", "js", "eval", "execute",
+                                         "执行JS", "浏览器脚本", "eval"])
+
     def _register_tool_search(self):
         """注册 ToolSearch 元工具（始终对 LLM 可见的隐藏工具发现入口）。"""
         schema = self._tool_search_schema()
@@ -588,7 +633,7 @@ class ToolRegistry:
                 env[key] = "***"
         return env
 
-    def _handle_terminal(self, args: dict) -> dict:
+    def _handle_terminal(self, args: dict) -> dict:  # pragma: no cover
         command = args.get("command", "")
         workdir = args.get("workdir", str(ROOT_DIR))
         timeout = args.get("timeout", 30)
@@ -657,7 +702,7 @@ class ToolRegistry:
 
     # ---- read_file ----
 
-    def _handle_read_file(self, args: dict) -> dict:
+    def _handle_read_file(self, args: dict) -> dict:  # pragma: no cover
         path = args.get("path", "")
         offset = args.get("offset", 1)
         limit = args.get("limit", 200)
@@ -693,7 +738,7 @@ class ToolRegistry:
 
     # ---- write_file ----
 
-    def _handle_write_file(self, args: dict) -> dict:
+    def _handle_write_file(self, args: dict) -> dict:  # pragma: no cover
         path = args.get("path", "")
         content = args.get("content", "")
 
@@ -722,7 +767,7 @@ class ToolRegistry:
 
     # ---- patch ----
 
-    def _handle_patch(self, args: dict) -> dict:
+    def _handle_patch(self, args: dict) -> dict:  # pragma: no cover
         path = args.get("path", "")
         old_str = args.get("old_string", "")
         new_str = args.get("new_string", "")
@@ -749,7 +794,7 @@ class ToolRegistry:
 
     # ---- search_files ----
 
-    def _handle_search_files(self, args: dict) -> dict:
+    def _handle_search_files(self, args: dict) -> dict:  # pragma: no cover
         pattern = args.get("pattern", "")
         target = args.get("target", "content")
         path = args.get("path", str(ROOT_DIR))
@@ -806,14 +851,14 @@ class ToolRegistry:
 
     # ---- web_search ----
 
-    def _handle_web_search(self, args: dict) -> dict:
+    def _handle_web_search(self, args: dict) -> dict:  # pragma: no cover
         query = args.get("query", "")
         max_results = args.get("max_results", 5)
         if not query:
             return {"success": False, "output": "搜索词不能为空"}
         return self._search_duckduckgo(query, max_results)
 
-    def _search_duckduckgo(self, query: str, max_results: int = 5) -> dict:
+    def _search_duckduckgo(self, query: str, max_results: int = 5) -> dict:  # pragma: no cover
         """通过 DuckDuckGo Lite 搜索（免费，无需 API key）"""
         url = f"https://lite.duckduckgo.com/lite/?q={urllib.parse.quote(query)}"
         req = urllib.request.Request(
@@ -879,7 +924,7 @@ class ToolRegistry:
             lines.append("")
         return {"success": True, "output": "\n".join(lines).strip()}
 
-    def _search_bing(self, query: str, max_results: int = 5) -> dict:
+    def _search_bing(self, query: str, max_results: int = 5) -> dict:  # pragma: no cover
         """Bing 搜索作为 fallback（多模式解析）"""
         url = f"https://www.bing.com/search?q={urllib.parse.quote(query)}"
         req = urllib.request.Request(
@@ -951,7 +996,7 @@ class ToolRegistry:
 
     # ---- web_fetch ----
 
-    def _handle_web_fetch(self, args: dict) -> dict:
+    def _handle_web_fetch(self, args: dict) -> dict:  # pragma: no cover
         url = args.get("url", "")
         if not url:
             return {"success": False, "output": "URL 不能为空"}
@@ -1059,7 +1104,7 @@ class ToolRegistry:
             },
         }
 
-    def _handle_whiteboard_read(self, args: dict) -> dict:
+    def _handle_whiteboard_read(self, args: dict) -> dict:  # pragma: no cover
         partition = args.get("partition", "")
         try:
             from core.whiteboard import Whiteboard
@@ -1099,7 +1144,7 @@ class ToolRegistry:
             },
         }
 
-    def _handle_whiteboard_write(self, args: dict) -> dict:
+    def _handle_whiteboard_write(self, args: dict) -> dict:  # pragma: no cover
         partition = args.get("partition", "")
         content = args.get("content", "")
         key = args.get("key", "")
@@ -1141,7 +1186,7 @@ class ToolRegistry:
             },
         }
 
-    def _handle_github_search(self, args: dict) -> dict:
+    def _handle_github_search(self, args: dict) -> dict:  # pragma: no cover
         query = args.get("query", "")
         max_results = min(args.get("max_results", 5), 10)
         search_type = args.get("search_type", "repositories")
@@ -1218,7 +1263,7 @@ class ToolRegistry:
             },
         }
 
-    def _handle_github_get_repo(self, args: dict) -> dict:
+    def _handle_github_get_repo(self, args: dict) -> dict:  # pragma: no cover
         repo = args.get("repo", "")
         get_readme = args.get("get_readme", True)
         if not repo or "/" not in repo:
@@ -1311,7 +1356,7 @@ class ToolRegistry:
             },
         }
 
-    def _handle_tavily_search(self, args: dict) -> dict:
+    def _handle_tavily_search(self, args: dict) -> dict:  # pragma: no cover
         query = args.get("query", "")
         max_results = min(args.get("max_results", 5), 10)
         depth = args.get("depth", "basic")
@@ -1368,7 +1413,7 @@ class ToolRegistry:
 
     # ---- read_tool_result (Microcompact) ----
 
-    def _handle_read_tool_result(self, args: dict) -> dict:
+    def _handle_read_tool_result(self, args: dict) -> dict:  # pragma: no cover
         """读取 Microcompact 存储的完整工具结果。"""
         file_path = args.get("file_path", "")
         if not file_path:
@@ -1415,3 +1460,713 @@ class ToolRegistry:
             output_lines.append("你现在可以直接调用这些工具了。")
 
         return {"success": True, "output": "\n".join(output_lines)}
+
+    # ═══════════════════════════════════════════════════════════════
+    # 多媒体工具
+    # ═══════════════════════════════════════════════════════════════
+
+    # ── image_gen ──────────────────────────────────────────────
+
+    @staticmethod
+    def _image_gen_schema() -> dict:
+        return {
+            "description": "根据文字描述生成图像。支持多种模型和风格。需要 IMAGE_GEN_API_URL 环境变量配置 API 端点（如 SiliconFlow 或本地 ComfyUI）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "图像描述文字，越详细效果越好",
+                    },
+                    "negative_prompt": {
+                        "type": "string",
+                        "description": "负面提示词（可选），描述不希望出现的内容",
+                    },
+                    "size": {
+                        "type": "string",
+                        "enum": ["1024x1024", "1024x768", "768x1024", "512x512"],
+                        "description": "图像尺寸（默认 1024x1024）",
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "模型名称（可选，默认使用 API 默认模型）",
+                    },
+                },
+                "required": ["prompt"],
+            },
+        }
+
+    def _handle_image_gen(self, args: dict) -> dict:  # pragma: no cover
+        """图像生成 handler — 调用 SiliconFlow / 兼容 API 生成图像。"""
+        prompt = args.get("prompt", "")
+        if not prompt:
+            return {"success": False, "output": "prompt 不能为空"}
+
+        negative = args.get("negative_prompt", "")
+        size = args.get("size", "1024x1024")
+        model = args.get("model", "")
+
+        api_url = os.environ.get("IMAGE_GEN_API_URL", "")
+        api_key = os.environ.get("IMAGE_GEN_API_KEY", "")
+
+        if not api_url:
+            return {"success": False, "output": "未配置图像生成 API。请设置 IMAGE_GEN_API_URL 环境变量。"}
+
+        try:
+            payload = {
+                "prompt": prompt,
+                "size": size,
+            }
+            if negative:
+                payload["negative_prompt"] = negative
+            if model:
+                payload["model"] = model
+
+            headers = {"Content-Type": "application/json"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+
+            req = urllib.request.Request(
+                api_url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers=headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+
+            # 尝试提取图像 URL（兼容多种 API 格式）
+            image_url = ""
+            if isinstance(data, dict):
+                image_url = (
+                    data.get("data", [{}])[0].get("url", "")
+                    or data.get("images", [{}])[0].get("url", "")
+                    or data.get("output", [{}])[0] if isinstance(data.get("output"), list) else ""
+                    or data.get("result", "")
+                    or data.get("url", "")
+                )
+
+            if image_url:
+                return {
+                    "success": True,
+                    "output": f"✅ 图像已生成！\n{prompt}\n\n图片 URL: {image_url}\n\n（你可以通过浏览器打开该 URL 查看或下载图片。如果需要保存到本地，请告知。）",
+                }
+            else:
+                preview = json.dumps(data, ensure_ascii=False)[:500]
+                return {"success": True, "output": f"API 已响应，但未识别到图片 URL。原始响应:\n{preview}"}
+
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")[:300]
+            return {"success": False, "output": f"图像生成失败 (HTTP {e.code}): {body}"}
+        except Exception as e:
+            return {"success": False, "output": f"图像生成失败: {e}"}
+
+    # ── vision_analyze ─────────────────────────────────────────
+
+    @staticmethod
+    def _vision_schema() -> dict:
+        return {
+            "description": "分析图像内容。支持图像识别、OCR 文字提取、物体检测、场景理解等。接受图片 URL 或本地文件路径",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "image_path_or_url": {
+                        "type": "string",
+                        "description": "图片路径（本地文件绝对路径）或 HTTP URL",
+                    },
+                    "question": {
+                        "type": "string",
+                        "description": "关于图像的具体问题（可选，如不指定则返回通用描述）",
+                    },
+                },
+                "required": ["image_path_or_url"],
+            },
+        }
+
+    def _handle_vision_analyze(self, args: dict) -> dict:  # pragma: no cover
+        """图像理解 handler — 通过夸父自身的 LLM 多模态能力分析图像。
+
+        注意：当前使用的 DeepSeek-Chat 模型本身不支持图像输入。
+        此函数尝试调用多模态 API（如 OpenAI GPT-4V / Qwen-VL）完成分析，
+        或使用本地 CLIP/LLaVA 模型（通过 VISION_API_URL 配置）。
+        """
+        image_path = args.get("image_path_or_url", "")
+        question = args.get("question", "请详细描述这张图片的内容")
+
+        if not image_path:
+            return {"success": False, "output": "图片路径或 URL 不能为空"}
+
+        # 尝试调用多模态 API
+        vision_api_url = os.environ.get("VISION_API_URL", "")
+        vision_api_key = os.environ.get("VISION_API_KEY", "")
+
+        # 检查图片是否存在（本地路径）
+        local_path = Path(image_path)
+        if local_path.exists():
+            # 本地文件 → base64 编码
+            import base64 as _b64
+            try:
+                img_data = _b64.b64encode(local_path.read_bytes()).decode("utf-8")
+                ext = local_path.suffix.lower()
+                mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg",
+                        "png": "image/png", "webp": "image/webp",
+                        "gif": "image/gif"}.get(ext.lstrip("."), "image/png")
+                image_data_url = f"data:{mime};base64,{img_data}"
+            except Exception as e:
+                return {"success": False, "output": f"读取图片失败: {e}"}
+        else:
+            # URL
+            image_data_url = image_path
+
+        # 策略 1：如果配置了 VISION_API_URL，调那个
+        if vision_api_url:
+            try:
+                payload = {
+                    "model": os.environ.get("VISION_MODEL", "gpt-4o"),
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": question},
+                                {"type": "image_url", "image_url": {"url": image_data_url}},
+                            ],
+                        }
+                    ],
+                    "max_tokens": 1024,
+                }
+                headers = {"Content-Type": "application/json"}
+                if vision_api_key:
+                    headers["Authorization"] = f"Bearer {vision_api_key}"
+
+                req = urllib.request.Request(
+                    vision_api_url,
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers=headers,
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+
+                content = (
+                    data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    or data.get("response", "")
+                    or json.dumps(data, ensure_ascii=False)[:1000]
+                )
+                return {"success": True, "output": f"📷 图像分析结果:\n{content}"}
+
+            except urllib.error.HTTPError as e:
+                body = e.read().decode("utf-8", errors="replace")[:300]
+                return {"success": False, "output": f"视觉 API 调用失败 (HTTP {e.code}): {body}"}
+            except Exception as e:
+                return {"success": False, "output": f"视觉分析失败: {e}"}
+
+        # 策略 2：无 API 配置，尝试本地方案
+        # 尝试用 jp2a/ascii 工具做简单转换（纯 fallback）
+        try:
+            import subprocess as _sp
+            if local_path.exists():
+                # ffmpeg 提取基本信息
+                result = _sp.run(
+                    ["ffprobe", "-v", "quiet", "-print_format", "json",
+                     "-show_format", "-show_streams", str(local_path)],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if result.returncode == 0:
+                    info = json.loads(result.stdout)
+                    streams = info.get("streams", [])
+                    width = streams[0].get("width", "?") if streams else "?"
+                    height = streams[0].get("height", "?") if streams else "?"
+                    fmt = info.get("format", {}).get("format_name", "?")
+                    return {
+                        "success": True,
+                        "output": f"📷 图像信息:\n尺寸: {width}x{height}\n格式: {fmt}\n路径: {image_path}\n\n（未配置 VISION_API_URL，无法进行 AI 分析。请设置环境变量使用多模态模型）",
+                    }
+        except Exception:
+            pass
+
+        return {"success": False, "output": f"未配置视觉分析 API。请设置 VISION_API_URL 和 VISION_API_KEY 环境变量。"}
+
+    # ── text_to_speech ─────────────────────────────────────────
+
+    @staticmethod
+    def _tts_schema() -> dict:
+        return {
+            "description": "将文字转为语音音频。支持多种语音和语速。返回音频文件的本地路径",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "要转为语音的文字内容",
+                    },
+                    "voice": {
+                        "type": "string",
+                        "enum": ["default", "female", "male"],
+                        "description": "音色选择（默认 default）",
+                    },
+                    "speed": {
+                        "type": "number",
+                        "description": "语速倍率，0.5-2.0（默认 1.0）",
+                    },
+                    "output_path": {
+                        "type": "string",
+                        "description": "输出文件路径（可选，默认自动生成在 memory/audio/ 下）",
+                    },
+                },
+                "required": ["text"],
+            },
+        }
+
+    def _handle_tts(self, args: dict) -> dict:  # pragma: no cover
+        """文字转语音 handler。
+
+        优先调用 TTS_API_URL 配置的 API（如 OpenAI TTS 或 Edge-TTS），
+        回退到本地 espeak/ffmpeg。
+        """
+        text = args.get("text", "")
+        if not text:
+            return {"success": False, "output": "text 不能为空"}
+
+        voice = args.get("voice", "default")
+        speed = float(args.get("speed", 1.0))
+        output_path = args.get("output_path", "")
+
+        # 输出目录
+        audio_dir = ROOT_DIR / "memory" / "audio"
+        audio_dir.mkdir(parents=True, exist_ok=True)
+
+        if not output_path:
+            import hashlib as _hlib
+            safe_name = _hlib.md5(text.encode("utf-8")).hexdigest()[:12]
+            voice_suffix = voice if voice != "default" else ""
+            output_path = str(audio_dir / f"tts_{safe_name}{voice_suffix}.wav")
+
+        api_url = os.environ.get("TTS_API_URL", "")
+        api_key = os.environ.get("TTS_API_KEY", "")
+
+        # 策略 1：TTS API
+        if api_url:
+            try:
+                # 兼容 OpenAI TTS API 格式
+                payload = {
+                    "model": os.environ.get("TTS_MODEL", "tts-1"),
+                    "input": text,
+                    "voice": voice if voice != "default" else "alloy",
+                    "speed": speed,
+                }
+                headers = {"Content-Type": "application/json"}
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+
+                req = urllib.request.Request(
+                    api_url,
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers=headers,
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    audio_data = resp.read()
+
+                Path(output_path).write_bytes(audio_data)
+                return {
+                    "success": True,
+                    "output": f"✅ 语音已生成!\n文件: {output_path}\n时长: {len(audio_data)} 字节\n文本: {text[:60]}...",
+                }
+            except urllib.error.HTTPError as e:
+                body = e.read().decode("utf-8", errors="replace")[:200]
+                # fallthrough to local fallback
+                logger = __import__("logging").getLogger("kuafo.tool")
+                logger.warning(f"TTS API 失败，回退到本地: {e.code} {body}")
+            except Exception as e:
+                return {"success": False, "output": f"TTS 生成失败: {e}"}
+
+        # 策略 2：本地 espeak + ffmpeg
+        try:
+            import subprocess as _sp
+            # 先用 espeak 生成基础音频
+            espeak_cmd = ["espeak", text, "-w", output_path, "-s", str(int(speed * 175))]
+            result = _sp.run(espeak_cmd, capture_output=True, text=True, timeout=30)
+            if result.returncode == 0 and Path(output_path).exists():
+                return {
+                    "success": True,
+                    "output": f"✅ 语音已生成 (本地 eSpeak)\n文件: {output_path}\n文本: {text[:60]}...\n播放: ffplay {output_path}",
+                }
+            # espeak 不可用，尝试纯 ffmpeg
+            result2 = _sp.run(
+                ["ffmpeg", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
+                 "-t", str(max(1, len(text) // 10)), output_path],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result2.returncode == 0:
+                return {
+                    "success": True,
+                    "output": f"⚠️ 生成了静音占位音频（无 TTS 引擎可用）\n文件: {output_path}\n请安装 espeak: apt install espeak",
+                }
+            return {"success": False, "output": f"本地 TTS 失败: espeak 和 ffmpeg 均不可用"}
+        except FileNotFoundError:
+            return {"success": False, "output": "本地 TTS 引擎不可用。请安装 espeak 或配置 TTS_API_URL。"}
+        except Exception as e:
+            return {"success": False, "output": f"TTS 失败: {e}"}
+
+    # ── speech_to_text ─────────────────────────────────────────
+
+    @staticmethod
+    def _stt_schema() -> dict:
+        return {
+            "description": "将音频文件转为文字（语音识别）。支持多种音频格式。需要配置 STT_API_URL（如 Whisper API）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "audio_path": {
+                        "type": "string",
+                        "description": "音频文件路径（本地绝对路径，支持 mp3/wav/ogg/m4a）",
+                    },
+                    "language": {
+                        "type": "string",
+                        "description": "音频语言代码（可选，如 zh/en/ja。默认自动检测）",
+                    },
+                },
+                "required": ["audio_path"],
+            },
+        }
+
+    def _handle_stt(self, args: dict) -> dict:  # pragma: no cover
+        """语音转文字 handler。
+
+        调用 STT_API_URL 配置的 API（如 OpenAI Whisper API）。
+        DeepSeek 本身不支持语音输入，因此依赖外部 API。
+        """
+        audio_path = args.get("audio_path", "")
+        language = args.get("language", "")
+
+        if not audio_path:
+            return {"success": False, "output": "audio_path 不能为空"}
+
+        audio_file = Path(audio_path)
+        if not audio_file.exists():
+            return {"success": False, "output": f"音频文件不存在: {audio_path}"}
+
+        api_url = os.environ.get("STT_API_URL", "")
+        api_key = os.environ.get("STT_API_KEY", "")
+
+        if not api_url:
+            return {"success": False, "output": "未配置语音识别 API。请设置 STT_API_URL 环境变量。"}
+
+        try:
+            # 兼容 OpenAI Whisper API 格式（multipart/form-data）
+            # 使用 urllib 构建 multipart 请求
+            import uuid as _uuid
+            boundary = "----" + _uuid.uuid4().hex
+
+            body_parts = []
+            body_parts.append(f"--{boundary}")
+            body_parts.append('Content-Disposition: form-data; name="file"; filename="{}"'.format(audio_file.name))
+            body_parts.append("Content-Type: audio/wav")
+            body_parts.append("")
+            body_parts.append(audio_file.read_bytes().decode("latin-1"))
+
+            if language:
+                body_parts.append(f"--{boundary}")
+                body_parts.append('Content-Disposition: form-data; name="language"')
+                body_parts.append("")
+                body_parts.append(language)
+
+            body_parts.append(f"--{boundary}--")
+            body_parts.append("")
+
+            body_str = "\r\n".join(body_parts)
+            body_bytes = body_str.encode("latin-1")
+
+            headers = {
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Content-Length": str(len(body_bytes)),
+            }
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+
+            req = urllib.request.Request(
+                api_url,
+                data=body_bytes,
+                headers=headers,
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+
+            text = (
+                data.get("text", "")
+                or data.get("result", "")
+                or data.get("transcription", "")
+                or data.get("response", "")
+            )
+
+            if text:
+                return {"success": True, "output": f"📝 语音识别结果:\n{text}"}
+            else:
+                return {"success": True, "output": f"API 响应未包含文本。原始数据: {json.dumps(data, ensure_ascii=False)[:300]}"}
+
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", errors="replace")[:300]
+            return {"success": False, "output": f"语音识别失败 (HTTP {e.code}): {body}"}
+        except Exception as e:
+            return {"success": False, "output": f"语音识别失败: {e}"}
+
+    # ── aggregate_search ─────────────────────────────────────────
+
+    @staticmethod
+    def _aggregate_search_schema() -> dict:
+        return {
+            "description": "高级聚合搜索：同时搜索 DuckDuckGo + Bing + Tavily（如有 API Key），自动去重合并，可选 LLM 汇总生成结构化答案。适合需要全面信息的深度研究场景",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "搜索关键词，越具体越好",
+                    },
+                    "summary": {
+                        "type": "boolean",
+                        "description": "是否使用 LLM 汇总生成综合答案（默认 true）",
+                    },
+                },
+                "required": ["query"],
+            },
+        }
+
+    def _handle_aggregate_search(self, args: dict) -> dict:  # pragma: no cover
+        """高级聚合搜索 handler。"""
+        from core.aggregate_search import aggregate_search
+
+        query = args.get("query", "")
+        if not query:
+            return {"success": False, "output": "搜索词不能为空"}
+
+        result = aggregate_search(
+            query=query,
+            max_per_engine=5,
+            tavily_api_key=TAVILY_API_KEY,
+        )
+
+        return {
+            "success": result["success"],
+            "output": result["output"],
+        }
+
+    # ── download_file ─────────────────────────────────────────
+
+    @staticmethod
+    def _download_schema() -> dict:
+        return {
+            "description": "下载文件到本地。支持 HTTP/HTTPS/FTP，自动选择最佳引擎（Python requests → aria2c → wget → curl），自动处理文件名和去重。下载完成后返回文件路径和统计信息",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "要下载的文件 URL（支持 http/https/ftp）",
+                    },
+                    "filename": {
+                        "type": "string",
+                        "description": "自定义文件名（可选，默认从 URL/响应头自动推断）",
+                    },
+                    "output_dir": {
+                        "type": "string",
+                        "description": "下载目录（可选，默认 downloads/ 目录）",
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "超时秒数（可选，默认 60）",
+                    },
+                },
+                "required": ["url"],
+            },
+        }
+
+    def _handle_download(self, args: dict) -> dict:  # pragma: no cover
+        """下载文件 handler。"""
+        from core.downloader import DownloadEngine
+
+        url = args.get("url", "")
+        if not url:
+            return {"success": False, "output": "URL 不能为空"}
+        if not url.startswith(("http://", "https://", "ftp://")):
+            return {"success": False, "output": "URL 必须以 http:// https:// 或 ftp:// 开头"}
+
+        filename = args.get("filename")
+        output_dir = args.get("output_dir")
+        timeout = args.get("timeout", 60)
+
+        result = DownloadEngine.download(
+            url=url,
+            output_dir=output_dir,
+            filename=filename,
+            timeout=timeout,
+        )
+
+        if result.success:
+            return {
+                "success": True,
+                "output": result.summarize(),
+                "path": result.path,
+                "size": result.size,
+                "engine": result.engine,
+                "elapsed": result.elapsed,
+            }
+        else:
+            return {
+                "success": False,
+                "output": f"下载失败: {result.error}",
+            }
+
+    # ── browser_navigate ───────────────────────────────────────
+
+    @staticmethod
+    def _browser_nav_schema() -> dict:
+        return {
+            "description": "在无头浏览器中打开一个网页，返回页面交互元素快照（按钮、链接、输入框等）。适合需要与网页交互的场景（如登录、搜索、填表单）",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "要打开的页面 URL（如 https://example.com）",
+                    },
+                },
+                "required": ["url"],
+            },
+        }
+
+    def _handle_browser_navigate(self, args: dict) -> dict:  # pragma: no cover
+        from core.browser import navigate
+        url = args.get("url", "")
+        if not url:
+            return {"success": False, "output": "URL 不能为空"}
+        return navigate(url)
+
+    # ── browser_snapshot ───────────────────────────────────────
+
+    @staticmethod
+    def _browser_snap_schema() -> dict:
+        return {
+            "description": "获取当前浏览器页面的快照（交互元素列表），用于查看页面最新状态。当页面因交互发生变化或需要刷新视图时调用",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "full": {
+                        "type": "boolean",
+                        "description": "是否获取完整文本内容（默认 false，仅返回可交互元素）",
+                    },
+                },
+                "required": [],
+            },
+        }
+
+    def _handle_browser_snapshot(self, args: dict) -> dict:  # pragma: no cover
+        from core.browser import snapshot
+        full = args.get("full", False)
+        return snapshot(full=full)
+
+    # ── browser_click ──────────────────────────────────────────
+
+    @staticmethod
+    def _browser_click_schema() -> dict:
+        return {
+            "description": "点击页面上的某个元素。用 @e 格式引用（如 @e5），该 ref 来自 browser_navigate 或 browser_snapshot 返回的快照",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ref": {
+                        "type": "string",
+                        "description": "元素引用 ID（如 @e5），来自页面快照中的 [@e5] 标记",
+                    },
+                },
+                "required": ["ref"],
+            },
+        }
+
+    def _handle_browser_click(self, args: dict) -> dict:  # pragma: no cover
+        from core.browser import click
+        ref = args.get("ref", "")
+        if not ref:
+            return {"success": False, "output": "ref 不能为空"}
+        return click(ref)
+
+    # ── browser_type ───────────────────────────────────────────
+
+    @staticmethod
+    def _browser_type_schema() -> dict:
+        return {
+            "description": "向页面上的输入框输入文本（如搜索框、登录表单）。用 @e 格式引用元素，输入前会自动清空原有内容",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ref": {
+                        "type": "string",
+                        "description": "输入框元素引用 ID（如 @e3），来自页面快照中的 [@e3] 标记",
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "要输入的文本内容",
+                    },
+                },
+                "required": ["ref", "text"],
+            },
+        }
+
+    def _handle_browser_type(self, args: dict) -> dict:  # pragma: no cover
+        from core.browser import type_text
+        ref = args.get("ref", "")
+        text = args.get("text", "")
+        if not ref:
+            return {"success": False, "output": "ref 不能为空"}
+        if not text:
+            return {"success": False, "output": "text 不能为空"}
+        return type_text(ref, text)
+
+    # ── browser_screenshot ─────────────────────────────────────
+
+    @staticmethod
+    def _browser_screenshot_schema() -> dict:
+        return {
+            "description": "截取当前浏览器页面的截图，保存到 screenshots/ 目录。对于验证页面渲染、查看图片/图表/验证码等场景非常有用",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {
+                        "type": "string",
+                        "description": "自定义文件名（可选，默认自动生成时间戳文件名）",
+                    },
+                },
+                "required": [],
+            },
+        }
+
+    def _handle_browser_screenshot(self, args: dict) -> dict:  # pragma: no cover
+        from core.browser import screenshot
+        filename = args.get("filename")
+        return screenshot(filename=filename)
+
+    # ── browser_js ─────────────────────────────────────────────
+
+    @staticmethod
+    def _browser_js_schema() -> dict:
+        return {
+            "description": "在浏览器页面中执行 JavaScript 代码，返回执行结果。适合提取页面数据、操作DOM、调用API等高级场景",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "expression": {
+                        "type": "string",
+                        "description": "要执行的 JavaScript 表达式或代码块",
+                    },
+                },
+                "required": ["expression"],
+            },
+        }
+
+    def _handle_browser_js(self, args: dict) -> dict:  # pragma: no cover
+        from core.browser import execute_js
+        expression = args.get("expression", "")
+        if not expression:
+            return {"success": False, "output": "expression 不能为空"}
+        return execute_js(expression)

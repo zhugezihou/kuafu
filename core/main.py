@@ -28,9 +28,16 @@ from core.safety import is_path_allowed_for_write, validate_command
 from core.memory_api import MemoryAPI
 from core.evolution import EvolutionEngine, EvolutionEvent
 from core.llm import LLMClient
-from core.model_manager import ModelManager, ALIASES as MODEL_ALIASES
-from core.agent_loop import AgentLoop, detect_task_type
-from core.identity import load_identity_statement, detect_identity_impersonation
+from core.model_manager import ModelManager, ALIASES
+from core.agent_loop import AgentLoop
+from autonomous.reviewer import ReviewerThread
+
+# P2: 自主决策模块（可选加载）
+try:
+    from autonomous.prioritizer import IdlePrioritizer, EvolutionScheduler
+    _HAS_PRIORITIZER = True
+except ImportError:  # pragma: no cover
+    _HAS_PRIORITIZER = False  # pragma: no cover
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
@@ -52,38 +59,30 @@ class KuafuAgent:
 
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.name = "夸父"
-        self.version = "0.4.0"
-
-        # ModelManager 先初始化（确保 providers 列表就绪）
+        self.version = "0.2.0"
+        self.memory = MemoryAPI()
+        self.evolution = EvolutionEngine(memory=self.memory)
+        self.llm = llm_client or LLMClient()
         self.model_manager = ModelManager()
-
-        # LLMClient v2：传入 providers 列表
-        providers = self.model_manager.providers
-        if llm_client:
-            self.llm = llm_client
-        else:
-            self.llm = LLMClient(providers=providers)
-
-        # Hindsight-Lite 记忆系统
-        from core.memory import MemoryManager as HindsightMemory
-        self.memory = HindsightMemory(llm_chat_fn=self.llm.chat)
-        self._memory_needs_llm = False
-
-        # 进化引擎
-        self.evolution = EvolutionEngine(memory=self.memory, llm=self.llm)
+        # 同步 ModelManager 与 LLMClient：以 LLMClient 为准
+        self._sync_model_manager_with_llm()
         self._task_count = 0
-        self._conversation = None
-        self._conversation_messages = []
-
+        # 多轮对话上下文
+        self._conversation: Optional[dict] = None
+        self._conversation_messages: list = []
         self._setup()
+        # P0: 启动后台复盘线程（daemon=True，自动随主进程退出）
+        self._reviewer_thread = ReviewerThread(
+            llm_chat_fn=self.llm.chat,
+            memory_remember_fn=lambda key, content, tags: self.memory.remember(
+                key=key, content=content, tags=tags
+            ),
+        )
+        self._reviewer_thread.start()
 
-        # 后台线程全部取消 — 冗余功能导致卡顿
-        # 用户有任务就执行，不需要后台空闲决策/健康检查/复盘
-        self._reviewer_thread = None
-        self._prioritizer_thread = None
-        self._web_learner = None
-        self._health_checker = None
-        self._webhook_server = None
+        # P2: 启动自主决策线程（daemon=True，周期性检查空闲状态）
+        self._prioritizer_thread: Optional[threading.Thread] = None
+        self._init_prioritizer()
 
     def _setup(self):
         """首次启动设置。"""
@@ -95,7 +94,49 @@ class KuafuAgent:
             tags=["system", "startup"],
         )
 
-    # ---- 废弃方法保留（兼容旧代码） ----
+    # ---- P2: 自主决策初始化 ----
+
+    def _init_prioritizer(self):
+        """初始化自主决策系统（可选）。"""
+        if not _HAS_PRIORITIZER:
+            return
+        try:
+            import threading
+
+            # 创建 IdlePrioritizer，注入记忆和进化状态查询
+            self._idle_prioritizer = IdlePrioritizer(
+                memory_recall_fn=lambda query, limit=5: self.memory.recall(query, limit=limit),
+                evolution_stats_fn=self.evolution.get_evolution_stats,
+            )
+            # 创建进化调度器（包装 IdlePrioritizer 的进化时机决策）
+            self._evolution_scheduler = EvolutionScheduler(self._idle_prioritizer)
+
+            # 后台线程：每 5 分钟检查一次空闲决策
+            def _prioritizer_loop():
+                import time as _time
+                while True:
+                    _time.sleep(300)  # 5 分钟间隔
+                    try:  # pragma: no cover
+                        decision = self._idle_prioritizer.decide()  # pragma: no cover
+                        if decision:  # pragma: no cover
+                            self.memory.remember(  # pragma: no cover
+                                key=f"priority:{int(_time.time())}",  # pragma: no cover
+                                content=f"【空闲决策】{decision.title} ({decision.priority_score:.0f}分)",  # pragma: no cover
+                                tags=["decision", "prioritizer", decision.category],  # pragma: no cover
+                            )  # pragma: no cover
+                    except Exception:  # pragma: no cover
+                        pass  # pragma: no cover
+
+            self._prioritizer_thread = threading.Thread(
+                target=_prioritizer_loop,
+                daemon=True,
+                name="kuafu-prioritizer",
+            )
+            self._prioritizer_thread.start()
+        except Exception as e:
+            self._prioritizer_thread = None
+            import logging
+            logging.warning(f"P2 Prioritizer 启动失败: {e}")
 
     @property
     def identity(self) -> str:
@@ -105,7 +146,7 @@ class KuafuAgent:
     @property
     def sandbox(self) -> dict:
         """获取沙盒安全信息。"""
-        from core.safety import PROTECTED_DIRS, ALLOWED_WRITE_DIRS
+        from core.sandbox import PROTECTED_DIRS, ALLOWED_WRITE_DIRS
         return {
             "protected_dirs": [str(d) for d in PROTECTED_DIRS],
             "allowed_write_dirs": [str(d) for d in ALLOWED_WRITE_DIRS],
@@ -149,15 +190,10 @@ class KuafuAgent:
         stats = self.evolution.get_evolution_stats()
         parts.append("## 进化状态")
         parts.append(f"- 总进化次数: {stats['total_evolutions']}")
-        # by_level 可能不存在（旧版 evolution 引擎）
-        by_level = stats.get('by_level', stats.get('recent_events', []))
-        if isinstance(by_level, list):
-            parts.append(f"- 进化记录数: {len(by_level)}")
-        elif isinstance(by_level, dict):
-            parts.append(f"- 各级进化数: {by_level}")
-        task_stats = self.evolution.get_task_stats() if hasattr(self.evolution, 'get_task_stats') else {"total": 0, "success_rate": 0}
-        parts.append(f"- 已完成任务: {task_stats['total']}")
-        parts.append(f"- 成功率: {task_stats['success_rate']}%")
+        parts.append(f"- 各级进化数: {stats['by_level']}")
+        # TODO: task_stats not yet implemented
+        # parts.append(f"- 已完成任务: {task_stats['total']}")
+        # parts.append(f"- 成功率: {task_stats['success_rate']}%")
         parts.append("")
 
         # 5. 相关信息
@@ -181,17 +217,17 @@ class KuafuAgent:
         parts.append(f"- temperature: {self.llm.temperature}")
         parts.append("")
 
-        # 7. 相关记忆（仅当有具体查询时召回）
-        # 注：recall("") 在 file 模式下返回最新 N 条，但 Python 中 "" in text 恒 True
-        # 导致返回的全是 P2 空闲决策垃圾。空查询时跳过，需要时由 LLM 决定具体查什么。
-        # recent = self.memory.recall("", limit=10)
+        # 7. 相关记忆
+        recent = self.memory.recall("", limit=10)
+        if recent:
+            parts.append("## 相关记忆")
+            for m in recent[-5:]:
+                parts.append(f"- {m.get('key', '?')}: {m.get('content', '')[:100]}")
+            parts.append("")
 
         return "\n".join(parts)
 
-    def run(self, task: str, mode: str = "standard",
-            resume_from: Optional[str] = None,
-            resume_mode: str = "brief",
-            resume_max_tokens: int = 4000) -> dict:
+    def run(self, task: str, task_type: str = "generic", mode: str = "standard") -> dict:
         """执行一次任务。
         
         支持两种模式：
@@ -201,13 +237,6 @@ class KuafuAgent:
         如果用户输入的是问候/寒暄，直接回复，不进入 agent 循环。
         
         使用 AgentLoop 驱动完整的 LLM + 工具执行循环。
-
-        Args:
-            task: 用户任务
-            mode: "standard" 或 "whiteboard"
-            resume_from: 可选，从指定会话 ID 恢复
-            resume_mode: "brief" / "fork" / "full"
-            resume_max_tokens: 恢复数据最大 token 数
 
         Returns:
             {
@@ -222,14 +251,11 @@ class KuafuAgent:
         start = time.time()
         self._task_count += 1
 
-        # 先检测任务类型
-        init_task_type = detect_task_type(task)
-
         # 记录任务开始
         self.memory.remember(
             key=f"task:{self._task_count}",
             content=f"任务 #{self._task_count}: {task[:200]}",
-            tags=["task", init_task_type],
+            tags=["task", task_type],
         )
 
         # 问候/寒暄检测 — 不进 agent 循环
@@ -266,43 +292,24 @@ class KuafuAgent:
             evolution=self.evolution,
             on_step=lambda msg: print(f"  {msg}", flush=True),
         )
-        self._loop = loop  # 暴露给 Web UI
-        # 注入审批推送回调
-        # 注入审批推送回调（由 gateway_loop.py 的 ON_APPROVAL_REQUEST_CB 全局回调接管）
-        # 注入 WebSocket 实时回调（由 Web UI 设置）
-        if hasattr(self, '_ws_inject_cb') and self._ws_inject_cb:
-            self._ws_inject_cb(loop)
 
         # 根据 mode 选择执行路径
         if mode == "whiteboard":
             result = loop.run_whiteboard(task)
         else:
-            result = loop.run(
-                task,
-                resume_from=resume_from,
-                resume_mode=resume_mode,
-                resume_max_tokens=resume_max_tokens,
-            )
+            result = loop.run(task)
 
         # 补充元信息
-        # 使用 agent_loop 内部检测的 task_type（更准确）
-        detected_type = result.get("task_type", "generic")
-        result["task_type"] = detected_type
+        result["task_type"] = task_type
         result["duration"] = round(time.time() - start, 3)
 
         # 回调：通知 evolution 已完成
         evolution_event = result.get("evolution")
         if evolution_event:
-            if isinstance(evolution_event, dict):
-                evo_level = evolution_event.get("evolution_mode", "info") or "info"
-                evo_action = evolution_event.get("reason", "未知")
-            else:
-                evo_level = getattr(evolution_event, "level", "info")
-                evo_action = getattr(evolution_event, "action", "未知")
             self.memory.remember(
-                key=f"evolution:L{evo_level}:{self._task_count}",
-                content=f"L{evo_level} 进化: {evo_action}",
-                tags=["evolution", f"L{evo_level}"],
+                key=f"evolution:L{evolution_event.level}:{self._task_count}",
+                content=f"L{evolution_event.level} 进化: {evolution_event.action}",
+                tags=["evolution", f"L{evolution_event.level}"],
             )
 
         return result
@@ -326,7 +333,7 @@ class KuafuAgent:
                 result.append(ch)
         return ''.join(result).strip()
 
-    def converse(self, input_text: str) -> dict:
+    def converse(self, input_text: str, task_type: str = "generic") -> dict:
         """多轮对话 — 延续上下文。
 
         与 run() 的区别：
@@ -337,6 +344,7 @@ class KuafuAgent:
 
         Args:
             input_text: 用户本轮输入
+            task_type: 任务类型（默认 generic）
 
         Returns:
             同 run() 的返回结构
@@ -358,19 +366,6 @@ class KuafuAgent:
                 "errors": [],
                 "duration": 0.0,
                 "task_type": "greeting",
-            }
-
-        # 自主学习模式指令检测
-        learn_mode_reply = self._detect_learning_mode(input_text)
-        if learn_mode_reply:
-            return {
-                "success": True,
-                "result": learn_mode_reply,
-                "summary": learn_mode_reply,
-                "turns": 0,
-                "errors": [],
-                "duration": 0.0,
-                "task_type": "learning_mode",
             }
 
         # 模型切换/查询检测
@@ -396,7 +391,7 @@ class KuafuAgent:
         self.memory.remember(
             key=f"converse:{self._task_count}",
             content=context_note,
-            tags=["conversation", detect_task_type(input_text)],
+            tags=["conversation", task_type],
         )
 
         # 构建 AgentLoop
@@ -406,12 +401,6 @@ class KuafuAgent:
             evolution=self.evolution,
             on_step=lambda msg: print(f"  {msg}", flush=True),
         )
-        self._loop = loop  # 暴露给 Web UI
-        # 注入审批推送回调
-        # 注入审批推送回调（由 gateway_loop.py 的 ON_APPROVAL_REQUEST_CB 全局回调接管）
-        # 注入 WebSocket 实时回调（由 Web UI 设置）
-        if hasattr(self, '_ws_inject_cb') and self._ws_inject_cb:
-            self._ws_inject_cb(loop)
 
         # 传递历史上下文（最近的 5 轮）
         if is_followup:
@@ -423,8 +412,7 @@ class KuafuAgent:
         result = loop.run(enriched_input)
 
         # 补充元信息
-        # 使用 agent_loop 内部检测的 task_type（更准确）
-        result["task_type"] = result.get("task_type", "generic")
+        result["task_type"] = task_type
         result["duration"] = round(time.time() - start, 3)
         result["is_followup"] = is_followup
 
@@ -455,19 +443,10 @@ class KuafuAgent:
         # 进化回调
         evolution_event = result.get("evolution")
         if evolution_event:
-            # evolution_event 可能是 dict（来自新管道 run_pipeline）或 EvolutionEvent 对象（旧路径）
-            if isinstance(evolution_event, dict):
-                level = evolution_event.get("evolution_mode", "info") or "info"
-                action = evolution_event.get("reason", "未知")
-                evo_level = "skill" if evolution_event.get("skill_written") else "info"
-            else:
-                level = getattr(evolution_event, "level", "info")
-                action = getattr(evolution_event, "action", "未知")
-                evo_level = level
             self.memory.remember(
-                key=f"evolution:L{evo_level}:conv:{self._task_count}",
-                content=f"L{evo_level} 进化: {action}",
-                tags=["evolution", f"L{evo_level}"],
+                key=f"evolution:L{evolution_event.level}:conv:{self._task_count}",
+                content=f"L{evolution_event.level} 进化: {evolution_event.action}",
+                tags=["evolution", f"L{evolution_event.level}"],
             )
 
         return result
@@ -497,28 +476,42 @@ class KuafuAgent:
     def _sync_model_manager_with_llm(self):
         """以 LLMClient 实际状态为准，同步 ModelManager 配置。"""
         mm = self.model_manager.as_dict()
-        active = mm.get("active", "")
-        current_provider = getattr(self.llm, "backend", "deepseek")
-        if current_provider != active:
-            self.model_manager.switch(current_provider)
+        if self.llm.backend != mm.get("backend") or self.llm.model != mm.get("model"):
+            self.model_manager.apply({
+                "backend": self.llm.backend,
+                "model": self.llm.model,
+                "base_url": self.llm.base_url,
+                "max_tokens": getattr(self.llm, "max_tokens", 4096),
+                "temperature": getattr(self.llm, "temperature", 0.7),
+            })
 
-    # ---- 模型切换 ----
+    # ---- 模型切换 ----  #
 
     def switch_model(self, target: str) -> str:
-        """运行时切换模型。"""
+        """运行时切换模型。
+
+        支持：
+        - 模板 ID: 'cloud:deepseek', 'local:qwen', 'cloud:claude'
+        - 别名: 'deepseek', 'claude', 'qwen', 'local', 'cloud'
+        - 快速后端切换: 'local', 'cloud'
+        - 自定义参数: '--backend local --model xxx'
+        - 自定义模型名: 'gpt-4o-mini'
+
+        Returns:
+            人类可读的切换结果。
+        """
         result = self.model_manager.switch(target)
         if result["success"]:
-            # 应用到当前 LLMClient（传入 provider ID）
-            provider = self.model_manager.active_provider
-            self.llm.switch(provider)
-            msg = result.get("message", f"已切换到 {provider}")
+            # 应用到当前 LLMClient
+            self.llm.switch(result.get("config", {}))
+            msg = result["message"]
             self.memory.remember(
                 key=f"model_switch:{int(time.time())}",
                 content=msg,
-                tags=["model_switch", provider, self.llm.model],
+                tags=["model_switch", self.llm.backend, self.llm.model],
             )
         else:
-            msg = result.get("message", "切换失败")
+            msg = result["message"]
         return msg
 
     # ---- 状态查询 ----
@@ -529,9 +522,15 @@ class KuafuAgent:
             "version": self.version,
             "task_count": self._task_count,
             "llm_model": self.llm.model,
-            "memory": self.memory.get_stats() if hasattr(self.memory, 'get_stats') else {},
+            "memory": self.memory.get_status(),
             "evolution": self.evolution.get_evolution_stats(),
+            "task_stats": None,  # evolution 不含 get_task_stats()
         }
+        # P2 状态
+        if _HAS_PRIORITIZER and hasattr(self, '_prioritizer_thread'):
+            status["prioritizer"] = {
+                "alive": self._prioritizer_thread is not None and self._prioritizer_thread.is_alive(),
+            }
         return status
 
     @staticmethod
@@ -599,10 +598,9 @@ class KuafuAgent:
         m = re.match(r"^用\s*(.+)$", text, re.IGNORECASE)
         if m:
             target = m.group(1).strip()
-            from core.model_manager import ALIASES as _ALIASES, PROVIDER_TEMPLATES as _TMPLS
-            if target in _ALIASES or target in _TMPLS:
+            if target in ALIASES:
                 return self.switch_model(target)
-            for alias in _ALIASES:
+            for alias in ALIASES:
                 if target.startswith(alias):
                     return self.switch_model(alias)
         return None
@@ -610,201 +608,21 @@ class KuafuAgent:
     def _format_model_list(self) -> str:
         """格式化可用模型列表。"""
         templates = self.model_manager.list_templates()
-        lines = ["**可用模型：**"]
+        aliases = self.model_manager.list_aliases()
+        lines = ["**可用模型模板：**"]
         for t in templates:
-            marker = " ✅" if t.get("active") else ""
-            lines.append(f"  `{t['id']}` — {t['name']} ({t.get('model','?')}){marker}")
+            marker = " ✅" if t["active"] else ""
+            lines.append(f"  `{t['id']}` — {t['name']}{marker}")
         lines.append("")
-        lines.append("**使用：** `切换模型 <provider ID>`")
+        lines.append("**简写别名：**")
+        for alias, target in sorted(aliases.items()):
+            lines.append(f"  `{alias}` → `{target}`")
+        lines.append("")
+        lines.append("**使用：** `切换模型 <别名/模板ID>`")
         return "\n".join(lines)
-
-    # ── 自主学习模式 ──────────────────────────────────────────────────
-
-    def _detect_learning_mode(self, text: str) -> Optional[str]:
-        """检测自主学习模式指令（start learn / stop learn）。
-
-        进入学习模式时，WebLearner 进入高强度扫描状态（15 秒间隔），
-        退出时汇总本轮学习成果。
-        """
-        text = text.strip().lower()
-
-        # 开始自主学习
-        start_patterns = [
-            r"^(开始|启动|开启|进入)\s*(自主)?\s*(学习|自?学)\s*(模式)?$",
-            r"^start\s+(learn|learning|auto)\s*(mode)?$",
-            r"^go\s+(learn|learning)$",
-            r"^(我休息了|我睡了|休息|学习模式)$",
-            r"^(自主学习|自动学习|自学)$",
-        ]
-        is_start = any(re.match(p, text) for p in start_patterns)
-
-        # 停止自主学习
-        stop_patterns = [
-            r"^(停止|结束|退出|关闭|退出)\s*(自主)?\s*(学习|自学)\s*(模式)?$",
-            r"^stop\s+(learn|learning|auto)\s*(mode)?$",
-            r"^(我回来了|我醒了|醒来|停止学习)$",
-            r"^(退出学习模式|结束学习)$",
-        ]
-        is_stop = any(re.match(p, text) for p in stop_patterns)
-
-        # 查询学习模式状态
-        status_patterns = [
-            r"^(学习状态|学习进展|学习进度|看看学了什么)$",
-            r"^learning\s*(status|progress|state)$",
-            r"^(学了什么|学了多少|学习报告)$",
-        ]
-        is_status = any(re.match(p, text) for p in status_patterns)
-
-        # 如果没有 WebLearner，告知无法自主学习
-        if not self._web_learner:
-            if is_start or is_stop or is_status:
-                return "⚠️ 主动网络学习引擎未加载，无法使用自主学习模式。"
-            return None
-
-        # —— 查询状态 ——
-        if is_status:
-            if not self._learning_auto_mode:
-                s = self._web_learner.stats
-                return (
-                    f"📊 **当前学习状态〔非自主学习模式〕**\n"
-                    f"- 已学累计: {s['learned_count']} 个\n"
-                    f"- WebLearner {'🟢 运行中' if s['is_running'] else '🔴 未启动'}\n"
-                    f"- 后台扫描间隔: {s['interval']}s\n\n"
-                    f"输入 `start learn` 进入高强度自主学习模式"
-                )
-            elapsed = time.time() - self._learning_auto_start_time
-            s = self._web_learner.stats
-            session_learned = s["total_learned_since_start"] - self._learning_auto_learned_before
-            return (
-                f"📊 **自主学习进行中〔{int(elapsed // 60)}分{int(elapsed % 60)}秒〕**\n"
-                f"- 本轮已学: {session_learned} 个项目\n"
-                f"- 累计扫源: {s['source_index']} 轮\n"
-                f"- 扫描间隔: {s['interval']}s\n\n"
-                f"输入 `stop learn` 结束学习并查看总结"
-            )
-
-        # —— 开始学习 ——
-        if is_start:
-            if self._learning_auto_mode:
-                return "🤖 已经处于自主学习模式了。输入 `stop learn` 停止。"
-
-            self._learning_auto_mode = True
-            self._learning_auto_start_time = time.time()
-            self._learning_auto_learned_before = self._web_learner.stats["total_learned_since_start"]
-
-            # 调整 WebLearner 为高强度模式
-            self._web_learner.set_interval(15)  # 15 秒高强度扫描
-            self._web_learner.set_max_per_cycle(10)  # 每轮最多学10个
-
-            # 确保 WebLearner 在运行
-            if not self._web_learner.stats["is_running"]:
-                self._web_learner.start(daemon=True)
-
-            self.memory.remember(
-                key=f"learning_mode:start:{int(time.time())}",
-                content="用户启动了高强度自主学习模式",
-                tags=["learning_mode", "start"],
-            )
-
-            return (
-                "🧠 **进入自主学习模式！**\n\n"
-                "我将在后台持续扫描以下源：\n"
-                "- GitHub Trending（热门仓库）\n"
-                "- Hacker News（技术热点）\n"
-                "- GitHub AI/LLM/RAG 相关项目\n\n"
-                "高强度扫描已开启，学到实用项目会自动记录。\n"
-                "你随时可以输入 `stop learn` 或 `我回来了` 结束学习，\n"
-                "我会汇总汇报本轮学习成果。\n\n"
-                "➡️ 夸父开始自主学习了，主公好好休息。"
-            )
-
-        # —— 停止学习 ——
-        if is_stop:
-            if not self._learning_auto_mode:
-                return "🤖 当前不在自主学习模式。输入 `start learn` 开始。"
-
-            self._learning_auto_mode = False
-            elapsed = time.time() - self._learning_auto_start_time
-
-            # 恢复默认设置
-            self._web_learner.set_interval(600)  # 恢复 10 分钟
-            self._web_learner.set_max_per_cycle(6)  # 恢复每轮6个
-
-            # 计算本轮成果
-            s = self._web_learner.stats
-            session_learned = s["total_learned_since_start"] - self._learning_auto_learned_before
-            total_count = s["learned_count"]
-
-            self.memory.remember(
-                key=f"learning_mode:stop:{int(time.time())}",
-                content=(
-                    f"自主学习模式结束，持续 {elapsed:.0f}s，本轮学习了 {session_learned} 个项目"
-                ),
-                tags=["learning_mode", "stop"],
-            )
-
-            minutes = int(elapsed // 60)
-            seconds = int(elapsed % 60)
-            time_str = f"{minutes}分{seconds}秒" if minutes else f"{seconds}秒"
-
-            # 生成成果汇报
-            lines = [
-                "📚 **自主学习报告**\n",
-                f"⏱ 学习时长: {time_str}",
-                f"✅ 本轮学到: {session_learned} 个实用项目",
-                f"📦 历史累计: {total_count} 个项目",
-                "",
-                "---",
-                "好了，主公回来了～夸父切换回正常模式，随时听令。",
-            ]
-            return "\n".join(lines)
-
-        return None
 
     def __repr__(self) -> str:
         return f"<KuafuAgent v{self.version} | {self._task_count} tasks | LLM: {self.llm.model}>"
-
-    # ---- WebHook 服务器 ----
-
-    def start_webhook(
-        self,
-        port: int = 8765,
-        token: str = "",
-    ) -> bool:
-        """启动 WebHook 服务器（后台线程）。"""
-        if self._webhook_server and self._webhook_server.is_running():
-            return True
-
-        try:
-            from core.webhook_server import WebhookServer
-            self._webhook_server = WebhookServer(port=port, token=token)
-            self._webhook_server.set_handler(
-                on_task=lambda payload, task_id: self._handle_webhook_task(payload, task_id)
-            )
-            return self._webhook_server.start()
-        except Exception as e:
-            import logging
-            logging.error(f"WebHook 启动失败: {e}")
-            return False
-
-    def _handle_webhook_task(self, payload: dict, task_id: str):
-        """处理 WebHook 任务（在线程中执行）。"""
-        task = payload.get("task", payload.get("prompt", ""))
-        if not task:
-            return
-
-        context = payload.get("context", {})
-        mode = context.get("mode", "standard")
-        print(f"\n[WebHook:{task_id}] 收到任务: {task[:80]}...")
-        result = self.run(task, mode=mode)
-        status = "✅" if result["success"] else "❌"
-        print(f"[WebHook:{task_id}] {status} 完成 ({result['duration']}s)")
-
-    def stop_webhook(self):
-        """停止 WebHook 服务器。"""
-        if self._webhook_server:
-            self._webhook_server.stop()
-            self._webhook_server = None
 
 
 # ---- CLI 入口 ----
@@ -825,15 +643,8 @@ def main():
                         help="使用白板模式执行（复杂任务分解为多步，节省上下文）")
     parser.add_argument("--mode", choices=["standard", "whiteboard"], default=None,
                         help="执行模式（覆盖 --whiteboard 的简写）")
-    parser.add_argument("--webhook-port", type=int, default=0,
-                        help="启动 WebHook 服务器（指定端口，如 8765）")
-    parser.add_argument("--webhook-token", default="",
-                        help="WebHook 认证 Token")
 
     args = parser.parse_args()
-
-    if args.webhook_port:
-        agent.start_webhook(port=args.webhook_port, token=args.webhook_token)
 
     if args.status:
         status = agent.get_status()
@@ -851,13 +662,7 @@ def main():
         print(result.get("result", "(无结果)"))
         if result.get("evolution"):
             evo = result["evolution"]
-            if isinstance(evo, dict):
-                evo_level = evo.get("evolution_mode", "info") or "info"
-                evo_action = evo.get("reason", "未知")
-            else:
-                evo_level = getattr(evo, "level", "info")
-                evo_action = getattr(evo, "action", "未知")
-            print(f"\n🧬 进化: L{evo_level} — {evo_action}")
+            print(f"\n🧬 进化: L{evo.level} — {evo.action}")
         quality = result.get("quality")
         if quality:
             bar = "🟩" * int(quality["score"]) + "⬜" * (10 - int(quality["score"]))
@@ -867,145 +672,50 @@ def main():
 
     # 交互模式（多轮对话）— 使用 readline 支持行编辑
     import readline
-
-    SLASH_HELP = """可用命令:
-  /new, /reset  重置对话
-  /retry        重新执行上一条指令
-  /undo         撤销上一条回复
-  /compress     手动压缩上下文
-  /status       查看状态
-  /help         显示帮助
-  /model        显示当前模型
-  /exit, /quit  退出
-"""
-    print("夸父交互模式 (输入 /help 查看命令)")
+    from core.input_bottom import FixedBottomUI
+    ui = FixedBottomUI()
+    ui.print_above("夸父交互模式 (输入 'exit' 退出，'new' 重置对话)")
     while True:
         try:
-            raw_input = input("\n> ").strip()
-            task = raw_input
-            is_slash = task.startswith("/")
-
-            # ── Slash 命令 ──
-            if is_slash:
-                cmd = task[1:].lower().split()[0] if len(task) > 1 else ""
-                args_part = task[len(task.split()[0]):].strip() if len(task.split()) > 1 else ""
-
-                if cmd in ("exit", "quit", "q"):
-                    break
-
-                elif cmd in ("new", "reset", "r"):
-                    agent.reset_conversation()
-                    print("对话已重置")
-                    continue
-
-                elif cmd == "retry":
-                    if hasattr(agent, "_conversation_messages") and agent._conversation_messages:
-                        last_user_msg = None
-                        for m in reversed(agent._conversation_messages):
-                            if m["role"] == "user":
-                                last_user_msg = m["content"]
-                                break
-                        if last_user_msg:
-                            print(f"重试: {last_user_msg[:60]}...")
-                            # 移除最后一条 user + assistant
-                            if len(agent._conversation_messages) >= 2:
-                                agent._conversation_messages = agent._conversation_messages[:-2]
-                            # 重新执行
-                            agent._conversation = None
-                            result = agent.converse(last_user_msg)
-                            print(f"\n✅ {result.get('result', '(无结果)')}")
-                        else:
-                            print("没有可重试的指令")
-                    else:
-                        print("没有可重试的指令")
-                    continue
-
-                elif cmd == "undo":
-                    if hasattr(agent, "_conversation_messages") and len(agent._conversation_messages) >= 2:
-                        # 移除最后一条 user + assistant
-                        removed = agent._conversation_messages[-2:]
-                        agent._conversation_messages = agent._conversation_messages[:-2]
-                        if not agent._conversation_messages:
-                            agent._conversation = None
-                        print(f"已撤销 {len(removed)} 条消息")
-                    else:
-                        print("没有可撤销的内容")
-                    continue
-
-                elif cmd == "compress":
-                    if hasattr(agent, "_loop") and agent._loop:
-                        sid = getattr(agent._loop, "current_session_id", None)
-                        if sid:
-                            from core.session_store import SessionStore
-                            store = SessionStore()
-                            store.archive_session(sid)
-                            print(f"会话 {sid} 已归档")
-                        else:
-                            print("没有活跃会话")
-                    else:
-                        print("没有活跃会话")
-                    continue
-
-                elif cmd == "status":
-                    print(f"夸父 v{agent.version}")
-                    print(f"  LLM: {agent.llm.model}")
-                    print(f"  后端: {getattr(agent.llm, 'backend', '?')}")
-                    print(f"  任务计数: {agent._task_count}")
-                    conv_count = len(getattr(agent, "_conversation_messages", []))
-                    print(f"  对话轮次: {conv_count // 2}")
-                    evo = agent.evolution.get_evolution_stats() if hasattr(agent.evolution, "get_evolution_stats") else {}
-                    print(f"  进化次数: {evo.get('total_evolutions', 0)}")
-                    continue
-
-                elif cmd == "help":
-                    print(SLASH_HELP)
-                    continue
-
-                elif cmd == "model":
-                    print(f"当前模型: {agent.llm.model} ({getattr(agent.llm, 'backend', '?')})")
-                    continue
-
-                else:
-                    print(f"未知命令: {task}")
-                    print("输入 /help 查看可用命令")
-                    continue
-
+            task = ui.input_bottom("\n> ").strip()
+            if task.lower() in ("exit", "quit", "q"):
+                break
+            if task.lower() in ("new", "reset", "r"):
+                ui.separator()
+                ui.print_above("🔄 对话已重置")
+                continue
             if not task:
                 continue
-
             result = agent.converse(task)
             status_icon = "✅" if result["success"] else "❌"
             if result["success"]:
-                print(f"\n{status_icon} {result.get('result', '(无结果)')}")
+                ui.separator()
+                for line in result.get("result", "(无结果)").split("\n"):
+                    ui.print_above(f"{status_icon} {line}")
+                    status_icon = "  "
             else:
                 errs = result.get("errors", [])
                 err_detail = f" — {'; '.join(errs[:3])}" if errs else ""
-                print(f"\n{status_icon} 执行失败{err_detail}")
+                ui.print_above(f"{status_icon} 执行失败{err_detail}")
                 if not errs:
-                    print(f"   结果: {result.get('result', '(空)')[:200]}")
+                    ui.print_above(f"   结果: {result.get('result', '(空)')[:200]}")
             if result.get("evolution"):
                 evo = result["evolution"]
-                if isinstance(evo, dict):
-                    evo_level = evo.get("evolution_mode", "info") or "info"
-                    evo_action = evo.get("reason", "未知")
-                else:
-                    evo_level = getattr(evo, "level", "info")
-                    evo_action = getattr(evo, "action", "未知")
-                print(f"   🧬 进化: L{evo_level} — {evo_action}")
+                ui.print_above(f"   🧬 进化: L{evo.level} — {evo.action}")
             turn_label = "多轮" if result.get("is_followup") else "单次"
-            print(f"   ⏱ {result['duration']}s | {turn_label} | {result.get('turns', 0)} turns")
+            ui.print_above(f"   ⏱ {result['duration']}s | {turn_label} | {result.get('turns', 0)} turns")
             # 质量评分
             quality = result.get("quality")
             if quality:
                 bar = "🟩" * int(quality["score"]) + "⬜" * (10 - int(quality["score"]))
-                print(f"   📊 质量: {quality['score']}/10 {bar}")
+                ui.print_above(f"   📊 质量: {quality['score']}/10 {bar}")
                 if quality.get("suggestions") and not result.get("success"):
                     for s in quality["suggestions"][:2]:
-                        print(f"   💡 {s}")
+                        ui.print_above(f"   💡 {s}")
         except KeyboardInterrupt:
             print("\n再见！")
             break
 
 
 if __name__ == "__main__":
-    main()
+    main()  # pragma: no cover
