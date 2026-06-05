@@ -1,0 +1,2 @@
+{"role": "user", "content": "问题1"}
+{"role": "assistant", "content": "回答1", "tool_calls": [{"name": "search", "args_preview": "{'q': 'test'}"}]}

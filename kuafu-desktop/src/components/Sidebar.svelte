@@ -9,7 +9,7 @@
   }: { onClose: () => void; onNewChat: () => void; onOpenSettings: () => void } = $props();
 
   $effect(() => {
-    getSessions().then((s) => sessions.set(s));
+    getSessions().then((s) => sessions.set(s)).catch(() => {});
   });
 
   function selectSession(id: string) {

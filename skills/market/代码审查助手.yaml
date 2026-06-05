@@ -1,0 +1,28 @@
+name: 代码审查助手
+description: 对提交的代码进行系统性审查，检查安全性、性能、代码风格和潜在缺陷
+version: 1.0.0
+author: kuafu-community
+category: coding
+keywords:
+  - code review
+  - 代码审查
+  - code quality
+  - 代码质量
+  - review
+dependencies:
+  packages:
+    - pyyaml
+    - requests
+steps:
+  - 阅读代码变更，理解修改意图和上下文
+  - 检查安全性问题（注入、认证、权限、敏感信息泄露）
+  - 检查性能问题（不必要的循环、资源泄漏、N+1 查询）
+  - 检查代码风格和可维护性（命名、注释、复杂度、重复代码）
+  - 检查错误处理和边界情况
+  - 汇总审查意见，按严重程度分类（阻塞/重要/建议）
+pitfalls:
+  - 不要只关注代码风格而忽略业务逻辑正确性
+  - 理解项目使用的编程范式和约定后再提建议
+created_at: 1740000100
+usage_count: 0
+source: market_install

@@ -1,35 +1,16 @@
 <script lang="ts">
   import { loadConfig, saveConfig, type AppConfig } from "../lib/config";
-  import { onMount } from "svelte";
 
   let {
     onClose = () => {},
   }: { onClose: () => void } = $props();
 
-  let config = $state<AppConfig>({
-    modelType: "local",
-    localModelPath: "",
-    localLlmEndpoint: "http://localhost:8080",
-    cloudApiKey: "",
-    cloudModel: "deepseek-chat",
-    theme: "dark",
-  });
-  let saving = $state(false);
-  let saved = $state(false);
+  let config = $state<AppConfig>(loadConfig());
 
-  onMount(async () => {
-    config = await loadConfig();
-  });
-
-  async function handleSave() {
-    saving = true;
-    saved = false;
-    await saveConfig(config);
+  function handleSave() {
+    saveConfig(config);
     // 应用主题
     document.documentElement.setAttribute("data-theme", config.theme);
-    saving = false;
-    saved = true;
-    setTimeout(() => (saved = false), 2000);
   }
 
   function toggleTheme() {
@@ -45,7 +26,6 @@
     </div>
 
     <div class="settings-body">
-      <!-- 模型选择 -->
       <section>
         <h3>模型</h3>
         <div class="field">
@@ -67,41 +47,24 @@
         {#if config.modelType === "local"}
           <div class="field">
             <label>模型路径 (GGUF)</label>
-            <input
-              type="text"
-              bind:value={config.localModelPath}
-              placeholder="/path/to/model.gguf"
-            />
+            <input type="text" bind:value={config.localModelPath} placeholder="/path/to/model.gguf" />
           </div>
           <div class="field">
             <label>LLM 端点</label>
-            <input
-              type="text"
-              bind:value={config.localLlmEndpoint}
-              placeholder="http://localhost:8080"
-            />
+            <input type="text" bind:value={config.localLlmEndpoint} placeholder="http://localhost:8080" />
           </div>
         {:else}
           <div class="field">
             <label>API Key</label>
-            <input
-              type="password"
-              bind:value={config.cloudApiKey}
-              placeholder="sk-..."
-            />
+            <input type="password" bind:value={config.cloudApiKey} placeholder="sk-..." />
           </div>
           <div class="field">
             <label>模型名称</label>
-            <input
-              type="text"
-              bind:value={config.cloudModel}
-              placeholder="deepseek-chat"
-            />
+            <input type="text" bind:value={config.cloudModel} placeholder="deepseek-chat" />
           </div>
         {/if}
       </section>
 
-      <!-- 主题 -->
       <section>
         <h3>主题</h3>
         <div class="field">
@@ -114,10 +77,7 @@
     </div>
 
     <div class="settings-footer">
-      <span class="save-msg">{saved ? "✅ 已保存" : ""}</span>
-      <button class="save-btn" onclick={handleSave} disabled={saving}>
-        {saving ? "保存中..." : "保存"}
-      </button>
+      <button class="save-btn" onclick={handleSave}>保存</button>
     </div>
   </div>
 </div>
@@ -226,14 +186,8 @@
     display: flex;
     align-items: center;
     justify-content: flex-end;
-    gap: 10px;
     padding: 12px 20px;
     border-top: 1px solid var(--border);
-  }
-
-  .save-msg {
-    font-size: 12px;
-    color: #22c55e;
   }
 
   .save-btn {
@@ -244,9 +198,5 @@
     border: none;
     border-radius: 6px;
     cursor: pointer;
-  }
-
-  .save-btn:disabled {
-    opacity: 0.6;
   }
 </style>

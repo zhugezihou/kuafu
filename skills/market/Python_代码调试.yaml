@@ -1,0 +1,26 @@
+name: Python 代码调试
+description: 系统性调试 Python 代码，定位并修复 Bug，包含断点调试、日志分析、性能剖析
+version: 1.0.0
+author: kuafu-community
+category: coding
+keywords:
+  - python
+  - debug
+  - 调试
+  - bug fix
+  - pdb
+  - traceback
+steps:
+  - 复现问题，收集错误信息（Traceback、日志、输入数据）
+  - 分析错误类型：语法错误、运行时异常、逻辑错误、性能问题
+  - 使用 print 调试或 pdb/ipdb 设置断点逐步排查
+  - 检查常见问题：None 引用、类型错误、资源泄漏、竞态条件
+  - 编写最小可复现用例，隔离问题范围
+  - 修复后编写回归测试，确保修复有效且不引入新问题
+pitfalls:
+  - 不要只看错误信息最后一行，完整的 Traceback 才有价值
+  - 多线程/异步问题很难通过 print 调试，使用日志定位
+  - 修复前先确认问题原因，不要盲目改动
+created_at: 1740000300
+usage_count: 0
+source: market_install

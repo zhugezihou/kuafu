@@ -1,16 +1,16 @@
-// 配置存储
-import { Store } from "@tauri-apps/plugin-store";
+// 配置存储（localStorage 后备，避免 tauri-plugin-store 兼容问题）
+import { writable } from "svelte/store";
 
 export interface AppConfig {
-  // 模型配置
   modelType: "local" | "cloud";
   localModelPath: string;
   localLlmEndpoint: string;
   cloudApiKey: string;
   cloudModel: string;
-  // 主题
   theme: "dark" | "light";
 }
+
+const STORAGE_KEY = "kuafu-desktop-config";
 
 const defaults: AppConfig = {
   modelType: "local",
@@ -21,33 +21,22 @@ const defaults: AppConfig = {
   theme: "dark",
 };
 
-let store: Store | null = null;
-let cached: AppConfig | null = null;
+// 响应式 store
+export const configStore = writable<AppConfig>(defaults);
 
-export async function getStore(): Promise<Store> {
-  if (!store) {
-    store = await Store.load("config.json");
-  }
-  return store;
+export function loadConfig(): AppConfig {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return { ...defaults, ...parsed };
+    }
+  } catch {}
+  return { ...defaults };
 }
 
-export async function loadConfig(): Promise<AppConfig> {
-  if (cached) return cached;
-  const s = await getStore();
-  const cfg: AppConfig = { ...defaults };
-  for (const key of Object.keys(defaults) as (keyof AppConfig)[]) {
-    const val = await s.get(key);
-    if (val !== undefined) (cfg as any)[key] = val;
-  }
-  cached = cfg;
-  return cfg;
-}
-
-export async function saveConfig(config: AppConfig): Promise<void> {
-  const s = await getStore();
-  for (const [key, val] of Object.entries(config)) {
-    await s.set(key, val);
-  }
-  await s.save();
-  cached = config;
+export function saveConfig(config: AppConfig): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+  } catch {}
 }

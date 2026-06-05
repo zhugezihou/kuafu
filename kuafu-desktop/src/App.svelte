@@ -21,7 +21,7 @@
 
   // 初始加载
   $effect(() => {
-    getStatus().then((s) => agentStatus.set(s));
+    getStatus().then((s) => agentStatus.set(s)).catch(() => {});
   });
 
   async function handleSend(text: string) {
