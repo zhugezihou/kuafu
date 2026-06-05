@@ -1285,6 +1285,13 @@ class AgentLoop:
                             self.on_tool_end(fn_name, tc.get("function", {}).get("arguments", {}),
                                              tool_elapsed, "success" if tool_result.get("success", True) else "error")
 
+                    # 如果未进入权限检查块（permission_enabled=False 或 fn_name 被豁免），
+                    # 但 orchestrator 已经运行了，从它设置 tool_result
+                    if 'orchestrator_result' in locals() and hasattr(orchestrator_result, 'success'):
+                        tool_result = {"success": orchestrator_result.success, "output": orchestrator_result.output}
+                    elif 'tool_result' not in locals():
+                        tool_result = {"success": True, "output": "(no output)"}
+
                     # 安全脱敏：对终端输出中的 API key、token 等脱敏
                     raw_output = str(tool_result.get("output", "(无输出)"))
                     safe_output = SafetyLayer.sanitize_text(raw_output)
