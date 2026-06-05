@@ -2056,7 +2056,7 @@ class AgentLoop:
         errors = []
 
         # 1. 创建白板实例
-        whiteboard = Whiteboard()
+        whiteboard = self.whiteboard or Whiteboard()
 
         # 2. 构建系统提示（增加白板模式说明）
         system_prompt = self.build_system_prompt(task) + """
