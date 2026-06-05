@@ -1,6 +1,6 @@
 [package]
 name = "kuafu-desktop"
-version = "1.0.6"
+version = "1.0.7"
 description = "夸父 Desktop — AI Agent 桌面客户端"
 authors = ["zhugezihou"]
 edition = "2021"
@@ -15,9 +15,5 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-shell = "2"
-tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", features = ["json", "stream"] }
-tokio = { version = "1", features = ["full"] }
-futures-util = "0.3"

@@ -54,45 +54,7 @@ fn update_agent_config(
 }
 
 #[tauri::command]
-async fn send_task(task: String) -> Result<String, String> {
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(format!("http://localhost:{}/api/task", 8081))
-        .json(&json!({"task": task, "mode": "standard", "sync": true}))
-        .send()
-        .await
-        .map_err(|e| format!("请求失败: {e}"))?;
-    let data: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    Ok(data["result"].as_str().unwrap_or("(无输出)").to_string())
-}
-
-#[tauri::command]
-async fn send_task_stream(task: String, app: tauri::AppHandle) -> Result<String, String> {
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(format!("http://localhost:{}/api/task", 8081))
-        .json(&json!({"task": task, "mode": "standard", "sync": false}))
-        .send()
-        .await
-        .map_err(|e| format!("请求失败: {e}"))?;
-
-    use futures_util::StreamExt;
-    let mut stream = resp.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| e.to_string())?;
-        let text = String::from_utf8_lossy(&chunk).to_string();
-        for line in text.lines() {
-            if let Some(data) = line.strip_prefix("data: ") {
-                app.emit("stream-chunk", data).map_err(|e| e.to_string())?;
-            }
-        }
-    }
-    app.emit("stream-done", ()).map_err(|e| e.to_string())?;
-    Ok("ok".to_string())
-}
-
-#[tauri::command]
-async fn get_status() -> Result<serde_json::Value, String> {
+async fn get_gateway_status() -> Result<serde_json::Value, String> {
     let client = reqwest::Client::new();
     match client
         .get(format!("http://localhost:{}/api/status", 8081))
@@ -121,18 +83,16 @@ async fn get_sessions_from_gateway() -> Result<serde_json::Value, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
-            let resource_dir = app
-                .path()
-                .resource_dir()
-                .unwrap_or_else(|_| PathBuf::from("."));
-            let python_dir = resource_dir.join("python");
+            // 安全获取资源目录，失败时使用当前目录
+            let python_dir = match app.path().resource_dir() {
+                Ok(dir) => dir.join("python"),
+                Err(_) => PathBuf::from("python"),
+            };
             let agent_mgr = AgentManager::new(python_dir);
             app.manage(AppState {
                 agent: Mutex::new(agent_mgr),
             });
-
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -141,9 +101,7 @@ pub fn run() {
             restart_agent,
             agent_status,
             update_agent_config,
-            send_task,
-            send_task_stream,
-            get_status,
+            get_gateway_status,
             get_sessions_from_gateway,
         ])
         .run(tauri::generate_context!())
