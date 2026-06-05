@@ -60,15 +60,37 @@ impl AgentManager {
     }
 
     fn python_exe(&self) -> PathBuf {
+        // 优先找打包的嵌入式 Python
         let p = self.python_dir.join("python.exe");
         if p.exists() {
             return p;
         }
+        // 回退到系统 python
         PathBuf::from("python")
     }
 
     fn kuafu_dir(&self) -> PathBuf {
         self.python_dir.join("kuafu")
+    }
+
+    /// 确认 pyyaml 可用，不可用时尝试安装
+    fn ensure_pyyaml(&self, python: &PathBuf) {
+        let check = Command::new(python)
+            .args(["-c", "import yaml"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if let Ok(status) = check {
+            if status.success() {
+                return; // pyyaml 已可用
+            }
+        }
+        // 尝试安装 pyyaml
+        let _ = Command::new(python)
+            .args(["-m", "pip", "install", "pyyaml", "--quiet"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 
     pub fn start(&self) -> Result<AgentStatus, String> {
@@ -100,6 +122,9 @@ impl AgentManager {
         }
 
         let cfg = self.config.lock().map_err(|e| e.to_string())?.clone();
+
+        // 确保 pyyaml 已安装
+        self.ensure_pyyaml(&python);
 
         let mut cmd = Command::new(&python);
         cmd.args(["-m", "core.cli", "gateway", "start", "--port", &GATEWAY_PORT.to_string()])
