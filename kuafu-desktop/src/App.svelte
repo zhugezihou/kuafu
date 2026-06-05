@@ -17,6 +17,7 @@
     saveSession,
   } from "./lib/store";
   import { sendMessageStream } from "./lib/gateway";
+  import { loadConfig } from "./lib/config";
 
   let sidebarOpen = $state(true);
   let showSettings = $state(false);
@@ -30,6 +31,18 @@
   async function startAgentAsync() {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
+      // 先传配置
+      const config = loadConfig();
+      await invoke("update_agent_config", {
+        config: {
+          model_type: config.modelType,
+          local_model_path: config.localModelPath,
+          local_llm_endpoint: config.localLlmEndpoint,
+          cloud_api_key: config.cloudApiKey,
+          cloud_model: config.cloudModel,
+        },
+      });
+      // 再启动引擎
       const status = await invoke("start_agent") as any;
       agentRunning.set(status.running);
       if (status.error) agentError.set(status.error);

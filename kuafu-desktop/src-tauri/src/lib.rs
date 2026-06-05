@@ -35,6 +35,11 @@ fn agent_status(state: tauri::State<AppState>) -> agent::AgentStatus {
 }
 
 #[tauri::command]
+fn restart_agent(state: tauri::State<AppState>) -> Result<agent::AgentStatus, String> {
+    state.agent.lock().map_err(|e| e.to_string())?.restart()
+}
+
+#[tauri::command]
 fn update_agent_config(
     config: agent::AgentConfig,
     state: tauri::State<AppState>,
@@ -64,6 +69,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             start_agent,
             stop_agent,
+            restart_agent,
             agent_status,
             update_agent_config,
         ])
