@@ -202,9 +202,6 @@ jobs:
           # 配置嵌入式 Python 可导入 site-packages
           Add-Content "$out\python._pth" "`n..\kuafu"
           # 安装 pyyaml（用 ensurepip）
-          echo "安装 pyyaml..."
-          & "$out\python.exe" -m ensurepip --upgrade --default-pip
-          & "$out\python.exe" -m pip install pyyaml --no-warn-script-location --quiet
           echo "嵌入式 Python 就绪"
 
       - name: Tauri 构建
