@@ -32,6 +32,10 @@
 
     return () => {
       if (healthCheckInterval) clearInterval(healthCheckInterval);
+      // 窗口关闭时停止夸父引擎
+      import("@tauri-apps/api/core").then(({ invoke }) => {
+        invoke("stop_agent").catch(() => {});
+      });
     };
   });
 
