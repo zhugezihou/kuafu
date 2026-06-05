@@ -20,14 +20,23 @@
 
   let sidebarOpen = $state(true);
   let showSettings = $state(false);
-  let initialLoading = $state(true);
 
-  // 极简启动：只显示界面，不调用任何 Tauri API
   onMount(() => {
     loadSession();
-    // 不调 start_agent，排除 Tauri invoke 崩溃可能
-    initialLoading = false;
+    // 尝试启动夸父引擎（不阻塞界面渲染）
+    startAgentAsync();
   });
+
+  async function startAgentAsync() {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const status = await invoke("start_agent") as any;
+      agentRunning.set(status.running);
+      if (status.error) agentError.set(status.error);
+    } catch {
+      // Tauri API 不可用时保持离线状态
+    }
+  }
 
   async function handleSend(text: string) {
     if (!text.trim()) return;
