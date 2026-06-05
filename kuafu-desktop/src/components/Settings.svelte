@@ -6,15 +6,58 @@
   }: { onClose: () => void } = $props();
 
   let config = $state<AppConfig>(loadConfig());
+  let saving = $state(false);
+  let saveMsg = $state("");
 
-  function handleSave() {
+  async function handleSave() {
+    saving = true;
+    saveMsg = "";
+
+    // 持久化到 localStorage
     saveConfig(config);
+
     // 应用主题
     document.documentElement.setAttribute("data-theme", config.theme);
+
+    // 把配置传给 Rust 后端
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("update_agent_config", {
+        config: {
+          model_type: config.modelType,
+          local_model_path: config.localModelPath,
+          local_llm_endpoint: config.localLlmEndpoint,
+          cloud_api_key: config.cloudApiKey,
+          cloud_model: config.cloudModel,
+        },
+      });
+      saveMsg = "✅ 配置已保存";
+
+      // 如果引擎正在运行，询问是否重启使配置生效
+      const status = await invoke("agent_status") as any;
+      if (status.running) {
+        saveMsg = "✅ 配置已保存（重启引擎生效）";
+      }
+    } catch (e: any) {
+      saveMsg = `⚠ 保存失败: ${e}`;
+    } finally {
+      saving = false;
+      setTimeout(() => (saveMsg = ""), 3000);
+    }
   }
 
   function toggleTheme() {
     config.theme = config.theme === "dark" ? "light" : "dark";
+  }
+
+  async function restartEngine() {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("restart_agent");
+      saveMsg = "✅ 引擎已重启";
+    } catch (e: any) {
+      saveMsg = `⚠ 重启失败: ${e}`;
+    }
   }
 </script>
 
@@ -46,12 +89,12 @@
 
         {#if config.modelType === "local"}
           <div class="field">
-            <label>模型路径 (GGUF)</label>
-            <input type="text" bind:value={config.localModelPath} placeholder="/path/to/model.gguf" />
-          </div>
-          <div class="field">
             <label>LLM 端点</label>
             <input type="text" bind:value={config.localLlmEndpoint} placeholder="http://localhost:8080" />
+          </div>
+          <div class="field">
+            <label>模型路径 (GGUF, 可选)</label>
+            <input type="text" bind:value={config.localModelPath} placeholder="/path/to/model.gguf" />
           </div>
         {:else}
           <div class="field">
@@ -77,7 +120,11 @@
     </div>
 
     <div class="settings-footer">
-      <button class="save-btn" onclick={handleSave}>保存</button>
+      <div class="save-msg">{saveMsg}</div>
+      <button class="restart-btn" onclick={restartEngine}>重启引擎</button>
+      <button class="save-btn" onclick={handleSave} disabled={saving}>
+        {saving ? "保存中..." : "保存"}
+      </button>
     </div>
   </div>
 </div>
@@ -186,8 +233,15 @@
     display: flex;
     align-items: center;
     justify-content: flex-end;
+    gap: 8px;
     padding: 12px 20px;
     border-top: 1px solid var(--border);
+  }
+
+  .save-msg {
+    flex: 1;
+    font-size: 12px;
+    color: var(--text2);
   }
 
   .save-btn {
@@ -198,5 +252,26 @@
     border: none;
     border-radius: 6px;
     cursor: pointer;
+  }
+
+  .save-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .restart-btn {
+    padding: 6px 14px;
+    font-size: 12px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+    color: var(--text1);
+  }
+
+  .restart-btn:hover {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
   }
 </style>

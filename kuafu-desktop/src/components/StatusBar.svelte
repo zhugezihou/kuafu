@@ -1,5 +1,17 @@
 <script lang="ts">
   import { isRunning, agentRunning, agentError } from "../lib/store";
+  import { onMount } from "svelte";
+
+  let version = $state("?");
+
+  onMount(async () => {
+    try {
+      const { getVersion } = await import("@tauri-apps/api/app");
+      version = await getVersion();
+    } catch {
+      version = "1.0.3";
+    }
+  });
 </script>
 
 <footer class="status-bar">
@@ -16,7 +28,7 @@
   </div>
 
   <div class="status-right">
-    <span class="version">夸父 Desktop v1.0.2</span>
+    <span class="version">夸父 Desktop v{version}</span>
   </div>
 </footer>
 

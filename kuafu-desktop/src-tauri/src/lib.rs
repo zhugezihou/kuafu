@@ -21,6 +21,11 @@ fn stop_agent(state: tauri::State<AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn restart_agent(state: tauri::State<AppState>) -> Result<agent::AgentStatus, String> {
+    state.agent.lock().map_err(|e| e.to_string())?.restart()
+}
+
+#[tauri::command]
 fn agent_status(state: tauri::State<AppState>) -> agent::AgentStatus {
     state
         .agent
@@ -36,6 +41,19 @@ fn agent_status(state: tauri::State<AppState>) -> agent::AgentStatus {
 }
 
 #[tauri::command]
+fn update_agent_config(
+    config: agent::AgentConfig,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    state
+        .agent
+        .lock()
+        .map_err(|e| e.to_string())?
+        .update_config(config);
+    Ok(())
+}
+
+#[tauri::command]
 async fn send_task(task: String) -> Result<String, String> {
     let client = reqwest::Client::new();
     let resp = client
@@ -43,7 +61,7 @@ async fn send_task(task: String) -> Result<String, String> {
         .json(&json!({"task": task, "mode": "standard", "sync": true}))
         .send()
         .await
-        .map_err(|e| format!("请求失败: {}", e))?;
+        .map_err(|e| format!("请求失败: {e}"))?;
     let data: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
     Ok(data["result"].as_str().unwrap_or("(无输出)").to_string())
 }
@@ -56,7 +74,7 @@ async fn send_task_stream(task: String, app: tauri::AppHandle) -> Result<String,
         .json(&json!({"task": task, "mode": "standard", "sync": false}))
         .send()
         .await
-        .map_err(|e| format!("请求失败: {}", e))?;
+        .map_err(|e| format!("请求失败: {e}"))?;
 
     use futures_util::StreamExt;
     let mut stream = resp.bytes_stream();
@@ -82,7 +100,20 @@ async fn get_status() -> Result<serde_json::Value, String> {
         .await
     {
         Ok(resp) => resp.json().await.map_err(|e| e.to_string()),
-        Err(_) => Ok(json!({"status": "offline", "version": "?", "model": "?", "backend": "?", "evolution": {"total": 0}})),
+        Err(_) => Ok(json!({"status": "offline"})),
+    }
+}
+
+#[tauri::command]
+async fn get_sessions_from_gateway() -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::new();
+    match client
+        .get(format!("http://localhost:{}/api/sessions", 8081))
+        .send()
+        .await
+    {
+        Ok(resp) => resp.json().await.map_err(|e| e.to_string()),
+        Err(_) => Ok(json!({"sessions": []})),
     }
 }
 
@@ -92,7 +123,6 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
-            // 获取资源目录（打包的 Python + 夸父源码所在目录）
             let resource_dir = app
                 .path()
                 .resource_dir()
@@ -106,10 +136,13 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             start_agent,
             stop_agent,
+            restart_agent,
             agent_status,
+            update_agent_config,
             send_task,
             send_task_stream,
             get_status,
+            get_sessions_from_gateway,
         ])
         .run(tauri::generate_context!())
         .expect("夸父 Desktop 启动失败");

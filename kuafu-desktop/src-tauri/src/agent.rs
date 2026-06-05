@@ -7,6 +7,27 @@ use std::sync::Mutex;
 const GATEWAY_PORT: u16 = 8081;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AgentConfig {
+    pub model_type: String,        // "local" | "cloud"
+    pub local_model_path: String,
+    pub local_llm_endpoint: String,
+    pub cloud_api_key: String,
+    pub cloud_model: String,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            model_type: "local".into(),
+            local_model_path: String::new(),
+            local_llm_endpoint: "http://localhost:8080".into(),
+            cloud_api_key: String::new(),
+            cloud_model: "deepseek-chat".into(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AgentStatus {
     pub running: bool,
     pub pid: Option<u32>,
@@ -18,6 +39,7 @@ pub struct AgentStatus {
 pub struct AgentManager {
     process: Mutex<Option<Child>>,
     python_dir: PathBuf,
+    config: Mutex<AgentConfig>,
 }
 
 impl AgentManager {
@@ -25,11 +47,17 @@ impl AgentManager {
         Self {
             process: Mutex::new(None),
             python_dir,
+            config: Mutex::new(AgentConfig::default()),
+        }
+    }
+
+    pub fn update_config(&self, config: AgentConfig) {
+        if let Ok(mut c) = self.config.lock() {
+            *c = config;
         }
     }
 
     fn python_exe(&self) -> PathBuf {
-        // 嵌入式 Python 路径
         let p = self.python_dir.join("python.exe");
         if p.exists() {
             return p;
@@ -42,7 +70,7 @@ impl AgentManager {
         self.python_dir.join("kuafu")
     }
 
-    /// 启动夸父引擎子进程
+    /// 启动夸父 Gateway 子进程
     pub fn start(&self) -> Result<AgentStatus, String> {
         let mut proc = self.process.lock().map_err(|e| e.to_string())?;
         if proc.is_some() {
@@ -66,10 +94,9 @@ impl AgentManager {
         let kuafu_str = kuafu.to_string_lossy().to_string();
         let python_str = python.to_string_lossy().to_string();
 
-        // 检查 python 是否存在
         if !python.exists() {
             return Err(format!(
-                "未找到 Python (尝试路径: {})。请先安装 Python 或运行 pip install kuafu",
+                "未找到 Python (尝试路径: {})。请先安装 Python",
                 python_str
             ));
         }
@@ -81,13 +108,32 @@ impl AgentManager {
             ));
         }
 
-        let child = Command::new(&python)
-            .args(["-m", "core.main", "--gateway-port", &GATEWAY_PORT.to_string(), "--gateway-only"])
+        // 读取配置
+        let cfg = self.config.lock().map_err(|e| e.to_string())?.clone();
+
+        // 构建环境变量
+        let mut cmd = Command::new(&python);
+        cmd.args(["-m", "core.main", "gateway", "start", "--port", &GATEWAY_PORT.to_string()])
             .current_dir(&kuafu)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("启动夸父失败: {}", e))?;
+            .stderr(Stdio::piped());
+
+        // 通过环境变量传递配置
+        cmd.env("KUAFFU_GATEWAY_PORT", GATEWAY_PORT.to_string());
+        if cfg.model_type == "cloud" {
+            cmd.env("KUAFFU_LLM_BACKEND", "openai");
+            cmd.env("OPENAI_API_KEY", cfg.cloud_api_key.clone());
+            cmd.env("KUAFFU_LLM_MODEL", cfg.cloud_model.clone());
+        } else {
+            cmd.env("KUAFFU_LLM_BACKEND", "llama");
+            cmd.env("KUAFFU_LLM_ENDPOINT", cfg.local_llm_endpoint.clone());
+            if !cfg.local_model_path.is_empty() {
+                cmd.env("KUAFFU_LLM_MODEL_PATH", cfg.local_model_path.clone());
+            }
+        }
+
+        let child = cmd.spawn()
+            .map_err(|e| format!("启动夸父失败: {e}"))?;
 
         let pid = child.id();
         *proc = Some(child);
@@ -105,10 +151,16 @@ impl AgentManager {
     pub fn stop(&self) -> Result<(), String> {
         let mut proc = self.process.lock().map_err(|e| e.to_string())?;
         if let Some(mut child) = proc.take() {
-            child.kill().map_err(|e| format!("停止夸父失败: {}", e))?;
+            child.kill().map_err(|e| format!("停止夸父失败: {e}"))?;
             child.wait().ok();
         }
         Ok(())
+    }
+
+    /// 重启夸父子进程
+    pub fn restart(&self) -> Result<AgentStatus, String> {
+        self.stop()?;
+        self.start()
     }
 
     /// 获取状态

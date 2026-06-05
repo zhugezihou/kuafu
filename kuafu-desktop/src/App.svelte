@@ -14,33 +14,79 @@
     clearMessages,
     addMessage,
     appendToLastAssistant,
+    loadSession,
+    saveSession,
   } from "./lib/store";
+  import { loadConfig } from "./lib/config";
   import { sendMessageStream, getStatus } from "./lib/gateway";
 
   let sidebarOpen = $state(true);
   let showSettings = $state(false);
   let startingAgent = $state(true);
+  let healthCheckInterval: ReturnType<typeof setInterval> | undefined;
 
-  // 窗口启动时自动拉取 Agent
+  // 启动时加载上次的会话和配置
   $effect(() => {
+    // 从 localStorage 恢复上次会话
+    loadSession();
     startAgent();
+    return () => {
+      if (healthCheckInterval) clearInterval(healthCheckInterval);
+    };
   });
 
   async function startAgent() {
     startingAgent = true;
     try {
       const { invoke } = await import("@tauri-apps/api/core");
+
+      // 先传配置
+      const config = loadConfig();
+      await invoke("update_agent_config", {
+        config: {
+          model_type: config.modelType,
+          local_model_path: config.localModelPath,
+          local_llm_endpoint: config.localLlmEndpoint,
+          cloud_api_key: config.cloudApiKey,
+          cloud_model: config.cloudModel,
+        },
+      });
+
+      // 启动引擎
       const status = await invoke("start_agent") as any;
       agentRunning.set(status.running);
       if (status.error) agentError.set(status.error);
     } catch (e: any) {
-      agentError.set(`启动 Agent 失败: ${e}`);
+      agentError.set(`启动引擎失败: ${e}`);
     } finally {
       startingAgent = false;
     }
 
-    // 尝试获取 gateway 状态（可能会失败，不影响界面）
-    getStatus().then(() => {}).catch(() => {});
+    // 启动健康检查（每 15 秒检查一次）
+    healthCheckInterval = setInterval(checkHealth, 15000);
+  }
+
+  async function checkHealth() {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const status = await invoke("agent_status") as any;
+      if (status.running) {
+        agentRunning.set(true);
+        agentError.set(null);
+      } else {
+        agentRunning.set(false);
+        // 自动重启
+        try {
+          await invoke("start_agent");
+          agentRunning.set(true);
+          agentError.set(null);
+        } catch (e: any) {
+          agentError.set(`引擎离线，自动重启失败: ${e}`);
+        }
+      }
+    } catch {
+      agentRunning.set(false);
+    }
   }
 
   async function handleSend(text: string) {
@@ -54,7 +100,11 @@
       await sendMessageStream(
         text,
         (chunk) => appendToLastAssistant(chunk),
-        () => isRunning.set(false)
+        () => {
+          isRunning.set(false);
+          // 保存会话到 localStorage
+          saveSession();
+        }
       );
     } catch (e: any) {
       appendToLastAssistant(`\n\n错误: ${e.message}`);
@@ -65,6 +115,14 @@
   function handleNewChat() {
     clearMessages();
   }
+
+  function handleOpenSettings() {
+    showSettings = true;
+  }
+
+  function handleCloseSettings() {
+    showSettings = false;
+  }
 </script>
 
 <div class="app">
@@ -72,7 +130,7 @@
     <Sidebar
       onClose={() => (sidebarOpen = false)}
       onNewChat={handleNewChat}
-      onOpenSettings={() => (showSettings = true)}
+      onOpenSettings={handleOpenSettings}
     />
   {/if}
 
@@ -82,7 +140,7 @@
         ☰
       </button>
       <div class="header-title">夸父 Desktop</div>
-      <button class="settings-btn" onclick={() => (showSettings = true)}>⚙</button>
+      <button class="settings-btn" onclick={handleOpenSettings}>⚙</button>
       <button class="new-btn" onclick={handleNewChat}>＋ 新对话</button>
     </header>
 
@@ -101,7 +159,7 @@
 </div>
 
 {#if showSettings}
-  <Settings onClose={() => (showSettings = false)} />
+  <Settings onClose={handleCloseSettings} />
 {/if}
 
 <style>

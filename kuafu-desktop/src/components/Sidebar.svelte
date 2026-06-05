@@ -1,16 +1,11 @@
 <script lang="ts">
   import { sessions, currentSessionId, clearMessages } from "../lib/store";
-  import { getSessions } from "../lib/gateway";
 
   let {
     onClose = () => {},
     onNewChat = () => {},
     onOpenSettings = () => {},
   }: { onClose: () => void; onNewChat: () => void; onOpenSettings: () => void } = $props();
-
-  $effect(() => {
-    getSessions().then((s) => sessions.set(s)).catch(() => {});
-  });
 
   function selectSession(id: string) {
     currentSessionId.set(id);
@@ -27,7 +22,7 @@
   <button class="new-chat-btn" onclick={onNewChat}>＋ 新对话</button>
 
   <div class="session-list">
-    <div class="section-title">最近会话</div>
+    <div class="section-title">历史会话</div>
     {#each $sessions as session (session.id)}
       <button
         class="session-item"

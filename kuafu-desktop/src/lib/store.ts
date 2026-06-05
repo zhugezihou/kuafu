@@ -16,6 +16,30 @@ export const isRunning = writable(false);
 export const agentRunning = writable(false);
 export const agentError = writable<string | null>(null);
 
+const SESSION_KEY = "kuafu-desktop-session";
+
+// 保存当前会话到 localStorage
+export function saveSession() {
+  let msgs: Message[] = [];
+  messages.subscribe((m) => (msgs = m))();
+  try {
+    localStorage.setItem(SESSION_KEY, JSON.stringify(msgs));
+  } catch {}
+}
+
+// 从 localStorage 恢复会话
+export function loadSession() {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (raw) {
+      const msgs = JSON.parse(raw) as Message[];
+      if (Array.isArray(msgs) && msgs.length > 0) {
+        messages.set(msgs);
+      }
+    }
+  } catch {}
+}
+
 // 追加消息
 export function addMessage(msg: Message) {
   messages.update((msgs) => [...msgs, msg]);
@@ -35,4 +59,7 @@ export function appendToLastAssistant(chunk: string) {
 // 清空当前会话
 export function clearMessages() {
   messages.set([]);
+  try {
+    localStorage.removeItem(SESSION_KEY);
+  } catch {}
 }
