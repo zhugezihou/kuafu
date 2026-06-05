@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: 设置 Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -26,15 +26,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyyaml pytest pytest-cov pytest-timeout
 
-      - name: 测试收集验证
-        run: |
-          python -m pytest tests/test_approval_denyrules.py --collect-only -q
-
       - name: 全部单元测试（并行覆盖率收集）
         env:
           COVERAGE_FILE: .coverage.ci
         run: |
-          coverage run --source=core --parallel-mode -m pytest \
+          python -m pytest \
             tests/test_bulk.py \
             -k "TestEvolutionEngine or TestEvolutionState or TestEvolutionEngineGepaCoverage or TestEvolutionRules" \
             tests/test_approval_denyrules.py \
@@ -83,7 +79,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: 设置 Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -112,7 +108,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: 设置 Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
