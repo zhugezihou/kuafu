@@ -220,6 +220,8 @@ jobs:
 
       - name: 创建 Release
         uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ env.TAG_NAME }}
           name: "夸父 Desktop v${{ env.VERSION }}"
@@ -227,5 +229,3 @@ jobs:
           files: kuafu-desktop/src-tauri/target/release/bundle/nsis/*.exe
           draft: false
           prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
