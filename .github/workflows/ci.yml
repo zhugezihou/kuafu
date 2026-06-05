@@ -199,8 +199,6 @@ jobs:
           mkdir "$out\kuafu" -Force | Out-Null
           Copy-Item "$pwd\..\core" "$out\kuafu\" -Recurse -Force
           Copy-Item "$pwd\..\pyproject.toml" "$out\kuafu\" -Force
-          Copy-Item "$pwd\..\scripts" "$out\kuafu\" -Recurse -Force
-          Copy-Item "$pwd\..\autonomous" "$out\kuafu\" -Recurse -Force
           # 配置嵌入式 Python 可导入 site-packages
           Add-Content "$out\python._pth" "`n..\kuafu"
           # 允许 pip 安装
