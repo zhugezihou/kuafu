@@ -67,7 +67,7 @@ export async function sendMessageStream(
   });
 }
 
-export async function getStatus(): Promise<AgentStatus> {
+export async function getStatus(): Promise<any> {
   const resp = await fetch(`${GATEWAY_URL}/api/status`);
   return resp.json();
 }

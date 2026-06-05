@@ -1,11 +1,20 @@
 import { writable } from "svelte/store";
-import type { Message, Session, AgentStatus } from "./gateway";
+import type { Message, Session } from "./gateway";
+
+export interface AgentStatus {
+  running: boolean;
+  pid: number | null;
+  gateway_port: number;
+  python_path: string;
+  error: string | null;
+}
 
 export const messages = writable<Message[]>([]);
 export const sessions = writable<Session[]>([]);
 export const currentSessionId = writable<string | null>(null);
 export const isRunning = writable(false);
-export const agentStatus = writable<AgentStatus | null>(null);
+export const agentRunning = writable(false);
+export const agentError = writable<string | null>(null);
 
 // 追加消息
 export function addMessage(msg: Message) {

@@ -183,6 +183,37 @@ jobs:
       - name: 前端构建
         run: npm run build
 
+      - name: 准备嵌入式 Python 环境
+        shell: powershell
+        run: |
+          # 下载 Windows 嵌入式 Python
+          $url = "https://www.python.org/ftp/python/3.12.9/python-3.12.9-embed-amd64.zip"
+          $zip = "$env:RUNNER_TEMP\python.zip"
+          $out = "$pwd\python"
+          echo "下载嵌入式 Python 3.12.9..."
+          curl.exe -L -o $zip $url
+          echo "解压到 $out..."
+          Expand-Archive -Path $zip -DestinationPath $out -Force
+          # 复制夸父源码（排除不需要的目录）
+          echo "复制夸父源码..."
+          mkdir "$out\kuafu" -Force | Out-Null
+          Copy-Item "$pwd\..\core" "$out\kuafu\" -Recurse -Force
+          Copy-Item "$pwd\..\pyproject.toml" "$out\kuafu\" -Force
+          Copy-Item "$pwd\..\scripts" "$out\kuafu\" -Recurse -Force
+          Copy-Item "$pwd\..\autonomous" "$out\kuafu\" -Recurse -Force
+          # 配置嵌入式 Python 可导入 site-packages
+          Add-Content "$out\python._pth" "`n..\kuafu"
+          # 允许 pip 安装
+          Remove-Item "$out\python._pth" -Force
+          # 安装 pip 和 pyyaml
+          echo "安装 pip..."
+          curl.exe -L -o "$env:RUNNER_TEMP\get-pip.py" "https://bootstrap.pypa.io/get-pip.py"
+          & "$out\python.exe" "$env:RUNNER_TEMP\get-pip.py" --no-warn-script-location
+          & "$out\python.exe" -m pip install pyyaml --no-warn-script-location
+          # 恢复 python._pth（禁用 site-packages 但保留 kuafu 路径）
+          Add-Content "$out\python._pth" "python312.zip`n.`n..\kuafu"
+          echo "嵌入式 Python 就绪"
+
       - name: Tauri 构建
         uses: tauri-apps/tauri-action@v0
         env:

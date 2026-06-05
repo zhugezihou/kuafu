@@ -1,21 +1,22 @@
 <script lang="ts">
-  import { agentStatus, isRunning } from "../lib/store";
+  import { isRunning, agentRunning, agentError } from "../lib/store";
 </script>
 
 <footer class="status-bar">
   <div class="status-left">
     {#if $isRunning}
       <span class="running">⏳ 运行中…</span>
-    {:else}
+    {:else if $agentError}
+      <span class="error">⚠ {$agentError}</span>
+    {:else if $agentRunning}
       <span class="idle">● 就绪</span>
+    {:else}
+      <span class="offline">○ 离线</span>
     {/if}
   </div>
 
   <div class="status-right">
-    {#if $agentStatus}
-      <span class="model">{$agentStatus.model}</span>
-      <span class="backend">{$agentStatus.backend}</span>
-    {/if}
+    <span class="version">夸父 Desktop v1.0.2</span>
   </div>
 </footer>
 
@@ -39,23 +40,8 @@
     gap: 8px;
   }
 
-  .running {
-    color: var(--accent);
-  }
-
-  .idle {
-    color: var(--success);
-  }
-
-  .model {
-    background: var(--surface2);
-    padding: 1px 6px;
-    border-radius: 4px;
-  }
-
-  .backend {
-    background: var(--surface2);
-    padding: 1px 6px;
-    border-radius: 4px;
-  }
+  .running { color: var(--accent); }
+  .idle { color: #22c55e; }
+  .error { color: #ef4444; }
+  .offline { color: #6b7280; }
 </style>

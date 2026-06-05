@@ -9,7 +9,8 @@
     sessions,
     currentSessionId,
     isRunning,
-    agentStatus,
+    agentRunning,
+    agentError,
     clearMessages,
     addMessage,
     appendToLastAssistant,
@@ -18,29 +19,42 @@
 
   let sidebarOpen = $state(true);
   let showSettings = $state(false);
+  let startingAgent = $state(true);
 
-  // 初始加载
+  // 窗口启动时自动拉取 Agent
   $effect(() => {
-    getStatus().then((s) => agentStatus.set(s)).catch(() => {});
+    startAgent();
   });
+
+  async function startAgent() {
+    startingAgent = true;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const status = await invoke("start_agent") as any;
+      agentRunning.set(status.running);
+      if (status.error) agentError.set(status.error);
+    } catch (e: any) {
+      agentError.set(`启动 Agent 失败: ${e}`);
+    } finally {
+      startingAgent = false;
+    }
+
+    // 尝试获取 gateway 状态（可能会失败，不影响界面）
+    getStatus().then(() => {}).catch(() => {});
+  }
 
   async function handleSend(text: string) {
     if (!text.trim()) return;
 
     isRunning.set(true);
     addMessage({ role: "user", content: text });
-    // 先创建空的 assistant 消息容器
     addMessage({ role: "assistant", content: "" });
 
     try {
       await sendMessageStream(
         text,
-        (chunk) => {
-          appendToLastAssistant(chunk);
-        },
-        () => {
-          isRunning.set(false);
-        }
+        (chunk) => appendToLastAssistant(chunk),
+        () => isRunning.set(false)
       );
     } catch (e: any) {
       appendToLastAssistant(`\n\n错误: ${e.message}`);
@@ -73,10 +87,15 @@
     </header>
 
     <div class="chat-area">
+      {#if startingAgent}
+        <div class="loading">正在启动夸父引擎...</div>
+      {:else if $agentError}
+        <div class="error-banner">{$agentError}</div>
+      {/if}
       <MessageList />
     </div>
 
-    <MessageInput onSend={handleSend} disabled={$isRunning} />
+    <MessageInput onSend={handleSend} disabled={$isRunning || !$agentRunning} />
     <StatusBar />
   </div>
 </div>
@@ -135,5 +154,22 @@
     flex: 1;
     overflow-y: auto;
     padding: 12px 0;
+  }
+
+  .loading {
+    text-align: center;
+    padding: 20px;
+    color: var(--text2);
+    font-size: 14px;
+  }
+
+  .error-banner {
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    color: #ef4444;
+    margin: 8px 16px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 13px;
   }
 </style>
