@@ -13725,7 +13725,7 @@ class TestAgentLoopComprehensive:
         loop.tools.execute.return_value = {"success": False, "output": "command not found"}
         result = loop.run(task="test")
         assert len(result["errors"]) > 0
-        assert "工具 terminal 失败" in result["errors"][0]
+        assert "工具 terminal 执行失败" in result["errors"][0]
 
     # =====================================================================
     # run() — error handling
@@ -14971,16 +14971,16 @@ class TestAgentLoopComprehensive:
         resp2 = {"success": True, "content": "Blocked by deny", "tool_calls": None}
         loop.llm.chat.side_effect = [resp, resp2]
 
-        with patch('core.agent_loop.pretooluse_check') as mock_perm:
-            mock_perm.return_value = {
-                "allowed": False, "reason": "🛡️ Deny 规则阻止",
-                "approach": "deny_rule", "rule_id": "deny_001",
-                "req_id": None, "auto": True,
-            }
-            with patch('core.agent_loop.SafetyLayer') as mock_safety:
-                mock_safety.sanitize_text.return_value = "safe"
-                result = loop.run(task="test")
-                assert result["success"] is True
+        with patch('core.tool_orchestrator.ApprovalDecision') as mock_dec:
+            mock_dec.DENY = mock_dec.DENY
+            with patch('core.agent_loop.AgentLoop._execute_via_orchestrator') as mock_orc:
+                mock_orc.return_value.success = False
+                mock_orc.return_value.output = "🔒 被审批系统拒绝"
+                with patch('core.agent_loop.SafetyLayer') as mock_safety:
+                    mock_safety.sanitize_text.return_value = "safe"
+                    result = loop.run(task="test")
+                    assert result["success"] is False
+                    assert "执行失败" in result["errors"][0]
 
     def test_run_with_session_append(self):
         """Session messages are appended correctly."""

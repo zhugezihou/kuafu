@@ -760,7 +760,7 @@ class AgentLoop:
             ),
         )
         # 打通 on_approval_request → 通道推送
-        if self.on_approval_request:
+        if getattr(self, 'on_approval_request', None):
             self._orchestrator.set_approval_callback(self.on_approval_request)
 
     def _execute_via_orchestrator(self, fn_name: str, args_dict: dict,
@@ -1251,48 +1251,56 @@ class AgentLoop:
                                     })
                                 continue
 
-                        # ── 工具执行: 使用 ToolOrchestrator 四阶段编排 ──
-                        orchestrator_result = self._execute_via_orchestrator(
-                            fn_name=fn_name,
-                            args_dict=args_dict,
-                            tool_call_id=tc["id"],
+                        # ── 权限检查由 ToolOrchestrator 内部处理（Approval → Safety → Execute 四阶段） ──
+                        # 不需要在此单独调用，_execute_via_orchestrator 会自动处理
+                        pass
+
+                    # ── 工具执行（总是执行，独立于权限检查） ──
+                    raw_args = tc.get("function", {}).get("arguments", {})
+                    if isinstance(raw_args, str):
+                        try:
+                            args_dict = json.loads(raw_args)
+                        except json.JSONDecodeError:
+                            args_dict = {}
+                    elif isinstance(raw_args, dict):
+                        args_dict = raw_args
+                    else:
+                        args_dict = {}
+
+                    orchestrator_result = self._execute_via_orchestrator(
+                        fn_name=fn_name,
+                        args_dict=args_dict,
+                        tool_call_id=tc["id"],
+                    )
+
+                    if not orchestrator_result.success:
+                        msg = orchestrator_result.output
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": msg,
+                        })
+                        self.sessions.append_message(
+                            self.current_session_id, "tool", msg[:500],
                         )
-
-                        if not orchestrator_result.success:
-                            msg = orchestrator_result.output
-                            messages.append({
-                                "role": "tool",
-                                "tool_call_id": tc["id"],
-                                "content": msg,
+                        if self.hooks_enabled:
+                            trigger_async("on_tool_rejected", {
+                                "tool": fn_name, "reason": "denied",
                             })
-                            self.sessions.append_message(
-                                self.current_session_id, "tool", msg[:500],
-                            )
-                            if self.hooks_enabled:
-                                trigger_async("on_tool_rejected", {
-                                    "tool": fn_name, "reason": "denied",
-                                })
-                            # tool_rejected_path: tool_result 未定义，跳过工具结果处理
-                            _TOOL_DENIED = True
-                            continue
+                        err_msg = f"工具 {fn_name} 执行失败: {msg[:200]}"
+                        errors.append(err_msg)
+                        continue
 
-                        # ── 成功执行 ──
-                        tool_result = {"success": True, "output": orchestrator_result.output}
+                    # ── 成功执行 ──
+                    tool_result = {"success": True, "output": orchestrator_result.output}
 
-                        # ── 工具执行结束通知 ──
-                        if self.on_tool_end:
-                            tool_elapsed = time.time() - tool_start_ts
-                            self.on_tool_end(fn_name, tc.get("function", {}).get("arguments", {}),
-                                             tool_elapsed, "success" if tool_result.get("success", True) else "error")
+                    # ── 工具执行结束通知 ──
+                    if self.on_tool_end:
+                        tool_elapsed = time.time() - tool_start_ts
+                        self.on_tool_end(fn_name, tc.get("function", {}).get("arguments", {}),
+                                         tool_elapsed, "success")
 
-                    # 如果未进入权限检查块（permission_enabled=False 或 fn_name 被豁免），
-                    # 但 orchestrator 已经运行了，从它设置 tool_result
-                    if 'orchestrator_result' in locals() and hasattr(orchestrator_result, 'success'):
-                        tool_result = {"success": orchestrator_result.success, "output": orchestrator_result.output}
-                    elif 'tool_result' not in locals():
-                        tool_result = {"success": True, "output": "(no output)"}
-
-                    # 安全脱敏：对终端输出中的 API key、token 等脱敏
+                    # ── 安全脱敏：对终端输出中的 API key、token 等脱敏
                     raw_output = str(tool_result.get("output", "(无输出)"))
                     safe_output = SafetyLayer.sanitize_text(raw_output)
 
