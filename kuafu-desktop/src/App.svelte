@@ -12,8 +12,9 @@
     agentStatus,
     clearMessages,
     addMessage,
+    appendToLastAssistant,
   } from "./lib/store";
-  import { sendMessage, getStatus } from "./lib/gateway";
+  import { sendMessageStream, getStatus } from "./lib/gateway";
 
   let sidebarOpen = $state(true);
   let showSettings = $state(false);
@@ -28,13 +29,21 @@
 
     isRunning.set(true);
     addMessage({ role: "user", content: text });
+    // 先创建空的 assistant 消息容器
+    addMessage({ role: "assistant", content: "" });
 
     try {
-      const result = await sendMessage(text);
-      addMessage({ role: "assistant", content: result || "(完成)" });
+      await sendMessageStream(
+        text,
+        (chunk) => {
+          appendToLastAssistant(chunk);
+        },
+        () => {
+          isRunning.set(false);
+        }
+      );
     } catch (e: any) {
-      addMessage({ role: "assistant", content: `错误: ${e.message}` });
-    } finally {
+      appendToLastAssistant(`\n\n错误: ${e.message}`);
       isRunning.set(false);
     }
   }

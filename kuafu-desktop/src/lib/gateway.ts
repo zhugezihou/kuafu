@@ -41,6 +41,32 @@ export async function sendMessage(
   return data.result || data.error || "(无输出)";
 }
 
+/** 流式发送：通过 Tauri 事件接收流式输出 */
+export async function sendMessageStream(
+  task: string,
+  onChunk: (text: string) => void,
+  onDone: () => void
+): Promise<void> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const { listen } = await import("@tauri-apps/api/event");
+
+  const unlistenChunk = await listen<string>("stream-chunk", (event) => {
+    onChunk(event.payload);
+  });
+  const unlistenDone = await listen<void>("stream-done", () => {
+    onDone();
+    unlistenChunk();
+    unlistenDone();
+  });
+
+  await invoke("send_task_stream", { task }).catch((e: string) => {
+    onChunk(`错误: ${e}`);
+    unlistenChunk();
+    unlistenDone();
+    onDone();
+  });
+}
+
 export async function getStatus(): Promise<AgentStatus> {
   const resp = await fetch(`${GATEWAY_URL}/api/status`);
   return resp.json();
