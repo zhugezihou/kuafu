@@ -3,6 +3,7 @@
   import MessageList from "./components/MessageList.svelte";
   import MessageInput from "./components/MessageInput.svelte";
   import StatusBar from "./components/StatusBar.svelte";
+  import Settings from "./components/Settings.svelte";
   import {
     messages,
     sessions,
@@ -15,6 +16,7 @@
   import { sendMessage, getStatus } from "./lib/gateway";
 
   let sidebarOpen = $state(true);
+  let showSettings = $state(false);
 
   // 初始加载
   $effect(() => {
@@ -47,6 +49,7 @@
     <Sidebar
       onClose={() => (sidebarOpen = false)}
       onNewChat={handleNewChat}
+      onOpenSettings={() => (showSettings = true)}
     />
   {/if}
 
@@ -56,6 +59,7 @@
         ☰
       </button>
       <div class="header-title">夸父 Desktop</div>
+      <button class="settings-btn" onclick={() => (showSettings = true)}>⚙</button>
       <button class="new-btn" onclick={handleNewChat}>＋ 新对话</button>
     </header>
 
@@ -67,6 +71,10 @@
     <StatusBar />
   </div>
 </div>
+
+{#if showSettings}
+  <Settings onClose={() => (showSettings = false)} />
+{/if}
 
 <style>
   .app {
@@ -102,6 +110,12 @@
     flex: 1;
     font-weight: 600;
     font-size: 15px;
+  }
+
+  .settings-btn {
+    background: none;
+    font-size: 16px;
+    padding: 4px 8px;
   }
 
   .new-btn {

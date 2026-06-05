@@ -5,7 +5,8 @@
   let {
     onClose = () => {},
     onNewChat = () => {},
-  }: { onClose: () => void; onNewChat: () => void } = $props();
+    onOpenSettings = () => {},
+  }: { onClose: () => void; onNewChat: () => void; onOpenSettings: () => void } = $props();
 
   $effect(() => {
     getSessions().then((s) => sessions.set(s));
@@ -37,6 +38,10 @@
         <span class="session-count">{session.message_count}</span>
       </button>
     {/each}
+  </div>
+
+  <div class="sidebar-footer">
+    <button class="settings-btn" onclick={onOpenSettings}>⚙ 设置</button>
   </div>
 </aside>
 
@@ -80,6 +85,21 @@
     background: none;
     font-size: 14px;
     padding: 2px 6px;
+  }
+
+  .sidebar-footer {
+    border-top: 1px solid var(--border);
+    padding: 8px 12px;
+  }
+
+  .settings-btn {
+    width: 100%;
+    padding: 6px;
+    font-size: 12px;
+    text-align: center;
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 6px;
   }
 
   .new-chat-btn {
