@@ -226,4 +226,4 @@ jobs:
           $content = Get-Content src-tauri/Cargo.toml -Raw
           $match = [regex]::Match($content, 'version = "([^"]+)"')
           $ver = $match.Groups[1].Value
-          gh release create "desktop-v$ver" --title "夸父 Desktop v$ver" --notes "夸父 Desktop 桌面客户端发布" kuafu-desktop/src-tauri/target/release/bundle/nsis/*.exe
+          gh release create "desktop-v$ver" --title "夸父 Desktop v$ver" --notes "夸父 Desktop 桌面客户端发布" src-tauri/target/release/bundle/nsis/*.exe
