@@ -1,5 +1,6 @@
 <script lang="ts">
   import { messages } from "../lib/store";
+  import MarkdownRenderer from "./MarkdownRenderer.svelte";
 
   let msgContainer: HTMLDivElement | undefined = $state();
 
@@ -32,7 +33,11 @@
       </div>
       <div class="content">
         <div class="role-label">{msg.role === "user" ? "你" : "夸父"}</div>
-        <div class="text">{msg.content}</div>
+        {#if msg.role === "user"}
+          <div class="text">{msg.content}</div>
+        {:else}
+          <MarkdownRenderer content={msg.content} />
+        {/if}
       </div>
     </div>
   {/each}
