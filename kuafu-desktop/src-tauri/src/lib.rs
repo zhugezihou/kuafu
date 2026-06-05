@@ -7,7 +7,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // 系统托盘
-            let _tray = app.tray_icon_by_id("main").ok();
+            let _ = app.tray().map(|t| t.get_item("main"));
             Ok(())
         })
         .run(tauri::generate_context!())
