@@ -62,29 +62,24 @@
       startingAgent = false;
     }
 
-    // 启动健康检查（每 15 秒检查一次）
+    // 启动健康检查（每 15 秒检查一次 Gateway 的 /api/status）
     healthCheckInterval = setInterval(checkHealth, 15000);
   }
 
   async function checkHealth() {
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      const status = await invoke("agent_status") as any;
-      if (status.running) {
+      // 直连 Gateway 健康检查，延迟低
+      const resp = await fetch("http://localhost:8081/api/status", {
+        signal: AbortSignal.timeout(5000),
+      });
+      if (resp.ok) {
         agentRunning.set(true);
         agentError.set(null);
       } else {
         agentRunning.set(false);
-        // 自动重启
-        try {
-          await invoke("start_agent");
-          agentRunning.set(true);
-          agentError.set(null);
-        } catch (e: any) {
-          agentError.set(`引擎离线，自动重启失败: ${e}`);
-        }
       }
     } catch {
+      // Gateway 不可达 — 检查 Rust 端进程是否还在
       agentRunning.set(false);
     }
   }

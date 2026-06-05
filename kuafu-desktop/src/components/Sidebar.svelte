@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { sessions, currentSessionId, clearMessages } from "../lib/store";
+  import { archivedSessions, currentSessionId, loadArchivedSession, deleteArchivedSession, clearMessages } from "../lib/store";
 
   let {
     onClose = () => {},
@@ -7,8 +7,25 @@
     onOpenSettings = () => {},
   }: { onClose: () => void; onNewChat: () => void; onOpenSettings: () => void } = $props();
 
+  let hoveredId = $state<string | null>(null);
+
   function selectSession(id: string) {
-    currentSessionId.set(id);
+    loadArchivedSession(id);
+  }
+
+  function handleNewChat() {
+    clearMessages();
+    onNewChat();
+  }
+
+  function formatTime(ts: number): string {
+    const d = new Date(ts);
+    const now = new Date();
+    const diff = now.getTime() - d.getTime();
+    if (diff < 60000) return "刚刚";
+    if (diff < 3600000) return `${Math.floor(diff / 60000)}分钟前`;
+    if (diff < 86400000) return `${Math.floor(diff / 3600000)}小时前`;
+    return `${d.getMonth() + 1}月${d.getDate()}日`;
   }
 </script>
 
@@ -19,18 +36,29 @@
     <button class="close-btn" onclick={onClose}>✕</button>
   </div>
 
-  <button class="new-chat-btn" onclick={onNewChat}>＋ 新对话</button>
+  <button class="new-chat-btn" onclick={handleNewChat}>＋ 新对话</button>
 
   <div class="session-list">
-    <div class="section-title">历史会话</div>
-    {#each $sessions as session (session.id)}
+    <div class="section-title">历史对话 ({$archivedSessions.length})</div>
+    {#if $archivedSessions.length === 0}
+      <div class="empty-hint">暂无历史记录</div>
+    {/if}
+    {#each $archivedSessions as session (session.id)}
       <button
         class="session-item"
         class:active={$currentSessionId === session.id}
         onclick={() => selectSession(session.id)}
+        onmouseenter={() => (hoveredId = session.id)}
+        onmouseleave={() => (hoveredId = null)}
       >
-        <span class="session-title">{session.title || "新对话"}</span>
-        <span class="session-count">{session.message_count}</span>
+        <span class="session-title">{session.title}</span>
+        <span class="session-meta">
+          {#if hoveredId === session.id}
+            <span class="delete-btn" onclick={(e) => { e.stopPropagation(); deleteArchivedSession(session.id); }}>✕</span>
+          {:else}
+            <span class="session-time">{formatTime(session.updatedAt)}</span>
+          {/if}
+        </span>
       </button>
     {/each}
   </div>
@@ -95,6 +123,11 @@
     background: none;
     border: 1px solid var(--border);
     border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .settings-btn:hover {
+    background: var(--surface2);
   }
 
   .new-chat-btn {
@@ -118,6 +151,13 @@
     letter-spacing: 0.5px;
   }
 
+  .empty-hint {
+    padding: 20px;
+    text-align: center;
+    font-size: 12px;
+    color: var(--text2);
+  }
+
   .session-item {
     display: flex;
     align-items: center;
@@ -128,6 +168,12 @@
     font-size: 13px;
     text-align: left;
     background: none;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  .session-item:hover:not(.active) {
+    background: var(--surface2);
   }
 
   .session-item.active {
@@ -135,27 +181,35 @@
     color: #fff;
   }
 
-  .session-item:hover:not(.active) {
-    background: var(--surface2);
-  }
-
   .session-title {
     flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    text-align: left;
   }
 
-  .session-count {
+  .session-meta {
+    flex-shrink: 0;
     font-size: 11px;
-    color: var(--text2);
-    background: var(--surface2);
-    padding: 1px 6px;
-    border-radius: 10px;
   }
 
-  .session-item.active .session-count {
-    color: #fff;
-    background: rgba(255, 255, 255, 0.2);
+  .session-time {
+    color: var(--text2);
+  }
+
+  .session-item.active .session-time {
+    color: rgba(255, 255, 255, 0.6);
+  }
+
+  .delete-btn {
+    color: #ef4444;
+    font-size: 12px;
+    padding: 2px 4px;
+    border-radius: 3px;
+  }
+
+  .delete-btn:hover {
+    background: rgba(239, 68, 68, 0.1);
   }
 </style>

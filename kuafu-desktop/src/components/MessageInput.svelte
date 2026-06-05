@@ -14,7 +14,7 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey) {
       e.preventDefault();
       submit(e);
     }
@@ -25,7 +25,7 @@
   <textarea
     bind:value={text}
     onkeydown={handleKeydown}
-    placeholder="输入消息… （Enter 发送，Shift+Enter 换行）"
+    placeholder="输入消息… （Enter 发送，Ctrl+Enter 换行）"
     rows="1"
     disabled={disabled}
   ></textarea>

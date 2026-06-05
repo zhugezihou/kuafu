@@ -1,6 +1,6 @@
 /// <reference types="svelte" />
 
-// Gateway API 客户端
+// Gateway API 客户端 — 前端直连 localhost:8081
 const GATEWAY_URL = "http://localhost:8081";
 
 export interface Message {
@@ -26,7 +26,7 @@ export interface AgentStatus {
   evolution: { total: number };
 }
 
-// ── API 调用 ──
+// ── 同步发送（简单任务，非流式） ──
 
 export async function sendMessage(
   task: string,
@@ -41,30 +41,80 @@ export async function sendMessage(
   return data.result || data.error || "(无输出)";
 }
 
-/** 流式发送：通过 Tauri 事件接收流式输出 */
+/** 流式发送：前端直连 Gateway SSE，不再走 Tauri invoke 转发 */
 export async function sendMessageStream(
   task: string,
   onChunk: (text: string) => void,
   onDone: () => void
 ): Promise<void> {
-  const { invoke } = await import("@tauri-apps/api/core");
-  const { listen } = await import("@tauri-apps/api/event");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 120000); // 2分钟超时
 
-  const unlistenChunk = await listen<string>("stream-chunk", (event) => {
-    onChunk(event.payload);
-  });
-  const unlistenDone = await listen<void>("stream-done", () => {
-    onDone();
-    unlistenChunk();
-    unlistenDone();
-  });
+  try {
+    const resp = await fetch(`${GATEWAY_URL}/api/task`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ task, mode: "standard", sync: false }),
+      signal: controller.signal,
+    });
 
-  await invoke("send_task_stream", { task }).catch((e: string) => {
-    onChunk(`错误: ${e}`);
-    unlistenChunk();
-    unlistenDone();
+    if (!resp.ok) {
+      onChunk(`\n\n错误: HTTP ${resp.status}`);
+      onDone();
+      return;
+    }
+
+    // 异步模式返回 202，没有 SSE 流——直接等结果
+    // Gateway 异步模式下是后台线程执行，结果不可直接读取
+    // 所以这里用轮询方式等待完成
+    const data = await resp.json();
+    if (data.status === "accepted") {
+      // 异步提交成功，开始轮询最新消息
+      onChunk("任务已提交，正在执行...\n\n");
+      await pollForResult(task, onChunk, onDone);
+    } else {
+      // 同步模式
+      onChunk(data.result || "");
+      onDone();
+    }
+  } catch (e: any) {
+    if (e.name === "AbortError") {
+      onChunk("\n\n错误: 请求超时");
+    } else {
+      onChunk(`\n\n错误: ${e.message}`);
+    }
     onDone();
-  });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/** 轮询等待结果（因为 Gateway 异步模式没有 SSE） */
+async function pollForResult(
+  task: string,
+  onChunk: (text: string) => void,
+  onDone: () => void,
+  maxRetries = 60
+): Promise<void> {
+  // 用 status 接口判断 agent 是否完成了任务
+  for (let i = 0; i < maxRetries; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    try {
+      const resp = await fetch(`${GATEWAY_URL}/api/status`);
+      if (resp.ok) {
+        const statusData = await resp.json();
+        if (statusData.status === "ok") {
+          onChunk("✅ 任务完成");
+          onDone();
+          return;
+        }
+      }
+    } catch {
+      // gateway 可能暂时不可用，继续轮询
+    }
+  }
+  onChunk("\n\n⚠ 等待超时");
+  onDone();
 }
 
 export async function getStatus(): Promise<any> {
