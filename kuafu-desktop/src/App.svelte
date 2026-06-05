@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import Sidebar from "./components/Sidebar.svelte";
   import MessageList from "./components/MessageList.svelte";
   import MessageInput from "./components/MessageInput.svelte";
@@ -18,40 +19,61 @@
     saveSession,
   } from "./lib/store";
   import { loadConfig } from "./lib/config";
-  import { sendMessageStream, getStatus } from "./lib/gateway";
+  import { sendMessageStream } from "./lib/gateway";
 
   let sidebarOpen = $state(true);
   let showSettings = $state(false);
-  let startingAgent = $state(true);
+  let initialLoading = $state(true);
   let healthCheckInterval: ReturnType<typeof setInterval> | undefined;
 
-  // 启动时加载上次的会话和配置
-  $effect(() => {
-    loadSession();
-    startAgent();
+  // Tauri invoke 引用（同步 import，避免运行时动态 import 出错）
+  let tauriCore: any = null;
 
-    // 窗口关闭/重载时停止夸父引擎
-    const handleBeforeUnload = () => {
-      import("@tauri-apps/api/core").then(({ invoke }) => {
-        invoke("stop_agent").catch(() => {});
-      });
-    };
+  // 组件挂载后初始化
+  onMount(async () => {
+    // 同步 import Tauri API
+    try {
+      tauriCore = await import("@tauri-apps/api/core");
+    } catch {}
+
+    // 恢复上次会话
+    loadSession();
+
+    // 启动引擎
+    await startAgent();
+    initialLoading = false;
+
+    // 启动健康检查
+    healthCheckInterval = setInterval(checkHealth, 15000);
+
+    // 窗口关闭时停止引擎
     window.addEventListener("beforeunload", handleBeforeUnload);
 
     return () => {
       if (healthCheckInterval) clearInterval(healthCheckInterval);
-      handleBeforeUnload();
+      window.removeEventListener("beforeunload", handleBeforeUnload);
     };
   });
 
-  async function startAgent() {
-    startingAgent = true;
+  function handleBeforeUnload() {
+    // 同步调用，beforeunload 是同步事件
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
+      if (tauriCore) {
+        tauriCore.invoke("stop_agent");
+      }
+    } catch {}
+  }
 
+  async function startAgent() {
+    if (!tauriCore) {
+      agentError.set("Tauri API 不可用");
+      return;
+    }
+
+    try {
       // 先传配置
       const config = loadConfig();
-      await invoke("update_agent_config", {
+      await tauriCore.invoke("update_agent_config", {
         config: {
           model_type: config.modelType,
           local_model_path: config.localModelPath,
@@ -62,22 +84,16 @@
       });
 
       // 启动引擎
-      const status = await invoke("start_agent") as any;
+      const status = await tauriCore.invoke("start_agent") as any;
       agentRunning.set(status.running);
       if (status.error) agentError.set(status.error);
     } catch (e: any) {
       agentError.set(`启动引擎失败: ${e}`);
-    } finally {
-      startingAgent = false;
     }
-
-    // 启动健康检查（每 15 秒检查一次 Gateway 的 /api/status）
-    healthCheckInterval = setInterval(checkHealth, 15000);
   }
 
   async function checkHealth() {
     try {
-      // 直连 Gateway 健康检查，延迟低
       const resp = await fetch("http://localhost:8081/api/status", {
         signal: AbortSignal.timeout(5000),
       });
@@ -88,7 +104,6 @@
         agentRunning.set(false);
       }
     } catch {
-      // Gateway 不可达 — 检查 Rust 端进程是否还在
       agentRunning.set(false);
     }
   }
@@ -106,7 +121,6 @@
         (chunk) => appendToLastAssistant(chunk),
         () => {
           isRunning.set(false);
-          // 保存会话到 localStorage
           saveSession();
         }
       );
@@ -149,7 +163,7 @@
     </header>
 
     <div class="chat-area">
-      {#if startingAgent}
+      {#if initialLoading}
         <div class="loading">正在启动夸父引擎...</div>
       {:else if $agentError}
         <div class="error-banner">{$agentError}</div>
