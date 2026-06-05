@@ -205,13 +205,26 @@ jobs:
           echo "嵌入式 Python 就绪"
 
       - name: Tauri 构建
-        uses: tauri-apps/tauri-action@v0
+        shell: powershell
+        run: |
+          npm run tauri build
+
+      - name: 获取版本号
+        shell: powershell
+        run: |
+          $ver = (Get-Content src-tauri/Cargo.toml | Select-String '^version = "(.*)"' | ForEach-Object { $_.Matches.Groups[1].Value })
+          echo "VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "desktop-v$ver" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "TAG_NAME=desktop-v$ver" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: "夸父 Desktop v${{ env.VERSION }}"
+          body: "夸父 Desktop 桌面客户端发布"
+          files: kuafu-desktop/src-tauri/target/release/bundle/nsis/*.exe
+          draft: false
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: desktop-v__VERSION__
-          releaseName: "夸父 Desktop v__VERSION__"
-          releaseBody: "夸父 Desktop 桌面客户端发布"
-          releaseDraft: true
-          prerelease: false
-          projectPath: kuafu-desktop
