@@ -202,12 +202,22 @@ jobs:
           # 配置 python._pth
           Add-Content "$out\python._pth" "`n..\kuafu"
           Add-Content "$out\python._pth" "`nimport site"
-          # 安装 pyyaml: download wheel from PyPI and extract
+          # 安装 pyyaml: use system python's pip to install into embedded python
           echo "installing pyyaml..."
           mkdir "$out\Lib\site-packages" -Force | Out-Null
-          curl.exe -L -o "$env:RUNNER_TEMP\pyyaml.zip" "https://files.pythonhosted.org/packages/3b/0c/43c2854a7c4e27a6e89b38614b03f384c5a1a776a1e7c27453c8470b3460/PyYAML-6.0.2-cp312-cp312-win_amd64.whl"
-          Expand-Archive -Path "$env:RUNNER_TEMP\pyyaml.zip" -DestinationPath "$out\Lib\site-packages" -Force
-          echo "pyyaml installed"
+          python -m pip install pyyaml --target "$out\Lib\site-packages" --quiet 2>&1 | Out-Null
+          if (Test-Path "$out\Lib\site-packages\yaml\__init__.py") {
+            echo "pyyaml installed"
+          } else {
+            # fallback: use python -c to find yaml and copy manually
+            $yamlDir = & python -c "import yaml, os; print(os.path.dirname(yaml.__file__))" 2>$null
+            if ($yamlDir) {
+              Copy-Item "$yamlDir" "$out\Lib\site-packages\" -Recurse -Force
+              echo "pyyaml installed (copy)"
+            } else {
+              echo "WARNING: pyyaml not available, kuafu will use system python fallback"
+            }
+          }
 
       - name: Tauri 构建
         shell: powershell
