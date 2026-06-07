@@ -5,7 +5,7 @@
   let version = $state("?");
 
   onMount(() => {
-    version = "1.0.10";
+    version = "1.0.17";
   });
 </script>
 

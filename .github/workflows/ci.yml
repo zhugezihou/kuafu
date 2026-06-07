@@ -194,15 +194,31 @@ jobs:
           curl.exe -L -o $zip $url
           echo "解压到 $out..."
           Expand-Archive -Path $zip -DestinationPath $out -Force
-          # 复制夸父源码（排除不需要的目录）
+          # 复制夸父源码
           echo "复制夸父源码..."
           mkdir "$out\kuafu" -Force | Out-Null
           Copy-Item "$pwd\..\core" "$out\kuafu\" -Recurse -Force
           Copy-Item "$pwd\..\pyproject.toml" "$out\kuafu\" -Force
-          # 配置嵌入式 Python 可导入 site-packages
+          # 配置 python._pth：允许导入本地模块和 site-packages
+          # 嵌入式 Python 默认 python._pth 含 python39.zip 和 .
+          # 我们追加 kuafu 源码路径和 site-packages（手动安装的 pyyaml）
           Add-Content "$out\python._pth" "`n..\kuafu"
-          # 安装 pyyaml（用 ensurepip）
-          echo "嵌入式 Python 就绪"
+          Add-Content "$out\python._pth" "`nimport site"  # 启用 site 模块以支持 site-packages
+          # 安装 pyyaml：下载 wheel 并解压到 Lib\site-packages
+          echo "安装 pyyaml..."
+          mkdir "$out\Lib\site-packages" -Force | Out-Null
+          pip download pyyaml --only-binary :all: --python-version 3.12 --platform win_amd64 --dest "$env:RUNNER_TEMP\wheels" --quiet 2>$null
+          if (Test-Path "$env:RUNNER_TEMP\wheels\PyYAML-*-cp312-cp312-win_amd64.whl") {
+            $whl = Get-ChildItem "$env:RUNNER_TEMP\wheels\PyYAML-*-cp312-cp312-win_amd64.whl" | Select-Object -First 1
+            # .whl 是 zip 文件，解压到 site-packages
+            Expand-Archive -Path $whl.FullName -DestinationPath "$out\Lib\site-packages" -Force
+            echo "pyyaml 安装成功"
+          } else {
+            # 备用：从 PyPI 直接下载
+            curl.exe -L -o "$env:RUNNER_TEMP\pyyaml.zip" "https://files.pythonhosted.org/packages/3b/0c/43c2854a7c4e27a6e89b38614b03f384c5a1a776a1e7c27453c8470b3460/PyYAML-6.0.2-cp312-cp312-win_amd64.whl"
+            Expand-Archive -Path "$env:RUNNER_TEMP\pyyaml.zip" -DestinationPath "$out\Lib\site-packages" -Force
+            echo "pyyaml 安装成功（备用源）"
+          }
 
       - name: Tauri 构建
         shell: powershell

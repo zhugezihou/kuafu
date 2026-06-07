@@ -72,15 +72,12 @@
         agentRunning.set(false);
       }
     } catch {
-      // Gateway 不可达 — 读 Rust 端状态取错误信息
+      // Gateway 不可达 — 读 Rust 端状态取错误信息，但不要自动重启（避免循环闪终端）
       agentRunning.set(false);
       try {
         const { invoke } = await import("@tauri-apps/api/core");
         const st = await invoke("agent_status") as any;
         if (st.error) agentError.set(st.error);
-        // 尝试重新启动
-        const result = await invoke("start_agent") as any;
-        if (result.error) agentError.set(result.error);
       } catch {}
     }
   }
