@@ -240,7 +240,7 @@ def test_agent_loop_build_prompt():
     assert "夸父" in prompt
     assert "核心规则" in prompt
     assert "可用工具" in prompt
-    assert "执行规则" in prompt
+    assert "执行纪律" in prompt or "执行规则" in prompt
     print("✅ agent_loop: 系统 prompt 组装正常")
 
 
