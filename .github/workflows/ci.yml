@@ -202,20 +202,12 @@ jobs:
           # 配置 python._pth
           Add-Content "$out\python._pth" "`n..\kuafu"
           Add-Content "$out\python._pth" "`nimport site"
-          # 安装 pyyaml
+          # 安装 pyyaml: download wheel from PyPI and extract
           echo "installing pyyaml..."
           mkdir "$out\Lib\site-packages" -Force | Out-Null
-          pip download pyyaml --only-binary :all: --python-version 3.12 --platform win_amd64 --dest "$env:RUNNER_TEMP\wheels" --quiet 2>$null
-          if (Test-Path "$env:RUNNER_TEMP\wheels\PyYAML-*-cp312-cp312-win_amd64.whl") {
-            $whl = Get-ChildItem "$env:RUNNER_TEMP\wheels\PyYAML-*-cp312-cp312-win_amd64.whl" | Select-Object -First 1
-            Expand-Archive -Path $whl.FullName -DestinationPath "$out\Lib\site-packages" -Force
-            echo "pyyaml installed"
-          } else {
-            # fallback: download wheel directly from PyPI
-            curl.exe -L -o "$env:RUNNER_TEMP\pyyaml.zip" "https://files.pythonhosted.org/packages/3b/0c/43c2854a7c4e27a6e89b38614b03f384c5a1a776a1e7c27453c8470b3460/PyYAML-6.0.2-cp312-cp312-win_amd64.whl"
-            Expand-Archive -Path "$env:RUNNER_TEMP\pyyaml.zip" -DestinationPath "$out\Lib\site-packages" -Force
-            echo "pyyaml installed (fallback)"
-          }
+          curl.exe -L -o "$env:RUNNER_TEMP\pyyaml.zip" "https://files.pythonhosted.org/packages/3b/0c/43c2854a7c4e27a6e89b38614b03f384c5a1a776a1e7c27453c8470b3460/PyYAML-6.0.2-cp312-cp312-win_amd64.whl"
+          Expand-Archive -Path "$env:RUNNER_TEMP\pyyaml.zip" -DestinationPath "$out\Lib\site-packages" -Force
+          echo "pyyaml installed"
 
       - name: Tauri 构建
         shell: powershell
