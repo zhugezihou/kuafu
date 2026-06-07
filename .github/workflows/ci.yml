@@ -202,22 +202,6 @@ jobs:
           # 配置 python._pth
           Add-Content "$out\python._pth" "`n..\kuafu"
           Add-Content "$out\python._pth" "`nimport site"
-          # 安装 pyyaml: use system python's pip to install into embedded python
-          echo "installing pyyaml..."
-          mkdir "$out\Lib\site-packages" -Force | Out-Null
-          python -m pip install pyyaml --target "$out\Lib\site-packages" --quiet 2>&1 | Out-Null
-          if (Test-Path "$out\Lib\site-packages\yaml\__init__.py") {
-            echo "pyyaml installed"
-          } else {
-            # fallback: use python -c to find yaml and copy manually
-            $yamlDir = & python -c "import yaml, os; print(os.path.dirname(yaml.__file__))" 2>$null
-            if ($yamlDir) {
-              Copy-Item "$yamlDir" "$out\Lib\site-packages\" -Recurse -Force
-              echo "pyyaml installed (copy)"
-            } else {
-              echo "WARNING: pyyaml not available, kuafu will use system python fallback"
-            }
-          }
 
       - name: Tauri 构建
         shell: powershell
