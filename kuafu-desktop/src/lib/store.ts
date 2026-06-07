@@ -84,16 +84,18 @@ export function loadSession() {
 // 保存当前会话到 localStorage
 export function saveSession() {
   let msgs: Message[] = [];
-  messages.subscribe((m) => (msgs = m))();
+  const unsub = messages.subscribe((m) => (msgs = m));
+  unsub();
   try {
     localStorage.setItem(CURRENT_SESSION_KEY, JSON.stringify(msgs));
-  } catch {}
+  } catch {}  // localStorage 满或不可用时静默失败
 }
 
 // 存档当前会话（切换到新会话时调用）
 export function archiveCurrentSession() {
   let msgs: Message[] = [];
-  messages.subscribe((m) => (msgs = m))();
+  const unsub1 = messages.subscribe((m) => (msgs = m));
+  unsub1();
 
   if (msgs.length === 0) return;
 
@@ -101,8 +103,9 @@ export function archiveCurrentSession() {
   const title = extractTitle(msgs);
 
   // 检查是否有同 ID 的存档
-  let sid: string;
-  currentSessionId.subscribe((id) => (sid = id || genId()))();
+  let sid: string = genId();
+  const unsub2 = currentSessionId.subscribe((id) => { if (id) sid = id; });
+  unsub2();
   const idx = archives.findIndex((a) => a.id === sid);
 
   const entry: ArchivedSession = {

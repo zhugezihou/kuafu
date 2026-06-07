@@ -174,7 +174,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             result = self.agent.run(task_text, mode=mode)
             self._send_json(200, {
                 "success": result.get("success", False),
-                "result": result.get("result", "")[:2000],
+                "result": result.get("result", ""),
                 "duration": result.get("duration", 0),
                 "turns": result.get("turns", 0),
                 "errors": result.get("errors", []),

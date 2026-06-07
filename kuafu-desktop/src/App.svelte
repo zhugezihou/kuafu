@@ -23,27 +23,35 @@
   let showSettings = $state(false);
   let healthCheckInterval: ReturnType<typeof setInterval> | undefined;
 
+  // 预存 Tauri invoke 引用（避免 onUnmount 中动态 import）
+  let invokeFn: any = null;
+  let checking = $state(false);
+
   onMount(() => {
     loadSession();
-    startAgentAsync();
+
+    // 预存 invoke 引用
+    import("@tauri-apps/api/core").then((core) => {
+      invokeFn = core.invoke;
+      // 引用就绪后再启动引擎
+      startAgentAsync();
+    }).catch(() => {});
 
     // 每15秒检查引擎状态
     healthCheckInterval = setInterval(checkHealth, 15000);
 
     return () => {
       if (healthCheckInterval) clearInterval(healthCheckInterval);
-      // 窗口关闭时停止夸父引擎
-      import("@tauri-apps/api/core").then(({ invoke }) => {
-        invoke("stop_agent").catch(() => {});
-      });
+      // 使用预存引用，不用动态 import
+      if (invokeFn) invokeFn("stop_agent").catch(() => {});
     };
   });
 
   async function startAgentAsync() {
+    if (!invokeFn) return;
     try {
-      const { invoke } = await import("@tauri-apps/api/core");
       const config = loadConfig();
-      await invoke("update_agent_config", {
+      await invokeFn("update_agent_config", {
         config: {
           model_type: config.modelType,
           local_model_path: config.localModelPath,
@@ -52,12 +60,19 @@
           cloud_model: config.cloudModel,
         },
       });
-      const status = await invoke("start_agent") as any;
+      const status = await invokeFn("start_agent") as any;
       agentRunning.set(status.running);
       if (status.error) agentError.set(status.error);
     } catch {
-      // Tauri API 不可用时保持离线状态
+      agentError.set("引擎启动失败，请点击重试");
     }
+  }
+
+  async function handleRetry() {
+    checking = true;
+    agentError.set(null);
+    await startAgentAsync();
+    checking = false;
   }
 
   async function checkHealth() {
@@ -72,11 +87,10 @@
         agentRunning.set(false);
       }
     } catch {
-      // Gateway 不可达 — 读 Rust 端状态取错误信息，但不要自动重启（避免循环闪终端）
       agentRunning.set(false);
+      if (!invokeFn) return;
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        const st = await invoke("agent_status") as any;
+        const st = await invokeFn("agent_status") as any;
         if (st.error) agentError.set(st.error);
       } catch {}
     }
@@ -123,7 +137,12 @@
 
     <div class="chat-area">
       {#if $agentError}
-        <div class="error-banner">{$agentError}</div>
+        <div class="error-banner">
+          <span>{$agentError}</span>
+          <button class="retry-btn" onclick={handleRetry} disabled={checking}>
+            {checking ? "⋯" : "⟳ 重试"}
+          </button>
+        </div>
       {/if}
       <MessageList />
     </div>
@@ -151,7 +170,15 @@
   .new-btn { font-size: 13px; }
   .chat-area { flex: 1; overflow-y: auto; padding: 12px 0; }
   .error-banner {
+    display: flex; align-items: center; gap: 10px;
     background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3);
     color: #ef4444; margin: 8px 16px; padding: 10px 14px; border-radius: 8px; font-size: 13px;
   }
+  .error-banner span { flex: 1; }
+  .retry-btn {
+    font-size: 12px; padding: 4px 12px; background: rgba(239, 68, 68, 0.15);
+    border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 4px; color: #ef4444;
+    cursor: pointer; white-space: nowrap;
+  }
+  .retry-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>

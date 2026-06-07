@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::io::Read;
+use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
+use std::time::Duration;
 
 const GATEWAY_PORT: u16 = 8081;
 
@@ -70,7 +72,6 @@ impl AgentManager {
         }
     }
 
-    /// 获取嵌入式 Python 路径
     fn embedded_python(&self) -> PathBuf {
         self.python_dir.join("python.exe")
     }
@@ -79,15 +80,20 @@ impl AgentManager {
         self.python_dir.join("kuafu")
     }
 
-    /// 检测系统 Python
+    /// Windows: py.exe (Python Launcher) 优先，再 python3, 再 python
     fn find_system_python() -> Option<PathBuf> {
-        for name in &["python3", "python"] {
+        for name in &["py", "python3", "python"] {
             let p = PathBuf::from(name);
             let ok = Command::new(&p)
                 .args(["--version"])
-                .stdout(Stdio::null()).stderr(Stdio::null())
-                .status().map(|s| s.success()).unwrap_or(false);
-            if ok { return Some(p); }
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if ok {
+                return Some(p);
+            }
         }
         None
     }
@@ -98,7 +104,6 @@ impl AgentManager {
         let embedded_exists = embedded.exists();
         let system_py = Self::find_system_python();
 
-        // 找一个可用的 Python
         let (python_path, python_found) = if embedded_exists {
             (embedded.to_string_lossy().to_string(), true)
         } else if let Some(ref p) = system_py {
@@ -109,8 +114,10 @@ impl AgentManager {
 
         if !python_found {
             return SetupStatus {
-                python_found: false, pyyaml_installed: false,
-                kuafu_found: false, gateway_running: false,
+                python_found: false,
+                pyyaml_installed: false,
+                kuafu_found: false,
+                gateway_running: false,
                 python_path: String::new(),
                 error: Some("未找到 Python 环境，请先安装 Python 3.11+".into()),
                 setup_complete: false,
@@ -119,22 +126,22 @@ impl AgentManager {
 
         let py = PathBuf::from(&python_path);
 
-        // 检查 pyyaml
         let pyyaml_ok = Command::new(&py)
             .args(["-c", "import yaml"])
-            .stdout(Stdio::null()).stderr(Stdio::null())
-            .status().map(|s| s.success()).unwrap_or(false);
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
 
-        // 检查夸父模块
         let kuafu = self.kuafu_dir();
         let kuafu_ok = kuafu.join("core").exists();
 
-        // 检查 Gateway 是否在运行（用 TcpStream 代替 reqwest）
-        use std::net::TcpStream;
         let gateway_ok = TcpStream::connect_timeout(
             &"127.0.0.1:8081".parse().unwrap(),
-            std::time::Duration::from_millis(500),
-        ).is_ok();
+            Duration::from_millis(500),
+        )
+        .is_ok();
 
         let error = if !kuafu_ok {
             Some("未找到夸父模块".into())
@@ -165,12 +172,11 @@ impl AgentManager {
 
         let py = PathBuf::from(&status.python_path);
 
-        // 安装 pyyaml
         if !status.pyyaml_installed {
-            // 先尝试 pip install
             let pip_result = Command::new(&py)
                 .args(["-m", "pip", "install", "pyyaml", "--quiet"])
-                .stdout(Stdio::null()).stderr(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
                 .status();
             if let Ok(code) = pip_result {
                 if code.success() {
@@ -178,24 +184,28 @@ impl AgentManager {
                 }
             }
 
-            // 如果 pip 失败，尝试 ensurepip 后再装
             if !status.pyyaml_installed {
                 let _ = Command::new(&py)
                     .args(["-m", "ensurepip", "--upgrade", "--quiet"])
-                    .stdout(Stdio::null()).stderr(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
                     .status();
                 let _ = Command::new(&py)
                     .args(["-m", "pip", "install", "pyyaml", "--quiet"])
-                    .stdout(Stdio::null()).stderr(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
                     .status();
                 let check = Command::new(&py)
                     .args(["-c", "import yaml"])
-                    .status().map(|s| s.success()).unwrap_or(false);
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false);
                 status.pyyaml_installed = check;
             }
         }
 
-        // 检查夸父模块（内置在 Desktop 打包中）
         if !status.kuafu_found {
             status.error = Some("夸父模块缺失，安装包可能不完整".into());
             return Ok(status);
@@ -211,7 +221,8 @@ impl AgentManager {
         if let Some(ref mut child) = proc.as_mut() {
             if child.try_wait().ok().flatten().is_none() {
                 return Ok(AgentStatus {
-                    running: true, pid: child.id().into(),
+                    running: true,
+                    pid: child.id().into(),
                     gateway_port: GATEWAY_PORT,
                     python_path: self.find_python().to_string_lossy().to_string(),
                     error: None,
@@ -219,7 +230,6 @@ impl AgentManager {
             }
         }
 
-        // 先自动修复环境
         let setup = self.auto_setup()?;
         if !setup.setup_complete {
             let err = setup.error.unwrap_or_else(|| "环境准备未完成".into());
@@ -238,10 +248,17 @@ impl AgentManager {
         let cfg = self.config.lock().map_err(|e| e.to_string())?.clone();
 
         let mut cmd = Command::new(&python);
-        cmd.args(["-m", "core.cli", "gateway", "start", "--port", &GATEWAY_PORT.to_string()])
-            .current_dir(&kuafu)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        cmd.args([
+            "-m",
+            "core.cli",
+            "gateway",
+            "start",
+            "--port",
+            &GATEWAY_PORT.to_string(),
+        ])
+        .current_dir(&kuafu)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
         cmd.env("KUAFFU_GATEWAY_PORT", GATEWAY_PORT.to_string());
         if cfg.model_type == "cloud" {
@@ -259,36 +276,83 @@ impl AgentManager {
         let mut child = cmd.spawn().map_err(|e| format!("启动夸父失败: {e}"))?;
         let pid = child.id();
 
-        // 等一会儿看进程是否立即退出
-        std::thread::sleep(std::time::Duration::from_millis(800));
-        if let Some(exit) = child.try_wait().ok().flatten() {
-            let mut stderr = String::new();
-            if let Some(ref mut pipe) = child.stderr {
-                let _ = pipe.read_to_string(&mut stderr);
+        // 轮询 5 秒: 每 500ms 检查进程退出 + Gateway HTTP 就绪
+        let mut gateway_ready = false;
+        for _ in 0..10 {
+            std::thread::sleep(Duration::from_millis(500));
+
+            // 进程是否已退出？
+            if let Some(exit) = child.try_wait().ok().flatten() {
+                let mut stderr = String::new();
+                if let Some(ref mut pipe) = child.stderr {
+                    let _ = pipe.read_to_string(&mut stderr);
+                }
+                let msg = if stderr.is_empty() {
+                    format!("夸父启动失败 (exit code: {})", exit.code().unwrap_or(-1))
+                } else {
+                    format!("夸父启动失败: {}", stderr.trim())
+                };
+                if let Ok(mut last) = self.last_error.lock() {
+                    *last = msg.clone();
+                }
+                return Err(msg);
             }
-            let msg = if stderr.is_empty() {
-                format!("夸父启动失败 (exit code: {})", exit.code().unwrap_or(-1))
-            } else {
-                format!("夸父启动失败: {}", stderr.trim())
-            };
-            if let Ok(mut last) = self.last_error.lock() { *last = msg.clone(); }
-            return Err(msg);
+
+            // Gateway HTTP 端口起来了吗？
+            if TcpStream::connect_timeout(
+                &"127.0.0.1:8081".parse().unwrap(),
+                Duration::from_millis(200),
+            )
+            .is_ok()
+            {
+                gateway_ready = true;
+                break;
+            }
         }
 
         *proc = Some(child);
-        if let Ok(mut last) = self.last_error.lock() { last.clear(); }
+        if let Ok(mut last) = self.last_error.lock() {
+            last.clear();
+        }
 
         Ok(AgentStatus {
-            running: true, pid: Some(pid),
-            gateway_port: GATEWAY_PORT, python_path: python_str, error: None,
+            running: true,
+            pid: Some(pid),
+            gateway_port: GATEWAY_PORT,
+            python_path: python_str,
+            error: if gateway_ready {
+                None
+            } else {
+                Some("网关启动较慢，健康检查将继续等待".into())
+            },
         })
     }
 
+    /// Graceful stop: SIGTERM → 等 2s → SIGKILL
     pub fn stop(&self) -> Result<(), String> {
         let mut proc = self.process.lock().map_err(|e| e.to_string())?;
         if let Some(mut child) = proc.take() {
-            child.kill().map_err(|e| format!("停止夸父失败: {e}"))?;
-            child.wait().ok();
+            // Windows 上 kill 相当于 TerminateProcess
+            #[cfg(windows)]
+            {
+                let _ = child.kill();
+                // 等 2 秒让进程处理收尾
+                for _ in 0..4 {
+                    if child.try_wait().ok().flatten().is_some() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+                let _ = child.wait();
+            }
+            #[cfg(not(windows))]
+            {
+                use nix::sys::signal::{self, Signal};
+                use nix::unistd::Pid;
+                let _ = signal::kill(Pid::from_raw(child.id() as i32), Signal::SIGTERM);
+                std::thread::sleep(Duration::from_secs(2));
+                let _ = child.wait();
+            }
         }
         Ok(())
     }
@@ -305,7 +369,8 @@ impl AgentManager {
             (false, Some(self.get_last_error()))
         };
         AgentStatus {
-            running, pid: proc.as_ref().map(|p| p.id()),
+            running,
+            pid: proc.as_ref().map(|p| p.id()),
             gateway_port: GATEWAY_PORT,
             python_path: self.find_python().to_string_lossy().to_string(),
             error: err,
@@ -319,27 +384,41 @@ impl AgentManager {
 
     fn find_python(&self) -> PathBuf {
         let embedded = self.embedded_python();
-        // 检查嵌入式 Python 是否有 pyyaml
         if embedded.exists() {
             let ok = Command::new(&embedded)
                 .args(["-c", "import yaml"])
-                .stdout(Stdio::null()).stderr(Stdio::null())
-                .status().map(|s| s.success()).unwrap_or(false);
-            if ok { return embedded; }
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if ok {
+                return embedded;
+            }
         }
-        // fallback 到系统 Python
         if let Some(sys) = Self::find_system_python() {
             let ok = Command::new(&sys)
                 .args(["-c", "import yaml"])
-                .stdout(Stdio::null()).stderr(Stdio::null())
-                .status().map(|s| s.success()).unwrap_or(false);
-            if ok { return sys; }
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if ok {
+                return sys;
+            }
         }
-        // 返回可用的
-        if embedded.exists() { embedded } else { PathBuf::from("python") }
+        if embedded.exists() {
+            embedded
+        } else {
+            PathBuf::from("python")
+        }
     }
 
     fn get_last_error(&self) -> String {
-        self.last_error.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.last_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 }
