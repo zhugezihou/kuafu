@@ -63,8 +63,8 @@
       const status = await invokeFn("start_agent") as any;
       agentRunning.set(status.running);
       if (status.error) agentError.set(status.error);
-    } catch {
-      agentError.set("引擎启动失败，请点击重试");
+    } catch (e: any) {
+      agentError.set(`引擎启动失败: ${e.message || e}`);
     }
   }
 
