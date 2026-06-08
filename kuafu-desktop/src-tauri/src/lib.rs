@@ -67,6 +67,10 @@ fn check_setup(state: tauri::State<AppState>) -> agent::SetupStatus {
 /// 通过 Rust 发送 POST 请求到本地 Gateway（绕过 WebView CORS 限制）
 #[tauri::command]
 fn send_task(task: String) -> Result<String, String> {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::time::Duration;
+
     let body = serde_json::json!({
         "task": task,
         "mode": "standard",
@@ -74,14 +78,40 @@ fn send_task(task: String) -> Result<String, String> {
     });
     let body_str = serde_json::to_string(&body).map_err(|e| format!("序列化失败: {e}"))?;
 
-    let resp = ureq::post("http://localhost:8081/api/task")
-        .set("Content-Type", "application/json")
-        .timeout(std::time::Duration::from_secs(120))
-        .send_string(&body_str)
-        .map_err(|e| format!("请求失败: {e}"))?;
+    let mut stream = TcpStream::connect_timeout(
+        &"127.0.0.1:8081".parse().unwrap(),
+        Duration::from_secs(5),
+    )
+    .map_err(|e| format!("连接 Gateway 失败: {e}"))?;
 
-    let text = resp.into_string().map_err(|e| format!("读取响应失败: {e}"))?;
-    Ok(text)
+    let request = format!(
+        "POST /api/task HTTP/1.0\r\n\
+         Host: localhost:8081\r\n\
+         Content-Type: application/json\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n\
+         \r\n\
+         {}",
+        body_str.len(),
+        body_str
+    );
+
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| format!("发送请求失败: {e}"))?;
+
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .map_err(|e| format!("读取响应失败: {e}"))?;
+
+    // 提取 HTTP body（第一个空行之后的内容）
+    let body = response
+        .split("\r\n\r\n")
+        .nth(1)
+        .unwrap_or("")
+        .to_string();
+    Ok(body)
 }
 
 #[tauri::command]
