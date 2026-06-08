@@ -4,6 +4,7 @@
   import MessageList from "./components/MessageList.svelte";
   import MessageInput from "./components/MessageInput.svelte";
   import StatusBar from "./components/StatusBar.svelte";
+  import SetupWizard from "./components/SetupWizard.svelte";
   import Settings from "./components/Settings.svelte";
   import {
     messages,
@@ -26,15 +27,24 @@
   // 预存 Tauri invoke 引用（避免 onUnmount 中动态 import）
   let invokeFn: any = null;
   let checking = $state(false);
+  let showSetup = $state(true);
+  let setupWizardRef: any = $state(undefined);
 
   onMount(() => {
     loadSession();
 
     // 预存 invoke 引用
-    import("@tauri-apps/api/core").then((core) => {
+    import("@tauri-apps/api/core").then(async (core) => {
       invokeFn = core.invoke;
-      // 引用就绪后再启动引擎
-      startAgentAsync();
+      // 引用就绪后启动引导检测
+      if (setupWizardRef) {
+        const ok = await setupWizardRef.runSetup();
+        if (ok) {
+          showSetup = false;
+          // 引擎已启动，通知 store
+          agentRunning.set(true);
+        }
+      }
     }).catch(() => {});
 
     // 每15秒检查引擎状态
@@ -119,6 +129,11 @@
 </script>
 
 <div class="app">
+  {#if showSetup}
+    <div class="setup-overlay">
+      <SetupWizard bind:this={setupWizardRef} />
+    </div>
+  {:else}
   {#if sidebarOpen}
     <Sidebar
       onClose={() => (sidebarOpen = false)}
@@ -150,6 +165,7 @@
     <MessageInput onSend={handleSend} disabled={$isRunning || !$agentRunning} />
     <StatusBar />
   </div>
+  {/if}
 </div>
 
 {#if showSettings}
@@ -181,4 +197,9 @@
     cursor: pointer; white-space: nowrap;
   }
   .retry-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .setup-overlay {
+    display: flex; align-items: center; justify-content: center;
+    width: 100%; height: 100dvh;
+    background: var(--bg, #0d0d1a);
+  }
 </style>

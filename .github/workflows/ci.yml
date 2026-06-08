@@ -194,14 +194,32 @@ jobs:
           curl.exe -L -o $zip $url
           echo "extracting to $out..."
           Expand-Archive -Path $zip -DestinationPath $out -Force
+
+          # 获取系统 Python（用于 pip install pyyaml）
+          $sysPython = if (Get-Command "python3" -ErrorAction SilentlyContinue) { "python3" } elseif (Get-Command "python" -ErrorAction SilentlyContinue) { "python" } else { $null }
+
           # 复制夸父源码
           echo "copying kuafu source..."
           mkdir "$out\kuafu" -Force | Out-Null
           Copy-Item "$pwd\..\core" "$out\kuafu\" -Recurse -Force
           Copy-Item "$pwd\..\pyproject.toml" "$out\kuafu\" -Force
-          # 配置 python._pth
+
+          # 配置 python._pth（启用 import site，使 site-packages 生效）
           Add-Content "$out\python._pth" "`n..\kuafu"
           Add-Content "$out\python._pth" "`nimport site"
+
+          # 预装 pyyaml 到嵌入式 Python
+          if ($sysPython) {
+            echo "pre-installing pyyaml via $sysPython..."
+            & $sysPython -m pip install pyyaml --target "$out\Lib\site-packages" --quiet 2>$null
+            if ($LASTEXITCODE -eq 0) {
+              echo "pyyaml pre-installed to embedded python"
+            } else {
+              echo "WARNING: pyyaml pre-install failed, fallback to runtime install"
+            }
+          } else {
+            echo "WARNING: no system python for pre-install, will try ensurepip at runtime"
+          }
 
       - name: Tauri 构建
         shell: powershell
