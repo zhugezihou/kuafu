@@ -171,14 +171,25 @@ class GatewayHandler(BaseHTTPRequestHandler):
         sync = body.get("sync", True)
 
         if sync:
-            result = self.agent.run(task_text, mode=mode)
-            self._send_json(200, {
-                "success": result.get("success", False),
-                "result": result.get("result", ""),
-                "duration": result.get("duration", 0),
-                "turns": result.get("turns", 0),
-                "errors": result.get("errors", []),
-            })
+            try:
+                result = self.agent.run(task_text, mode=mode)
+                self._send_json(200, {
+                    "success": result.get("success", False),
+                    "result": result.get("result", ""),
+                    "duration": result.get("duration", 0),
+                    "turns": result.get("turns", 0),
+                    "errors": result.get("errors", []),
+                })
+            except Exception as e:
+                import traceback
+                tb = traceback.format_exc()
+                print(f"[Gateway] _handle_task 异常: {e}\n{tb}", flush=True)
+                self._send_json(500, {
+                    "success": False,
+                    "result": f"引擎内部错误: {e}",
+                    "error": str(e),
+                    "traceback": tb[-500:],
+                })
         else:
             # 异步执行
             threading.Thread(
