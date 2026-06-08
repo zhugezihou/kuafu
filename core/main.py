@@ -30,7 +30,13 @@ from core.evolution import EvolutionEngine, EvolutionEvent
 from core.llm import LLMClient
 from core.model_manager import ModelManager, ALIASES
 from core.agent_loop import AgentLoop
-from autonomous.reviewer import ReviewerThread
+
+# P0: 复盘线程（可选加载）
+try:
+    from autonomous.reviewer import ReviewerThread
+    _HAS_REVIEWER = True
+except ImportError:  # pragma: no cover
+    _HAS_REVIEWER = False  # pragma: no cover
 
 # P2: 自主决策模块（可选加载）
 try:
@@ -72,13 +78,16 @@ class KuafuAgent:
         self._conversation_messages: list = []
         self._setup()
         # P0: 启动后台复盘线程（daemon=True，自动随主进程退出）
-        self._reviewer_thread = ReviewerThread(
-            llm_chat_fn=self.llm.chat,
-            memory_remember_fn=lambda key, content, tags: self.memory.remember(
-                key=key, content=content, tags=tags
-            ),
-        )
-        self._reviewer_thread.start()
+        if _HAS_REVIEWER:
+            self._reviewer_thread: Any = ReviewerThread(
+                llm_chat_fn=self.llm.chat,
+                memory_remember_fn=lambda key, content, tags: self.memory.remember(
+                    key=key, content=content, tags=tags
+                ),
+            )
+            self._reviewer_thread.start()
+        else:
+            self._reviewer_thread = None
 
         # P2: 启动自主决策线程（daemon=True，周期性检查空闲状态）
         self._prioritizer_thread: Optional[threading.Thread] = None
