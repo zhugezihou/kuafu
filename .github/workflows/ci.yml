@@ -254,7 +254,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          cd kuafu-desktop
           VER=$(grep '^version = ' src-tauri/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           TAG="desktop-v$VER"
 
