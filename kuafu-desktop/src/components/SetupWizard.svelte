@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { agentRunning, agentError } from "./lib/store";
+  import { agentRunning, agentError } from "../lib/store";
 
   interface SetupCheck {
     label: string;
