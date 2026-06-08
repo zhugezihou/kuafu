@@ -273,18 +273,22 @@ jobs:
             (Get-Content src-tauri/Cargo.toml) -replace 'version = "'+$ver+'"', 'version = "'+$newVer+'"' | Set-Content src-tauri/Cargo.toml
             (Get-Content src-tauri/tauri.conf.json) -replace '"version": "'+$ver+'"', '"version": "'+$newVer+'"' | Set-Content src-tauri/tauri.conf.json
 
-            # 提交 bump
+            # 提交 bump（只提交版本文件，忽略其他改动）
             git config user.name "kuafu-ci"
             git config user.email "ci@kuafu.dev"
             git add src-tauri/Cargo.toml src-tauri/tauri.conf.json
-            git commit -m "desktop v${newVer}: auto bump for CI release"
-            git push
+            git commit -m "desktop v${newVer}: auto bump for CI release" 2>$null
+            git push 2>$null
 
             $ver = $newVer
             $tag = $newTag
           }
 
-          # 生成改动说明：从上个 tag 到当前 HEAD
+          # 获取远程 tag
+          git fetch --tags origin 2>$null
+          $prevTag = "desktop-v$ver"
+
+          # 生成改动说明
           $changelog = git log --oneline --no-decorate "$prevTag..HEAD" 2>$null
           if (-not $changelog) {
             # 没有前一个 tag，用最近 10 条
