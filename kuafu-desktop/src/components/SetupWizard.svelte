@@ -136,6 +136,11 @@
           const errMsg = status?.error || "启动返回失败状态";
           updateCheck("gateway", "fail", errMsg);
           addLog(`✗ 引擎启动失败: ${errMsg}`);
+          // 再查一次 agent_status 获取更详细的错误
+          try {
+            const st = await invokeFn("agent_status") as any;
+            if (st && st.error) addLog(`  agent_status: ${st.error}`);
+          } catch {}
           overallStatus = "fail";
           return false;
         }
@@ -143,6 +148,11 @@
         const errMsg = e.message || String(e);
         updateCheck("gateway", "fail", errMsg);
         addLog(`✗ 引擎启动异常: ${errMsg}`);
+        // 尝试获取更详细的错误
+        try {
+          const st = await invokeFn("agent_status") as any;
+          if (st && st.error) addLog(`  agent_status: ${st.error}`);
+        } catch {}
         overallStatus = "fail";
         return false;
       }

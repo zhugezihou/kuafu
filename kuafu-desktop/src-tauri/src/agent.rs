@@ -323,14 +323,36 @@ impl AgentManager {
 
             // 进程是否已退出？
             if let Some(exit) = child.try_wait().ok().flatten() {
+                // 确保读完 stderr（等一小会儿让 pipe 缓冲刷出）
+                std::thread::sleep(Duration::from_millis(100));
                 let mut stderr = String::new();
                 if let Some(ref mut pipe) = child.stderr {
                     let _ = pipe.read_to_string(&mut stderr);
                 }
-                let msg = if stderr.is_empty() {
+                // 如果 stderr 为空，也可能 stdout 里有错误
+                let mut stdout = String::new();
+                if stderr.is_empty() {
+                    if let Some(ref mut pipe) = child.stdout {
+                        let _ = pipe.read_to_string(&mut stdout);
+                    }
+                }
+                let output = if !stderr.is_empty() {
+                    stderr.trim().to_string()
+                } else if !stdout.is_empty() {
+                    stdout.trim().to_string()
+                } else {
+                    String::new()
+                };
+                let msg = if output.is_empty() {
                     format!("夸父启动失败 (exit code: {})", exit.code().unwrap_or(-1))
                 } else {
-                    format!("夸父启动失败: {}", stderr.trim())
+                    // 截断过长输出（最多 300 字符）
+                    let truncated = if output.len() > 300 {
+                        format!("{}...", &output[..300])
+                    } else {
+                        output
+                    };
+                    format!("夸父启动失败: {}", truncated)
                 };
                 if let Ok(mut last) = self.last_error.lock() {
                     *last = msg.clone();
