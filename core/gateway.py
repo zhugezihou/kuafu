@@ -62,6 +62,16 @@ class GatewayHandler(BaseHTTPRequestHandler):
         self._send_json(401, {"error": "Unauthorized"})
         return False
 
+    # ── OPTIONS (CORS 预检) ──────────────────────────────────
+
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("Access-Control-Max-Age", "86400")
+        self.end_headers()
+
     # ── GET 路由 ────────────────────────────────────────────
 
     def do_GET(self):
