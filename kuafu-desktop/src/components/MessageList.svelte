@@ -3,18 +3,45 @@
   import MarkdownRenderer from "./MarkdownRenderer.svelte";
 
   let msgContainer: HTMLDivElement | undefined = $state();
+  let hoveredIdx = $state<number | null>(null);
+  let copiedIdx = $state<number | null>(null);
+  let searchQuery = $state("");
+  let showSearch = $state(false);
 
   $effect(() => {
     // 自动滚动到底部
-    if (msgContainer) {
-      $effect(() => {
-        $messages;
-        requestAnimationFrame(() => {
-          msgContainer!.scrollTop = msgContainer!.scrollHeight;
-        });
+    if (msgContainer && !showSearch) {
+      const msgs = $messages;
+      requestAnimationFrame(() => {
+        msgContainer!.scrollTop = msgContainer!.scrollHeight;
       });
     }
   });
+
+  // 搜索过滤
+  let filteredMessages = $derived.by(() => {
+    if (!searchQuery.trim()) return $messages;
+    const q = searchQuery.toLowerCase();
+    return $messages.filter((m) => m.content.toLowerCase().includes(q));
+  });
+
+  function formatTime(ts?: number): string {
+    if (!ts) return "";
+    const d = new Date(ts);
+    const now = new Date();
+    const diff = now.getTime() - d.getTime();
+    if (diff < 60000) return "刚刚";
+    const h = d.getHours().toString().padStart(2, "0");
+    const m = d.getMinutes().toString().padStart(2, "0");
+    if (diff < 86400000) return `${h}:${m}`;
+    return `${d.getMonth() + 1}月${d.getDate()}日 ${h}:${m}`;
+  }
+
+  function copyContent(content: string, idx: number) {
+    navigator.clipboard.writeText(content);
+    copiedIdx = idx;
+    setTimeout(() => { copiedIdx = null; }, 2000);
+  }
 </script>
 
 <div class="list" bind:this={msgContainer}>
@@ -26,13 +53,37 @@
     </div>
   {/if}
 
-  {#each $messages as msg, i (i)}
-    <div class="message" class:user={msg.role === "user"} class:assistant={msg.role === "assistant"}>
+  <div class="search-bar" class:active={showSearch}>
+    <input
+      type="text"
+      placeholder="搜索对话…"
+      bind:value={searchQuery}
+      onfocus={() => (showSearch = true)}
+      onblur={() => { if (!searchQuery) showSearch = false; }}
+    />
+    {#if searchQuery}
+      <span class="search-count">{filteredMessages.length} / {$messages.length}</span>
+      <button class="search-close" onclick={() => { searchQuery = ""; showSearch = false; }}>✕</button>
+    {/if}
+  </div>
+
+  {#each filteredMessages as msg, i (i)}
+    <div class="message" class:user={msg.role === "user"} class:assistant={msg.role === "assistant"}
+         onmouseenter={() => (hoveredIdx = i)}
+         onmouseleave={() => (hoveredIdx = null)}>
       <div class="avatar">
         {msg.role === "user" ? "你" : "夸"}
       </div>
       <div class="content">
-        <div class="role-label">{msg.role === "user" ? "你" : "夸父"}</div>
+        <div class="meta-row">
+          <span class="role-label">{msg.role === "user" ? "你" : "夸父"}</span>
+          <span class="timestamp">{formatTime(msg.timestamp)}</span>
+          {#if hoveredIdx === i}
+            <button class="copy-btn" onclick={() => copyContent(msg.content, i)}>
+              {copiedIdx === i ? "✓" : "📋"}
+            </button>
+          {/if}
+        </div>
         {#if msg.role === "user"}
           <div class="text">{msg.content}</div>
         {:else}
@@ -52,6 +103,31 @@
     flex-direction: column;
     gap: 8px;
   }
+
+  .search-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    background: var(--bg);
+    z-index: 10;
+  }
+  .search-bar input {
+    flex: 1;
+    padding: 4px 8px;
+    font-size: 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    outline: none;
+  }
+  .search-bar.active input { border-color: var(--accent); }
+  .search-count { font-size: 11px; color: var(--text2); }
+  .search-close { background: none; border: none; color: var(--text2); cursor: pointer; font-size: 12px; }
 
   .empty {
     flex: 1;
@@ -130,8 +206,36 @@
   .role-label {
     font-size: 11px;
     font-weight: 600;
-    margin-bottom: 4px;
     opacity: 0.7;
+  }
+
+  .meta-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+  }
+
+  .timestamp {
+    font-size: 10px;
+    color: var(--text2);
+    opacity: 0.5;
+  }
+
+  .copy-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text2);
+    padding: 0 6px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 11px;
+    line-height: 1.6;
+    opacity: 0.6;
+  }
+  .copy-btn:hover {
+    opacity: 1;
+    background: rgba(255,255,255,0.05);
   }
 
   .text {

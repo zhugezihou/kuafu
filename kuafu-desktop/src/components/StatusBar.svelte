@@ -24,7 +24,7 @@
 <footer class="status-bar">
   <div class="status-left">
     {#if $isRunning}
-      <span class="running">⏳ 运行中…</span>
+      <span class="running"><span class="spinner"></span> 思考中…</span>
     {:else if $agentError}
       <span class="error">⚠ {$agentError}</span>
     {:else if $agentRunning}
@@ -60,7 +60,13 @@
     gap: 8px;
   }
 
-  .running { color: var(--accent); }
+  .running { color: var(--accent); display: flex; align-items: center; gap: 6px; }
+  .spinner {
+    display: inline-block; width: 10px; height: 10px;
+    border: 2px solid var(--accent); border-top-color: transparent;
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .idle { color: #22c55e; }
   .error { color: #ef4444; }
   .offline { color: #6b7280; }

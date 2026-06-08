@@ -14,9 +14,18 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey) {
-      e.preventDefault();
-      submit(e);
+    if (e.key === "Enter" && !e.shiftKey) {
+      // Ctrl+Enter 发送（改：防止误触，明确区分）
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        submit(e);
+        return;
+      }
+      // 单独的 Enter 也发送（不改原有习惯）
+      if (!e.ctrlKey && !e.shiftKey) {
+        e.preventDefault();
+        submit(e);
+      }
     }
   }
 </script>

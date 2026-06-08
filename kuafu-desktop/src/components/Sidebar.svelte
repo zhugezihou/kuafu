@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { archivedSessions, currentSessionId, loadArchivedSession, deleteArchivedSession, clearMessages } from "../lib/store";
+  import { archivedSessions, currentSessionId, loadArchivedSession, deleteArchivedSession, renameArchivedSession, clearMessages } from "../lib/store";
 
   let {
     onClose = () => {},
@@ -8,14 +8,59 @@
   }: { onClose: () => void; onNewChat: () => void; onOpenSettings: () => void } = $props();
 
   let hoveredId = $state<string | null>(null);
+  let renamingId = $state<string | null>(null);
+  let renameText = $state("");
 
   function selectSession(id: string) {
     loadArchivedSession(id);
   }
 
+  function exportSession(id: string) {
+    const archives = JSON.parse(localStorage.getItem("kuafu-desktop-archives") || "[]");
+    const entry = archives.find((a: any) => a.id === id);
+    if (!entry) return;
+    // 构建 Markdown
+    let md = `# ${entry.title}\n\n`;
+    md += `导出时间: ${new Date().toLocaleString("zh-CN")}\n\n---\n\n`;
+    for (const msg of entry.messages) {
+      const role = msg.role === "user" ? "**你**" : "**夸父**";
+      md += `${role}:\n${msg.content}\n\n`;
+    }
+    // 下载
+    const blob = new Blob([md], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${entry.title.slice(0, 20)}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   function handleNewChat() {
     clearMessages();
     onNewChat();
+  }
+
+  function startRename(id: string, currentTitle: string) {
+    renamingId = id;
+    renameText = currentTitle;
+  }
+
+  function commitRename() {
+    if (renamingId && renameText.trim()) {
+      renameArchivedSession(renamingId, renameText.trim());
+    }
+    renamingId = null;
+  }
+
+  function handleRenameKeydown(e: KeyboardEvent) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commitRename();
+    }
+    if (e.key === "Escape") {
+      renamingId = null;
+    }
   }
 
   function formatTime(ts: number): string {
@@ -51,14 +96,28 @@
         onmouseenter={() => (hoveredId = session.id)}
         onmouseleave={() => (hoveredId = null)}
       >
-        <span class="session-title">{session.title}</span>
-        <span class="session-meta">
-          {#if hoveredId === session.id}
-            <span class="delete-btn" onclick={(e) => { e.stopPropagation(); deleteArchivedSession(session.id); }}>✕</span>
-          {:else}
-            <span class="session-time">{formatTime(session.updatedAt)}</span>
-          {/if}
-        </span>
+        {#if renamingId === session.id}
+          <input
+            class="rename-input"
+            type="text"
+            bind:value={renameText}
+            onkeydown={handleRenameKeydown}
+            onblur={commitRename}
+            onclick={(e) => e.stopPropagation()}
+            autofocus
+          />
+        {:else}
+          <span class="session-title" ondblclick={(e) => { e.stopPropagation(); startRename(session.id, session.title); }}>{session.title}</span>
+          <span class="session-meta">
+            {#if hoveredId === session.id}
+              <span class="rename-btn" onclick={(e) => { e.stopPropagation(); startRename(session.id, session.title); }} title="重命名">✎</span>
+              <span class="export-btn" onclick={(e) => { e.stopPropagation(); exportSession(session.id); }} title="导出">↓</span>
+              <span class="delete-btn" onclick={(e) => { e.stopPropagation(); deleteArchivedSession(session.id); }}>✕</span>
+            {:else}
+              <span class="session-time">{formatTime(session.updatedAt)}</span>
+            {/if}
+          </span>
+        {/if}
       </button>
     {/each}
   </div>
@@ -192,6 +251,35 @@
   .session-meta {
     flex-shrink: 0;
     font-size: 11px;
+    display: flex;
+    gap: 4px;
+  }
+
+  .rename-btn {
+    color: var(--accent);
+    font-size: 14px;
+    padding: 0 2px;
+    cursor: pointer;
+  }
+  .rename-btn:hover { opacity: 0.8; }
+
+  .export-btn {
+    color: #22c55e;
+    font-size: 12px;
+    padding: 0 2px;
+    cursor: pointer;
+  }
+  .export-btn:hover { opacity: 0.8; }
+
+  .rename-input {
+    flex: 1;
+    padding: 2px 6px;
+    font-size: 13px;
+    background: var(--bg);
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    color: var(--text);
+    outline: none;
   }
 
   .session-time {

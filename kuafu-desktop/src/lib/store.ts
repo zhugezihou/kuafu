@@ -143,11 +143,22 @@ export function deleteArchivedSession(id: string) {
   archivedSessions.set(archives);
 }
 
+// 重命名存档会话
+export function renameArchivedSession(id: string, newTitle: string) {
+  const archives = loadArchives();
+  const entry = archives.find((a) => a.id === id);
+  if (entry) {
+    entry.title = newTitle;
+    saveArchives(archives);
+    archivedSessions.set(archives);
+  }
+}
+
 // ── 消息操作 ──
 
 // 追加消息
 export function addMessage(msg: Message) {
-  messages.update((msgs) => [...msgs, msg]);
+  messages.update((msgs) => [...msgs, { ...msg, timestamp: msg.timestamp || Date.now() }]);
   // 每次添加消息自动保存
   saveMessages();
 }
