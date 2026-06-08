@@ -20,6 +20,7 @@
   import { sendMessageStream } from "./lib/gateway";
   import { log } from "./lib/debug";
   import DebugPanel from "./components/DebugPanel.svelte";
+  import { loadConfig, saveConfig } from "./lib/config";
 
   let sidebarOpen = $state(true);
   let showSettings = $state(false);
@@ -27,11 +28,22 @@
 
   let invokeFn: any = null;
   let checking = $state(false);
-  let showSetup = $state(true);
+  let showSetup = $state(false);
+  let showCloudGuide = $state(false);
 
   onMount(() => {
     loadSession();
     log("info", "App mounted, loading Tauri API...");
+
+    // 检查是否首次运行
+    const cfg = loadConfig();
+    if (!cfg.setupComplete) {
+      log("info", "首次运行，显示环境检测");
+      showSetup = true;
+    } else if (!cfg.cloudApiKey) {
+      log("info", "未配置云端 API，显示引导");
+      showCloudGuide = true;
+    }
 
     // 预存 invoke 引用
     import("@tauri-apps/api/core").then((core) => {
@@ -160,10 +172,33 @@
 <div class="app">
   {#if showSetup}
     <div class="setup-overlay">
-      <SetupWizard onComplete={(ok) => { if (ok) { showSetup = false; agentRunning.set(true); } }} />
+      <SetupWizard onComplete={(ok) => {
+        if (ok) {
+          const cfg = loadConfig();
+          saveConfig({ ...cfg, setupComplete: true });
+          showSetup = false;
+          log("info", "setup complete, starting engine...");
+          startAgentAsync();
+        }
+      }} />
     </div>
   {:else}
-  {#if sidebarOpen}
+  {#if showCloudGuide}
+    <div class="cloud-guide-overlay">
+      <div class="cloud-guide-card">
+        <h2>☁️ 配置云端大模型</h2>
+        <p>夸父需要 API Key 才能运行。请配置你的云端模型提供商。</p>
+        <div class="cloud-guide-actions">
+          <button class="btn-primary" onclick={() => { showCloudGuide = false; showSettings = true; }}>
+            去设置
+          </button>
+          <button class="btn-secondary" onclick={() => { showCloudGuide = false; }}>
+            稍后配置
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
     <Sidebar
       onClose={() => (sidebarOpen = false)}
       onNewChat={handleNewChat}
@@ -232,5 +267,28 @@
     display: flex; align-items: center; justify-content: center;
     width: 100%; height: 100dvh;
     background: var(--bg, #0d0d1a);
+  }
+  .cloud-guide-overlay {
+    position: fixed; inset: 0; z-index: 100;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(4px);
+  }
+  .cloud-guide-card {
+    background: var(--surface, #1a1a2e);
+    border: 1px solid var(--border, #2a2a3e);
+    border-radius: 12px; padding: 32px; max-width: 400px;
+    text-align: center;
+  }
+  .cloud-guide-card h2 { margin: 0 0 12px; font-size: 18px; }
+  .cloud-guide-card p { margin: 0 0 20px; font-size: 14px; color: var(--text-secondary, #888); }
+  .cloud-guide-actions { display: flex; gap: 10px; justify-content: center; }
+  .btn-primary {
+    padding: 8px 20px; border-radius: 6px; font-size: 14px;
+    background: var(--accent, #6c63ff); color: #fff; border: none; cursor: pointer;
+  }
+  .btn-secondary {
+    padding: 8px 20px; border-radius: 6px; font-size: 14px;
+    background: transparent; color: var(--text, #ccc); border: 1px solid var(--border, #333); cursor: pointer;
   }
 </style>

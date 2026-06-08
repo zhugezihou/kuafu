@@ -10,6 +10,7 @@ export interface AppConfig {
   cloudBaseUrl: string;
   cloudModel: string;
   theme: "dark" | "light";
+  setupComplete: boolean;  // 是否已完成环境检测和初始配置
 }
 
 const STORAGE_KEY = "kuafu-desktop-config";
@@ -23,6 +24,7 @@ const defaults: AppConfig = {
   cloudBaseUrl: "https://api.deepseek.com",
   cloudModel: "deepseek-chat",
   theme: "dark",
+  setupComplete: false,
 };
 
 // 响应式 store

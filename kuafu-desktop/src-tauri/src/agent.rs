@@ -305,6 +305,18 @@ impl AgentManager {
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
 
+        // Desktop 模式下，stderr 重定向日志文件，方便排查
+        let log_dir = self.python_dir.join("logs");
+        let _ = std::fs::create_dir_all(&log_dir);
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let log_file = log_dir.join(format!("gateway_{}.log", ts));
+        if let Ok(file) = std::fs::File::create(&log_file) {
+            cmd.stderr(file);
+        }
+
         cmd.env("KUAFFU_GATEWAY_PORT", GATEWAY_PORT.to_string());
         cmd.env("KUAFFU_DESKTOP", "1");  // Desktop 模式：禁用微信/飞书等交互通道
         if cfg.model_type == "cloud" {
