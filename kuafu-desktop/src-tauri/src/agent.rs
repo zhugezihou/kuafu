@@ -281,6 +281,9 @@ impl AgentManager {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
+        // 设置 PYTHONPATH 确保能找到 core 模块（解决中文路径下 python._pth 失效问题）
+        cmd.env("PYTHONPATH", &kuafu_str);
+
         cmd.env("KUAFFU_GATEWAY_PORT", GATEWAY_PORT.to_string());
         if cfg.model_type == "cloud" {
             cmd.env("KUAFFU_LLM_BACKEND", "cloud");

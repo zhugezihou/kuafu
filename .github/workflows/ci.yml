@@ -257,11 +257,24 @@ jobs:
           VER=$(grep '^version = ' src-tauri/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           TAG="desktop-v$VER"
 
-          # 如果 tag 已存在，删除旧的 release 和 tag
-          if gh release view "$TAG" --json tagName &>/dev/null; then
-            echo "Tag $TAG exists, deleting old release..."
-            gh release delete "$TAG" --yes 2>/dev/null || true
-            git push origin ":refs/tags/$TAG" 2>/dev/null || true
+          # 如果 tag 已存在，patch 版本 +1 直到 tag 不冲突
+          while gh release view "$TAG" --json tagName &>/dev/null; do
+            echo "Tag $TAG exists, bumping patch..."
+            IFS='.' read -ra PARTS <<< "$VER"
+            PARTS[2]=$((PARTS[2] + 1))
+            VER="${PARTS[0]}.${PARTS[1]}.${PARTS[2]}"
+            TAG="desktop-v$VER"
+          done
+
+          # 如果版本号变了，更新文件并提交
+          if [ "$VER" != "$(grep '^version = ' src-tauri/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')" ]; then
+            sed -i "s/^version = \".*\"/version = \"$VER\"/" src-tauri/Cargo.toml
+            sed -i "s/\"version\": \".*\"/\"version\": \"$VER\"/" src-tauri/tauri.conf.json
+            git config user.name "kuafu-ci"
+            git config user.email "ci@kuafu.dev"
+            git add src-tauri/Cargo.toml src-tauri/tauri.conf.json
+            git commit -m "desktop v$VER: auto bump for CI release"
+            git push
           fi
 
           # 获取上个发布 tag 用于 changelog
