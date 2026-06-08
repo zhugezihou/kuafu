@@ -65,11 +65,13 @@ fn check_setup(state: tauri::State<AppState>) -> agent::SetupStatus {
 }
 
 /// 通过 Rust 发送 POST 请求到本地 Gateway（绕过 WebView CORS 限制）
+/// 支持流式返回：通过 Tauri event 推送每段响应
 #[tauri::command]
-fn send_task(task: String) -> Result<String, String> {
+fn send_task(task: String, app_handle: tauri::AppHandle) -> Result<String, String> {
     use std::io::{Read, Write};
     use std::net::TcpStream;
     use std::time::Duration;
+    use std::thread;
 
     let body = serde_json::json!({
         "task": task,
@@ -106,11 +108,33 @@ fn send_task(task: String) -> Result<String, String> {
         .map_err(|e| format!("读取响应失败: {e}"))?;
 
     // 提取 HTTP body（第一个空行之后的内容）
-    let body = response
-        .split("\r\n\r\n")
-        .nth(1)
-        .unwrap_or("")
-        .to_string();
+    let body = response.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+
+    // 尝试解析 JSON，提取 result 字段用于流式推送
+    if let Ok(data) = serde_json::from_str::<serde_json::Value>(&body) {
+        if let Some(result) = data.get("result").and_then(|r| r.as_str()) {
+            // 按字符分批推送（每 20 个字符发一个 event）
+            let chars: Vec<char> = result.chars().collect();
+            for chunk in chars.chunks(20) {
+                let text: String = chunk.iter().collect();
+                let _ = app_handle.emit("task-chunk", text);
+                thread::sleep(Duration::from_millis(30)); // 模拟打字速度
+            }
+        }
+        if let Some(error) = data.get("result").and_then(|r| r.as_str()).filter(|r| r.is_empty()) {
+            let _ = app_handle.emit("task-chunk", data.get("error").and_then(|e| e.as_str()).unwrap_or("(无输出)"));
+        }
+    } else {
+        // 纯文本直接推送
+        for chunk in body.chars().collect::<Vec<_>>().chunks(20) {
+            let text: String = chunk.iter().collect();
+            let _ = app_handle.emit("task-chunk", text);
+            thread::sleep(Duration::from_millis(30));
+        }
+    }
+
+    // 发送完成信号
+    let _ = app_handle.emit("task-done", "");
     Ok(body)
 }
 

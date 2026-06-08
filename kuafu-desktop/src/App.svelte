@@ -120,6 +120,9 @@
         if (st.error) {
           log("error", `checkHealth: agent_status error=${st.error}`);
           agentError.set(st.error);
+          // 尝试自动重启
+          log("info", "checkHealth: attempting auto-restart...");
+          await startAgentAsync();
         }
       } catch (e2: any) {
         log("error", `checkHealth: agent_status failed: ${e2.message || e2}`);

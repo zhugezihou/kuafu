@@ -2,6 +2,7 @@
 
 import { log } from "./debug";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 // Gateway API 客户端 — 前端直连 localhost:8081
 const GATEWAY_URL = "http://localhost:8081";
@@ -37,33 +38,36 @@ export async function sendMessage(
   }
 }
 
-/** 通过 Tauri invoke 发送消息（一次性返回结果，不流式） */
+/** 通过 Tauri invoke + event 实现流式输出 */
 export async function sendMessageStream(
   task: string,
   onChunk: (text: string) => void,
   onDone: () => void
 ): Promise<void> {
   log("debug", `sendMessageStream: task="${task.slice(0, 50)}..."`);
+
+  // 监听 event 流
+  let accumulated = "";
+  const unlistenChunk = await listen<string>("task-chunk", (event) => {
+    accumulated += event.payload;
+    onChunk(accumulated);
+  });
+  const unlistenDone = await listen<string>("task-done", () => {
+    unlistenChunk();
+    unlistenDone();
+    onDone();
+  });
+
   try {
     log("debug", `[invoke] send_task: "${task.slice(0, 50)}..."`);
-    const resp = await invoke("send_task", { task }) as string;
-    log("info", `sendMessageStream: result ${resp.length} chars`);
-    // 尝试解析 JSON，失败就当纯文本
-    try {
-      const data = JSON.parse(resp);
-      if (data && data.result) {
-        onChunk(data.result);
-      } else {
-        onChunk(data.error || resp);
-      }
-    } catch {
-      onChunk(resp || "(无输出)");
-    }
+    await invoke("send_task", { task });
   } catch (e: any) {
     log("error", `sendMessageStream: ${e.message || e}`);
     onChunk(`\n\n错误: ${e.message || e}`);
+    unlistenChunk();
+    unlistenDone();
+    onDone();
   }
-  onDone();
 }
 
 export async function getGatewayStatus(): Promise<any> {

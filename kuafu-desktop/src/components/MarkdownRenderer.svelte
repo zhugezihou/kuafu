@@ -19,11 +19,58 @@
     })
   );
 
+  // 自定义代码块渲染：行号 + 复制按钮
+  const renderer = {
+    code({ text, lang }: { text: string; lang?: string }) {
+      const langAttr = lang ? ` data-lang="${lang}"` : "";
+      const lines = text.split("\n");
+      // 去掉末尾空行
+      while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+      if (lines.length === 0) return "<pre><code></code></pre>";
+
+      const lineNums = lines
+        .map((_, i) => `<span class="line-num">${i + 1}</span>`)
+        .join("\n");
+      const codeHtml = lines
+        .map((l) => escapeHtml(l))
+        .join("\n");
+
+      return `<div class="code-block">
+        <div class="code-header">
+          <span class="code-lang">${lang || ""}</span>
+          <button class="copy-btn" onclick="(function(btn){
+            const code = btn.closest('.code-block').querySelector('code').textContent;
+            navigator.clipboard.writeText(code).then(() => {
+              btn.textContent = '✓ 已复制';
+              setTimeout(() => { btn.textContent = '📋 复制'; }, 2000);
+            });
+          })(this)">📋 复制</button>
+        </div>
+        <div class="code-body">
+          <div class="line-numbers">${lineNums}</div>
+          <pre><code${langAttr}>${codeHtml}</code></pre>
+        </div>
+      </div>`;
+    }
+  };
+
   // 配置 marked 选项
   marked.setOptions({
     breaks: true,
     gfm: true,
   });
+
+  // 使用自定义 renderer
+  marked.use({ renderer });
+
+  // HTML 转义工具
+  function escapeHtml(text: string): string {
+    return text
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
 
   $effect(() => {
     if (content) {
@@ -217,5 +264,68 @@
     border: none;
     border-top: 1px solid var(--border);
     margin: 12px 0;
+  }
+
+  /* 行号 + 复制按钮样式 */
+  .markdown-body :global(.code-block) {
+    margin: 8px 0;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .markdown-body :global(.code-header) {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 12px;
+    background: #161b22;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .markdown-body :global(.code-lang) {
+    color: #8b949e;
+    text-transform: lowercase;
+  }
+  .markdown-body :global(.copy-btn) {
+    background: none;
+    border: 1px solid var(--border);
+    color: #8b949e;
+    padding: 2px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 11px;
+  }
+  .markdown-body :global(.copy-btn:hover) {
+    background: rgba(255, 255, 255, 0.05);
+    color: #c9d1d9;
+  }
+  .markdown-body :global(.code-body) {
+    display: flex;
+    background: #0d1117;
+  }
+  .markdown-body :global(.line-numbers) {
+    display: flex;
+    flex-direction: column;
+    padding: 1em 0;
+    min-width: 40px;
+    text-align: right;
+    user-select: none;
+    color: #484f58;
+    border-right: 1px solid #21262d;
+    font-size: 13px;
+    line-height: 1.5;
+    font-family: monospace;
+  }
+  .markdown-body :global(.line-num) {
+    padding: 0 10px;
+  }
+  .markdown-body :global(.code-body pre) {
+    flex: 1;
+    margin: 0;
+    border-radius: 0;
+    border: none;
+  }
+  .markdown-body :global(.code-body pre code) {
+    padding: 1em;
   }
 </style>
