@@ -277,7 +277,7 @@ jobs:
             git config user.name "kuafu-ci"
             git config user.email "ci@kuafu.dev"
             git add src-tauri/Cargo.toml src-tauri/tauri.conf.json
-            git commit -m "desktop v$newVer: auto bump for CI release"
+            git commit -m "desktop v${newVer}: auto bump for CI release"
             git push
 
             $ver = $newVer
