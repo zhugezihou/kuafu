@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { agentRunning, agentError } from "../lib/store";
+  import { loadConfig } from "../lib/config";
 
   interface SetupCheck {
     label: string;
@@ -19,6 +20,7 @@
   let overallStatus = $state<"pending" | "running" | "ok" | "fail">("pending");
   let logLines = $state<string[]>([]);
   let showLog = $state(false);
+  let timeoutSec = $state(0);
 
   function addLog(msg: string) {
     logLines = [...logLines, `[${new Date().toLocaleTimeString()}] ${msg}`];
@@ -28,10 +30,53 @@
     checks = checks.map(c => c.key === key ? { ...c, status, detail } : c);
   }
 
+  let _resolveReady: ((fn: any) => void) | null = null;
+  let readyPromise = new Promise<any>((resolve) => {
+    _resolveReady = resolve;
+  });
+
+  export function setInvoke(fn: any) {
+    invokeFn = fn;
+    if (_resolveReady) {
+      _resolveReady(fn);
+      _resolveReady = null;
+    }
+  }
+
   export async function runSetup(): Promise<boolean> {
-    if (!invokeFn) return false;
+    // 等 invoke 就绪（最多 10 秒）
+    if (!invokeFn) {
+      try {
+        invokeFn = await Promise.race([
+          readyPromise,
+          new Promise((_, reject) => setTimeout(() => reject("invoke not ready"), 10000))
+        ]);
+      } catch {
+        addLog("✗ Tauri API 未就绪");
+        overallStatus = "fail";
+        return false;
+      }
+    }
+
     overallStatus = "running";
     addLog("开始环境检测...");
+
+    // 先设置配置
+    try {
+      const config = loadConfig();
+      await invokeFn("update_agent_config", {
+        config: {
+          model_type: config.modelType,
+          local_model_path: config.localModelPath,
+          local_llm_endpoint: config.localLlmEndpoint,
+          cloud_api_key: config.cloudApiKey,
+          cloud_model: config.cloudModel,
+        },
+      });
+      addLog("✓ 配置已加载");
+    } catch (e: any) {
+      addLog(`⚠ 配置加载跳过: ${e.message || e}`);
+    }
 
     // 1. 检测 Python
     updateCheck("python", "running", "检测中...");
@@ -55,13 +100,22 @@
       } else {
         updateCheck("pyyaml", "running", "正在安装...");
         addLog("PyYAML 未安装，尝试自动安装...");
-        const autoResult = await invokeFn("auto_setup") as any;
-        if (autoResult.setup_complete || autoResult.pyyaml_installed) {
-          updateCheck("pyyaml", "ok", "安装成功");
-          addLog("✓ PyYAML 安装成功");
-        } else {
-          updateCheck("pyyaml", "fail", "自动安装失败，可尝试手动安装: pip install pyyaml");
-          addLog("✗ PyYAML 安装失败");
+        try {
+          const autoResult = await invokeFn("auto_setup") as any;
+          // auto_setup 返回 Ok(SetupStatus) 或 Err(String)
+          if (autoResult && (autoResult.pyyaml_installed || autoResult.setup_complete)) {
+            updateCheck("pyyaml", "ok", "安装成功");
+            addLog("✓ PyYAML 安装成功");
+          } else {
+            const errMsg = autoResult?.error || "自动安装失败";
+            updateCheck("pyyaml", "fail", errMsg);
+            addLog(`✗ PyYAML 安装失败: ${errMsg}`);
+            overallStatus = "fail";
+            return false;
+          }
+        } catch (e: any) {
+          updateCheck("pyyaml", "fail", `安装异常: ${e.message || e}`);
+          addLog(`✗ PyYAML 安装异常: ${e.message || e}`);
           overallStatus = "fail";
           return false;
         }
@@ -78,16 +132,25 @@
         return false;
       }
 
-      // 4. 启动引擎
-      updateCheck("gateway", "running", "启动中...");
+      // 4. 启动引擎（单独 try-catch，和前面的检测分开）
+      updateCheck("gateway", "running", "启动中（最多等 10 秒）...");
       addLog("启动引擎...");
-      const status = await invokeFn("start_agent") as any;
-      if (status.running) {
-        updateCheck("gateway", "ok", status.error || `端口 ${status.gateway_port}`);
-        addLog(`✓ 引擎运行中 (PID: ${status.pid})`);
-      } else {
-        updateCheck("gateway", "fail", status.error || "启动失败");
-        addLog(`✗ 引擎启动失败: ${status.error || "未知错误"}`);
+      try {
+        const status = await invokeFn("start_agent") as any;
+        if (status && status.running) {
+          updateCheck("gateway", "ok", status.error || `端口 ${status.gateway_port}`);
+          addLog(`✓ 引擎运行中 (PID: ${status.pid})`);
+        } else {
+          const errMsg = status?.error || "启动返回失败状态";
+          updateCheck("gateway", "fail", errMsg);
+          addLog(`✗ 引擎启动失败: ${errMsg}`);
+          overallStatus = "fail";
+          return false;
+        }
+      } catch (e: any) {
+        const errMsg = e.message || String(e);
+        updateCheck("gateway", "fail", errMsg);
+        addLog(`✗ 引擎启动异常: ${errMsg}`);
         overallStatus = "fail";
         return false;
       }
@@ -97,16 +160,26 @@
       return true;
     } catch (e: any) {
       const msg = e.message || String(e);
+      // 检查是哪个步骤抛的
+      const runningCheck = checks.find(c => c.status === "running");
+      if (runningCheck) {
+        updateCheck(runningCheck.key, "fail", msg);
+      }
       addLog(`✗ 异常: ${msg}`);
       overallStatus = "fail";
       return false;
     }
   }
 
+  // 超时检测：如果 60 秒还没完成，显示提示
+  let timer: ReturnType<typeof setInterval> | undefined;
   onMount(() => {
-    import("@tauri-apps/api/core").then((core) => {
-      invokeFn = core.invoke;
-    });
+    timer = setInterval(() => {
+      if (overallStatus === "running") {
+        timeoutSec = timeoutSec + 1;
+      }
+    }, 1000);
+    return () => { if (timer) clearInterval(timer); };
   });
 </script>
 
@@ -148,9 +221,19 @@
     {/each}
   </div>
 
+  {#if overallStatus === "running" && timeoutSec > 5}
+    <div class="timeout-hint">
+      {#if timeoutSec > 30}
+        <p class="timeout-warn">⏱ 检测超过 {timeoutSec} 秒，可能卡住了，请点"查看详情"看日志</p>
+      {:else}
+        <p class="timeout-info">⏱ 检测进行中 ({timeoutSec}s)...</p>
+      {/if}
+    </div>
+  {/if}
+
   {#if overallStatus === "fail"}
     <div class="fail-actions">
-      <p class="fail-hint">环境检测未通过，部分配置可能缺失。</p>
+      <p class="fail-hint">环境检测未通过。</p>
       <button class="btn btn-retry" onclick={() => runSetup()}>⟳ 重试检测</button>
     </div>
   {/if}
@@ -176,6 +259,7 @@
     padding: 20px;
     margin: 16px;
     max-width: 520px;
+    width: calc(100% - 32px);
   }
   .setup-header {
     display: flex;
@@ -196,7 +280,7 @@
     background: var(--border, #2a2a4a);
     color: #888;
   }
-  .badge.running { background: #1a4a6e; color: #6af; }
+  .badge.running { background: #1a4a6e; color: #6af; animation: pulse 1s infinite; }
   .badge.ok { background: #1a3a2a; color: #4caf50; }
   .badge.fail { background: #3a1a1a; color: #ef4444; }
 
@@ -223,6 +307,10 @@
   .check-info { flex: 1; min-width: 0; }
   .check-label { font-size: 13px; font-weight: 500; }
   .check-detail { font-size: 11px; color: #888; margin-top: 2px; word-break: break-all; }
+
+  .timeout-hint { margin-bottom: 12px; }
+  .timeout-info { font-size: 12px; color: #6af; margin: 0; }
+  .timeout-warn { font-size: 12px; color: #f59e0b; margin: 0; }
 
   .fail-actions { margin-bottom: 12px; }
   .fail-hint { font-size: 13px; color: #ef4444; margin: 0 0 8px 0; }

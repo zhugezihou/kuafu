@@ -18,33 +18,36 @@
     saveSession,
   } from "./lib/store";
   import { sendMessageStream } from "./lib/gateway";
-  import { loadConfig } from "./lib/config";
 
   let sidebarOpen = $state(true);
   let showSettings = $state(false);
   let healthCheckInterval: ReturnType<typeof setInterval> | undefined;
 
-  // 预存 Tauri invoke 引用（避免 onUnmount 中动态 import）
   let invokeFn: any = null;
   let checking = $state(false);
   let showSetup = $state(true);
   let setupWizardRef: any = $state(undefined);
 
+  // setupWizardRef 就绪后自动启动引导
+  $effect(() => {
+    if (setupWizardRef && invokeFn) {
+      setupWizardRef.setInvoke(invokeFn);
+      setupWizardRef.runSetup().then((ok: boolean) => {
+        if (ok) {
+          showSetup = false;
+          agentRunning.set(true);
+        }
+      });
+    }
+  });
+
   onMount(() => {
     loadSession();
 
     // 预存 invoke 引用
-    import("@tauri-apps/api/core").then(async (core) => {
+    import("@tauri-apps/api/core").then((core) => {
       invokeFn = core.invoke;
-      // 引用就绪后启动引导检测
-      if (setupWizardRef) {
-        const ok = await setupWizardRef.runSetup();
-        if (ok) {
-          showSetup = false;
-          // 引擎已启动，通知 store
-          agentRunning.set(true);
-        }
-      }
+      // 如果 setupWizardRef 已经绑定了，$effect 会自动触发
     }).catch(() => {});
 
     // 每15秒检查引擎状态
@@ -52,7 +55,6 @@
 
     return () => {
       if (healthCheckInterval) clearInterval(healthCheckInterval);
-      // 使用预存引用，不用动态 import
       if (invokeFn) invokeFn("stop_agent").catch(() => {});
     };
   });
@@ -60,7 +62,7 @@
   async function startAgentAsync() {
     if (!invokeFn) return;
     try {
-      const config = loadConfig();
+      const config = (await import("./lib/config")).loadConfig();
       await invokeFn("update_agent_config", {
         config: {
           model_type: config.modelType,

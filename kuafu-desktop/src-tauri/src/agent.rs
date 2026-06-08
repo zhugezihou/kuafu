@@ -158,7 +158,7 @@ impl AgentManager {
             gateway_running: gateway_ok,
             python_path,
             error,
-            setup_complete: kuafu_ok && pyyaml_ok && !gateway_ok,
+            setup_complete: kuafu_ok && pyyaml_ok,
         }
     }
 
