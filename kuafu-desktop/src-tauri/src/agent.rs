@@ -306,6 +306,7 @@ impl AgentManager {
         .stderr(Stdio::piped());
 
         cmd.env("KUAFFU_GATEWAY_PORT", GATEWAY_PORT.to_string());
+        cmd.env("KUAFFU_DESKTOP", "1");  // Desktop 模式：禁用微信/飞书等交互通道
         if cfg.model_type == "cloud" {
             cmd.env("KUAFFU_LLM_BACKEND", "cloud");
             // 根据 provider 设置环境变量

@@ -498,6 +498,11 @@ class GatewayServer:
 
     def _init_channels(self):
         """初始化消息通道（直连模式：飞书WS + 微信iLink）。"""
+        # Desktop 模式下不加载消息通道（微信扫码/飞书 WS 无意义）
+        if os.environ.get("KUAFFU_DESKTOP") == "1":
+            print("[Gateway] Desktop 模式：跳过消息通道注册")
+            return
+
         try:
             from core.channel import ChannelManager
             from core.channel.feishu_ws import FeishuWebSocketChannel
