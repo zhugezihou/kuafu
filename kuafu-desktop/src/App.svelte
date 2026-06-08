@@ -26,20 +26,6 @@
   let invokeFn: any = null;
   let checking = $state(false);
   let showSetup = $state(true);
-  let setupWizardRef: any = $state(undefined);
-
-  // setupWizardRef 就绪后自动启动引导
-  $effect(() => {
-    if (setupWizardRef && invokeFn) {
-      setupWizardRef.setInvoke(invokeFn);
-      setupWizardRef.runSetup().then((ok: boolean) => {
-        if (ok) {
-          showSetup = false;
-          agentRunning.set(true);
-        }
-      });
-    }
-  });
 
   onMount(() => {
     loadSession();
@@ -47,7 +33,7 @@
     // 预存 invoke 引用
     import("@tauri-apps/api/core").then((core) => {
       invokeFn = core.invoke;
-      // 如果 setupWizardRef 已经绑定了，$effect 会自动触发
+      // invoke 已就绪（SetupWizard 内部自启动，不需要这里触发）
     }).catch(() => {});
 
     // 每15秒检查引擎状态
@@ -58,8 +44,8 @@
       if (invokeFn) invokeFn("stop_agent").catch(() => {});
     };
   });
-
-  async function startAgentAsync() {
+ 
+   async function startAgentAsync() {
     if (!invokeFn) return;
     try {
       const config = (await import("./lib/config")).loadConfig();
@@ -133,7 +119,7 @@
 <div class="app">
   {#if showSetup}
     <div class="setup-overlay">
-      <SetupWizard bind:this={setupWizardRef} />
+      <SetupWizard onComplete={(ok) => { if (ok) { showSetup = false; agentRunning.set(true); } }} />
     </div>
   {:else}
   {#if sidebarOpen}

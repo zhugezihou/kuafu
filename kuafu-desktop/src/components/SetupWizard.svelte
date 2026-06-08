@@ -3,6 +3,17 @@
   import { agentRunning, agentError } from "../lib/store";
   import { loadConfig } from "../lib/config";
 
+  let invokeFn: any = null;
+
+  // 组件挂载时就自动初始化 invoke 并启动
+  onMount(() => {
+    import("@tauri-apps/api/core").then((core) => {
+      invokeFn = core.invoke;
+      // invoke 就绪后自动运行检测
+      runSetup();
+    }).catch(() => {});
+  });
+
   interface SetupCheck {
     label: string;
     key: string;
@@ -10,7 +21,6 @@
     detail: string;
   }
 
-  let invokeFn: any = null;
   let checks = $state<SetupCheck[]>([
     { label: "Python 环境", key: "python", status: "pending", detail: "" },
     { label: "PyYAML 依赖", key: "pyyaml", status: "pending", detail: "" },
@@ -21,6 +31,7 @@
   let logLines = $state<string[]>([]);
   let showLog = $state(false);
   let timeoutSec = $state(0);
+  let { onComplete }: { onComplete?: (ok: boolean) => void } = $props();
 
   function addLog(msg: string) {
     logLines = [...logLines, `[${new Date().toLocaleTimeString()}] ${msg}`];
@@ -30,32 +41,11 @@
     checks = checks.map(c => c.key === key ? { ...c, status, detail } : c);
   }
 
-  let _resolveReady: ((fn: any) => void) | null = null;
-  let readyPromise = new Promise<any>((resolve) => {
-    _resolveReady = resolve;
-  });
-
-  export function setInvoke(fn: any) {
-    invokeFn = fn;
-    if (_resolveReady) {
-      _resolveReady(fn);
-      _resolveReady = null;
-    }
-  }
-
   export async function runSetup(): Promise<boolean> {
-    // 等 invoke 就绪（最多 10 秒）
     if (!invokeFn) {
-      try {
-        invokeFn = await Promise.race([
-          readyPromise,
-          new Promise((_, reject) => setTimeout(() => reject("invoke not ready"), 10000))
-        ]);
-      } catch {
-        addLog("✗ Tauri API 未就绪");
-        overallStatus = "fail";
-        return false;
-      }
+      addLog("✗ Tauri API 未就绪");
+      overallStatus = "fail";
+      return false;
     }
 
     overallStatus = "running";
@@ -157,6 +147,7 @@
 
       overallStatus = "ok";
       addLog("✓ 全部检测通过！");
+      if (onComplete) onComplete(true);
       return true;
     } catch (e: any) {
       const msg = e.message || String(e);
