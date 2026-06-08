@@ -18,6 +18,8 @@
     saveSession,
   } from "./lib/store";
   import { sendMessageStream } from "./lib/gateway";
+  import { log } from "./lib/debug";
+  import DebugPanel from "./components/DebugPanel.svelte";
 
   let sidebarOpen = $state(true);
   let showSettings = $state(false);
@@ -29,12 +31,15 @@
 
   onMount(() => {
     loadSession();
+    log("info", "App mounted, loading Tauri API...");
 
     // 预存 invoke 引用
     import("@tauri-apps/api/core").then((core) => {
       invokeFn = core.invoke;
-      // invoke 已就绪（SetupWizard 内部自启动，不需要这里触发）
-    }).catch(() => {});
+      log("info", "Tauri API ready");
+    }).catch((e) => {
+      log("error", `Tauri API import failed: ${e}`);
+    });
 
     // 每15秒检查引擎状态
     healthCheckInterval = setInterval(checkHealth, 15000);
@@ -47,8 +52,10 @@
  
    async function startAgentAsync() {
     if (!invokeFn) return;
+    log("info", "startAgentAsync: configuring and starting engine...");
     try {
       const config = (await import("./lib/config")).loadConfig();
+      log("debug", `startAgentAsync: config loaded modelType=${config.modelType}`);
       await invokeFn("update_agent_config", {
         config: {
           model_type: config.modelType,
@@ -59,10 +66,13 @@
         },
       });
       const status = await invokeFn("start_agent") as any;
+      log("info", `startAgentAsync: running=${status.running} error=${status.error || "none"}`);
       agentRunning.set(status.running);
       if (status.error) agentError.set(status.error);
     } catch (e: any) {
-      agentError.set(`引擎启动失败: ${e.message || e}`);
+      const msg = e.message || String(e);
+      log("error", `startAgentAsync failed: ${msg}`);
+      agentError.set(`引擎启动失败: ${msg}`);
     }
   }
 
@@ -74,6 +84,7 @@
   }
 
   async function checkHealth() {
+    log("debug", "checkHealth: pinging Gateway...");
     try {
       const resp = await fetch("http://localhost:8081/api/status", {
         signal: AbortSignal.timeout(5000),
@@ -81,21 +92,30 @@
       if (resp.ok) {
         agentRunning.set(true);
         agentError.set(null);
+        log("info", "checkHealth: Gateway OK");
       } else {
         agentRunning.set(false);
+        log("warn", `checkHealth: Gateway returned ${resp.status}`);
       }
-    } catch {
+    } catch (e: any) {
+      log("warn", `checkHealth: Gateway unreachable: ${e.message || e}`);
       agentRunning.set(false);
       if (!invokeFn) return;
       try {
         const st = await invokeFn("agent_status") as any;
-        if (st.error) agentError.set(st.error);
-      } catch {}
+        if (st.error) {
+          log("error", `checkHealth: agent_status error=${st.error}`);
+          agentError.set(st.error);
+        }
+      } catch (e2: any) {
+        log("error", `checkHealth: agent_status failed: ${e2.message || e2}`);
+      }
     }
   }
 
   async function handleSend(text: string) {
     if (!text.trim()) return;
+    log("info", `handleSend: "${text.slice(0, 50)}..."`);
 
     isRunning.set(true);
     addMessage({ role: "user", content: text });
@@ -114,6 +134,25 @@
   }
 
   function handleNewChat() { clearMessages(); }
+
+  // Ctrl+Shift+D 切换调试面板
+  let debugPanel: any;
+  function handleKeydown(e: KeyboardEvent) {
+    if (e.ctrlKey && e.shiftKey && e.key === 'D') {
+      e.preventDefault();
+      if (debugPanel) debugPanel.toggle();
+    }
+  }
+  onMount(() => {
+    document.addEventListener('keydown', handleKeydown);
+    window.addEventListener('debug-toggle', () => {
+      if (debugPanel) debugPanel.toggle();
+    });
+    return () => {
+      document.removeEventListener('keydown', handleKeydown);
+      window.removeEventListener('debug-toggle', () => {});
+    };
+  });
 </script>
 
 <div class="app">
@@ -159,6 +198,8 @@
 {#if showSettings}
   <Settings onClose={() => (showSettings = false)} />
 {/if}
+
+<DebugPanel bind:this={debugPanel} />
 
 <style>
   .app { display: flex; height: 100dvh; }

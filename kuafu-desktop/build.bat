@@ -3,81 +3,87 @@ chcp 65001 >nul
 setlocal EnableDelayedExpansion
 
 echo ========================================
-echo  夸父 Desktop v1.0.17 本地构建脚本
-echo  放 kuafu-desktop 目录下双击运行
+echo  Kuafu Desktop - Local Build Script
+echo  Step-by-step: dependencies ^> frontend ^> Rust
 echo ========================================
 echo.
 
 cd /d "%~dp0"
 
-REM 检查 Rust
+REM ---- 1. Check Rust ----
 where rustc >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [1/6] 安装 Rust...
+    echo [1/6] Installing Rust...
     winget install --id Rustlang.Rustup --silent --accept-package-agreements >nul 2>&1
     start /wait rustup-init -y --quiet >nul 2>&1
     call "%USERPROFILE%\.cargo\cargo_env.bat"
-    echo Rust 安装完成
+    echo Rust installed.
 ) else (
-    echo [1/6] Rust 已安装
+    echo [1/6] Rust OK
 )
 
-REM 检查 Node
+REM ---- 2. Check Node.js ----
 where node >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [2/6] 安装 Node.js...
-    winget install OpenJS.NodeJS --silent --accept-package-agreements >nul 2>&1
+    echo [2/6] Installing Node.js...
+    winget install OpenJS.NodeJS.LTS --silent --accept-package-agreements >nul 2>&1
+    echo Node.js installed.
 ) else (
-    echo [2/6] Node.js 已安装
+    echo [2/6] Node.js OK
 )
 
-REM 安装前端依赖
-echo [3/6] 安装前端依赖...
-call npm ci
-
-REM 下载嵌入式 Python
-echo [4/6] 准备嵌入式 Python...
-set PYTHON_DIR=src-tauri\python
-if exist "%PYTHON_DIR%\python.exe" (
-    echo 嵌入式 Python 已存在，跳过下载
-) else (
-    md "%PYTHON_DIR%" 2>nul
-    echo 下载 Python 3.12.9 embedded...
-    curl.exe -L -o "%TEMP%\python.zip" https://www.python.org/ftp/python/3.12.9/python-3.12.9-embed-amd64.zip
-    echo 解压...
-    powershell -Command "Expand-Archive -Path '$env:TEMP\python.zip' -DestinationPath '%PYTHON_DIR%' -Force"
-    echo 配置 python._pth...
-    echo ..\kuafu>> "%PYTHON_DIR%\python._pth"
-    echo import site>> "%PYTHON_DIR%\python._pth"
+REM ---- 3. npm install ----
+echo [3/6] Installing frontend dependencies...
+call npm install
+if %errorlevel% neq 0 (
+    echo npm install failed
+    pause
+    exit /b 1
 )
+echo Frontend dependencies installed.
 
-REM 复制夸父源码
-echo [5/6] 复制夸父源码...
-set KUAFFU_DIR=%PYTHON_DIR%\kuafu
-if not exist "%KUAFFU_DIR%" md "%KUAFFU_DIR%"
-xcopy /E /I /Y ..\core "%KUAFFU_DIR%\core\" >nul
-copy /Y ..\pyproject.toml "%KUAFFU_DIR%\" >nul
-
-REM 前端构建
-echo [6/6] 前端构建 + Tauri 打包...
+REM ---- 4. Frontend build ----
+echo [4/6] Building frontend...
 call npm run build
 if %errorlevel% neq 0 (
-    echo 前端构建失败
+    echo Frontend build failed
+    pause
+    exit /b 1
+)
+echo Frontend build OK.
+
+REM ---- 5. Prepare embedded Python ----
+echo [5/6] Preparing embedded Python...
+set "OUT=%~dp0src-tauri\python"
+if not exist "%OUT%\python.exe" (
+    echo Downloading embedded Python 3.12.9...
+    curl.exe -L -o "%TEMP%\python.zip" "https://www.python.org/ftp/python/3.12.9/python-3.12.9-embed-amd64.zip"
+    echo Extracting...
+    powershell -Command "Expand-Archive -Path '%TEMP%\python.zip' -DestinationPath '%OUT%' -Force"
+    echo Copying kuafu source...
+    mkdir "%OUT%\kuafu" 2>nul
+    xcopy /E /I /Y "%~dp0..\core" "%OUT%\kuafu\core\"
+    copy /Y "%~dp0..\pyproject.toml" "%OUT%\kuafu\" >nul
+    REM configure python._pth
+    echo.>>"%OUT%\python._pth"
+    echo ..\kuafu>>"%OUT%\python._pth"
+    echo import site>>"%OUT%\python._pth"
+    echo Embedded Python ready.
+) else (
+    echo [5/6] Embedded Python already exists
+)
+
+REM ---- 6. Tauri build ----
+echo [6/6] Building Tauri desktop app...
+call npm run tauri build
+if %errorlevel% neq 0 (
+    echo Tauri build failed!
     pause
     exit /b 1
 )
 
-call npm run tauri build -- --bundles nsis
-if %errorlevel% equ 0 (
-    echo.
-    echo ========================================
-    echo  ✓ 构建成功！
-    for /r src-tauri\target\release\bundle\nsis %%f in (*.exe) do (
-        echo 安装包: %%f
-    )
-    echo ========================================
-) else (
-    echo.
-    echo  ✗ 构建失败
-)
+echo ========================================
+echo  Build complete!
+echo  Installer: src-tauri\target\release\bundle\nsis\*.exe
+echo ========================================
 pause

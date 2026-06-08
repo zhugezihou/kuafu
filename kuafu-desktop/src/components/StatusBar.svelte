@@ -3,10 +3,17 @@
   import { onMount } from "svelte";
 
   let version = $state("?");
+  let debugVisible = $state(false);
 
   onMount(() => {
-    version = "1.0.18";
+    version = "1.0.27";
   });
+
+  function toggleDebug() {
+    // dispatch 自定义事件让父组件切换调试面板
+    const event = new CustomEvent('debug-toggle');
+    window.dispatchEvent(event);
+  }
 </script>
 
 <footer class="status-bar">
@@ -23,6 +30,7 @@
   </div>
 
   <div class="status-right">
+    <button class="debug-btn" onclick={toggleDebug} title="调试日志 (Ctrl+Shift+D)">🐛</button>
     <span class="version">夸父 Desktop v{version}</span>
   </div>
 </footer>
@@ -51,4 +59,15 @@
   .idle { color: #22c55e; }
   .error { color: #ef4444; }
   .offline { color: #6b7280; }
+
+  .debug-btn {
+    background: none;
+    border: 1px solid var(--border, #2a2a4a);
+    color: #888;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .debug-btn:hover { background: rgba(255,255,255,0.08); color: #ccc; }
 </style>
