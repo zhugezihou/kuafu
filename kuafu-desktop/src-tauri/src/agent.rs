@@ -302,7 +302,7 @@ impl AgentManager {
             kuafu_str, GATEWAY_PORT
         );
         cmd.args(["-c", &bootstrap])
-        .stdout(Stdio::piped())
+        .stdout(Stdio::null())
         .stderr(Stdio::piped());
 
         cmd.env("KUAFFU_GATEWAY_PORT", GATEWAY_PORT.to_string());

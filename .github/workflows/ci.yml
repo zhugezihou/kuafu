@@ -235,11 +235,6 @@ jobs:
             echo "WARNING: no system python for pre-install, will try ensurepip at runtime"
           }
 
-      - name: Tauri 构建
-        shell: powershell
-        run: |
-          npm run tauri build
-
       - name: 获取版本号
         shell: powershell
         run: |
@@ -249,32 +244,48 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "VERSION=$ver"
           Add-Content -Path $env:GITHUB_ENV -Value "TAG_NAME=desktop-v$ver"
 
+      - name: Tauri 构建
+        shell: powershell
+        run: |
+          npm run tauri build
+
       - name: 创建 Release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
-          VER=$(grep '^version = ' src-tauri/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          TAG="desktop-v$VER"
+          # 从已编译的 exe 提取版本号（真实包版本，可靠）
+          EXE=$(ls src-tauri/target/release/bundle/nsis/*.exe 2>/dev/null | head -1)
+          if [ -z "$EXE" ]; then
+            echo "ERROR: no exe found in bundle/nsis/"
+            exit 1
+          fi
+          # 提取文件名中的版本号 e.g. Desktop_1.0.35_x64-setup.exe
+          EXE_VER=$(echo "$EXE" | sed -n 's/.*Desktop_\([0-9.]*\)_x64-setup\.exe/\1/p')
+          if [ -z "$EXE_VER" ]; then
+            # fallback: 从源码读
+            EXE_VER=$(grep '^version = ' src-tauri/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          fi
+          TAG="desktop-v$EXE_VER"
 
-          # 如果 tag 已存在，patch 版本 +1 直到 tag 不冲突
+          # tag 存在则 patch +1
           while gh release view "$TAG" --json tagName &>/dev/null; do
-            echo "Tag $TAG exists, bumping patch..."
-            IFS='.' read -ra PARTS <<< "$VER"
+            echo "Tag $TAG exists (should not happen with exe-based version), bumping..."
+            IFS='.' read -ra PARTS <<< "$EXE_VER"
             PARTS[2]=$((PARTS[2] + 1))
-            VER="${PARTS[0]}.${PARTS[1]}.${PARTS[2]}"
-            TAG="desktop-v$VER"
+            EXE_VER="${PARTS[0]}.${PARTS[1]}.${PARTS[2]}"
+            TAG="desktop-v$EXE_VER"
           done
 
           # 如果版本号变了，更新文件并提交
-          if [ "$VER" != "$(grep '^version = ' src-tauri/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')" ]; then
-            sed -i "s/^version = \".*\"/version = \"$VER\"/" src-tauri/Cargo.toml
-            sed -i "s/\"version\": \".*\"/\"version\": \"$VER\"/" src-tauri/tauri.conf.json
+          if [ "$EXE_VER" != "$(grep '^version = ' src-tauri/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')" ]; then
+            sed -i "s/^version = \".*\"/version = \"$EXE_VER\"/" src-tauri/Cargo.toml
+            sed -i "s/\"version\": \".*\"/\"version\": \"$EXE_VER\"/" src-tauri/tauri.conf.json
             git config user.name "kuafu-ci"
             git config user.email "ci@kuafu.dev"
             git add src-tauri/Cargo.toml src-tauri/tauri.conf.json
-            git commit -m "desktop v$VER: auto bump for CI release"
+            git commit -m "desktop v$EXE_VER: auto bump for CI release"
             git push
           fi
 
@@ -291,6 +302,6 @@ jobs:
           echo "$CHANGELOG" > /tmp/release-notes.md
 
           gh release create "$TAG" \
-            --title "Kuafu Desktop v$VER" \
+            --title "Kuafu Desktop v$EXE_VER" \
             --notes-file /tmp/release-notes.md \
             src-tauri/target/release/bundle/nsis/*.exe
