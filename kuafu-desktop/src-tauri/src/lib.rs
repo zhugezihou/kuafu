@@ -155,6 +155,18 @@ pub fn run() {
             app.manage(AppState {
                 agent: Mutex::new(agent_mgr),
             });
+
+            // 系统托盘：点击恢复窗口
+            use tauri::tray::TrayIconBuilder;
+            let _ = TrayIconBuilder::new()
+                .on_click(|tray, _kind, _event| {
+                    if let Some(window) = tray.app_handle().get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                })
+                .build(app);
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
