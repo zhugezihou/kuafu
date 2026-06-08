@@ -635,7 +635,12 @@ class ToolRegistry:
 
     def _handle_terminal(self, args: dict) -> dict:  # pragma: no cover
         command = args.get("command", "")
-        workdir = args.get("workdir", str(ROOT_DIR))
+        # Desktop 模式下默认 workdir 为用户目录
+        if os.environ.get("KUAFFU_DESKTOP") == "1":
+            default_dir = os.environ.get("USERPROFILE", "C:\\Users\\Default")
+        else:
+            default_dir = str(ROOT_DIR)
+        workdir = args.get("workdir", default_dir)
         timeout = args.get("timeout", 30)
 
         if not command.strip():

@@ -461,6 +461,21 @@ class AgentLoop:
         rules = get_rules()
         rules_content = "\n".join(f"- {rule}" for rule in rules)
 
+        # 追加运行环境说明
+        if os.environ.get("KUAFFU_DESKTOP") == "1":
+            import platform as _platform
+            rules_content += (
+                "\n\n## 运行环境\n"
+                f"- 操作系统: Windows ({_platform.release()})\n"
+                "- 终端命令使用 cmd.exe (Windows), 不是 bash\n"
+                "- 文件路径使用 Windows 格式 (C:\\Users\\...)，不是 Linux 格式 (/home/...)\n"
+                "- 不要使用 ls、cat、grep 等 Linux 命令\n"
+                "- 使用 dir、type、findstr 等 Windows 命令\n"
+                "- 不要使用 /tmp/ 路径，使用 %TEMP% 或 C:\\Users\\...\\AppData\\Local\\Temp\n"
+            )
+        else:
+            rules_content += "\n\n## 运行环境\n- 操作系统: Linux\n- 终端使用 bash"
+
         # 追加进化规则（历史经验总结）
         try:
             if hasattr(self, '_evolution_rules') and self._evolution_rules:
