@@ -263,7 +263,6 @@ jobs:
           if ($exists) {
             Write-Host "Tag $tag exists, deleting old release..."
             gh release delete $tag --yes 2>$null
-            git tag -d $tag 2>$null
             git push origin :refs/tags/$tag 2>$null
           }
 
