@@ -248,7 +248,7 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "VERSION=$ver"
           Add-Content -Path $env:GITHUB_ENV -Value "TAG_NAME=desktop-v$ver"
 
-      - name: 创建 Release
+      - name: 创建 Release（自动检测 tag 冲突并 bump）
         shell: powershell
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -256,4 +256,31 @@ jobs:
           $content = Get-Content src-tauri/Cargo.toml -Raw
           $match = [regex]::Match($content, 'version = "([^"]+)"')
           $ver = $match.Groups[1].Value
-          gh release create "desktop-v$ver" --title "夸父 Desktop v$ver" --notes "夸父 Desktop 桌面客户端发布" src-tauri/target/release/bundle/nsis/*.exe
+          $tag = "desktop-v$ver"
+
+          # 检查 tag 是否已存在
+          $exists = gh release view $tag --json tagName 2>$null
+          if ($exists) {
+            # 自动 bump patch 版本
+            $parts = $ver.Split('.')
+            $parts[2] = [int]$parts[2] + 1
+            $newVer = $parts -join '.'
+            $newTag = "desktop-v$newVer"
+            Write-Host "Tag $tag already exists, bumping to $newVer"
+
+            # 更新 Cargo.toml 和 tauri.conf.json
+            (Get-Content src-tauri/Cargo.toml) -replace 'version = "'+$ver+'"', 'version = "'+$newVer+'"' | Set-Content src-tauri/Cargo.toml
+            (Get-Content src-tauri/tauri.conf.json) -replace '"version": "'+$ver+'"', '"version": "'+$newVer+'"' | Set-Content src-tauri/tauri.conf.json
+
+            # 提交 bump
+            git config user.name "kuafu-ci"
+            git config user.email "ci@kuafu.dev"
+            git add src-tauri/Cargo.toml src-tauri/tauri.conf.json
+            git commit -m "desktop v$newVer: auto bump for CI release"
+            git push
+
+            $ver = $newVer
+            $tag = $newTag
+          }
+
+          gh release create "$tag" --title "夸父 Desktop v$ver" --notes "夸父 Desktop 桌面客户端发布" src-tauri/target/release/bundle/nsis/*.exe
