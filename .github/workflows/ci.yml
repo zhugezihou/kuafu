@@ -248,43 +248,36 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "VERSION=$ver"
           Add-Content -Path $env:GITHUB_ENV -Value "TAG_NAME=desktop-v$ver"
 
-      - name: 创建 Release（自动覆盖已有 tag）
-        shell: powershell
+      - name: 创建 Release
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $content = Get-Content src-tauri/Cargo.toml -Raw
-          $match = [regex]::Match($content, 'version = "([^"]+)"')
-          $ver = $match.Groups[1].Value
-          $tag = "desktop-v$ver"
+          set -e
+          cd kuafu-desktop
+          VER=$(grep '^version = ' src-tauri/Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          TAG="desktop-v$VER"
 
           # 如果 tag 已存在，删除旧的 release 和 tag
-          $exists = gh release view $tag --json tagName 2>$null
-          if ($exists) {
-            Write-Host "Tag $tag exists, deleting old release..."
-            gh release delete $tag --yes 2>$null
-            git push origin :refs/tags/$tag 2>$null
-          }
+          if gh release view "$TAG" --json tagName &>/dev/null; then
+            echo "Tag $TAG exists, deleting old release..."
+            gh release delete "$TAG" --yes 2>/dev/null || true
+            git push origin ":refs/tags/$TAG" 2>/dev/null || true
+          fi
 
           # 获取上个发布 tag 用于 changelog
-          git fetch --tags origin 2>$null
-          $prevTag = git tag --list 'desktop-v*' --sort=-version:refname | Select-Object -First 2 | Select-Object -Last 1
-          if (-not $prevTag) { $prevTag = "desktop-v$ver" }
+          git fetch --tags origin 2>/dev/null || true
+          PREV_TAG=$(git tag --list 'desktop-v*' --sort=-version:refname | head -2 | tail -1)
+          if [ -z "$PREV_TAG" ]; then PREV_TAG="$TAG"; fi
 
           # 生成改动说明
-          $changelog = git log --oneline --no-decorate "$prevTag..HEAD" 2>$null
-          if (-not $changelog) {
-            $changelog = git log --oneline --no-decorate -10 2>$null
-          }
-          $notesLines = $changelog | ForEach-Object { $_ -replace '^[a-f0-9]+ ', '- ' }
-          $tempFile = "$env:RUNNER_TEMP\release-notes.md"
-          if ($notesLines) {
-            $notesLines | Out-File -FilePath $tempFile -Encoding utf8
-          } else {
-            "No changes" | Out-File -FilePath $tempFile -Encoding utf8
-          }
+          CHANGELOG=$(git log --oneline --no-decorate "$PREV_TAG..HEAD" 2>/dev/null | sed 's/^[a-f0-9]* /- /')
+          if [ -z "$CHANGELOG" ]; then
+            CHANGELOG=$(git log --oneline --no-decorate -10 2>/dev/null | sed 's/^[a-f0-9]* /- /')
+          fi
+          echo "$CHANGELOG" > /tmp/release-notes.md
 
-          gh release create "$tag" `
-            --title "Kuafu Desktop v$ver" `
-            --notes-file $tempFile `
+          gh release create "$TAG" \
+            --title "Kuafu Desktop v$VER" \
+            --notes-file /tmp/release-notes.md \
             src-tauri/target/release/bundle/nsis/*.exe
