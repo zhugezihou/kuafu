@@ -290,10 +290,15 @@ jobs:
             # 没有前一个 tag，用最近 10 条
             $changelog = git log --oneline --no-decorate -10 2>$null
           }
-          $notes = $changelog | ForEach-Object { $_ -replace '^[a-f0-9]+ ', '• ' }
-          $notesStr = if ($notes) { $notes -join "`n" } else { "无新增改动" }
+          $notesLines = $changelog | ForEach-Object { $_ -replace '^[a-f0-9]+ ', '- ' }
+          $tempFile = "$env:RUNNER_TEMP\release-notes.md"
+          if ($notesLines) {
+            $notesLines | Out-File -FilePath $tempFile -Encoding utf8
+          } else {
+            "No changes" | Out-File -FilePath $tempFile -Encoding utf8
+          }
 
           gh release create "$tag" `
-            --title "夸父 Desktop v$ver" `
-            --notes $notesStr `
+            --title "Kuafu Desktop v$ver" `
+            --notes-file $tempFile `
             src-tauri/target/release/bundle/nsis/*.exe
