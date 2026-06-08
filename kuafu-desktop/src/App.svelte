@@ -229,7 +229,6 @@
     <MessageInput onSend={handleSend} disabled={$isRunning || !$agentRunning} />
     <StatusBar />
   </div>
-  {/if}
 </div>
 
 {#if showSettings}
