@@ -64,6 +64,26 @@ fn check_setup(state: tauri::State<AppState>) -> agent::SetupStatus {
         })
 }
 
+/// 通过 Rust 发送 POST 请求到本地 Gateway（绕过 WebView CORS 限制）
+#[tauri::command]
+fn send_task(task: String) -> Result<String, String> {
+    let body = serde_json::json!({
+        "task": task,
+        "mode": "standard",
+        "sync": true,
+    });
+    let body_str = serde_json::to_string(&body).map_err(|e| format!("序列化失败: {e}"))?;
+
+    let resp = ureq::post("http://localhost:8081/api/task")
+        .set("Content-Type", "application/json")
+        .timeout(std::time::Duration::from_secs(120))
+        .send_string(&body_str)
+        .map_err(|e| format!("请求失败: {e}"))?;
+
+    let text = resp.into_string().map_err(|e| format!("读取响应失败: {e}"))?;
+    Ok(text)
+}
+
 #[tauri::command]
 fn auto_setup(state: tauri::State<AppState>) -> Result<agent::SetupStatus, String> {
     state.agent.lock().map_err(|e| e.to_string())?.auto_setup()
@@ -91,6 +111,7 @@ pub fn run() {
             update_agent_config,
             check_setup,
             auto_setup,
+            send_task,
         ])
         .run(tauri::generate_context!())
         .expect("夸父 Desktop 启动失败");

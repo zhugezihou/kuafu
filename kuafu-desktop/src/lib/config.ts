@@ -16,7 +16,7 @@ export interface AppConfig {
 const STORAGE_KEY = "kuafu-desktop-config";
 
 const defaults: AppConfig = {
-  modelType: "local",
+  modelType: "cloud",
   localModelPath: "",
   localLlmEndpoint: "http://localhost:8080",
   cloudProvider: "deepseek",
