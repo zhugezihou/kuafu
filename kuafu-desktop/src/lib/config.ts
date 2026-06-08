@@ -5,7 +5,9 @@ export interface AppConfig {
   modelType: "local" | "cloud";
   localModelPath: string;
   localLlmEndpoint: string;
+  cloudProvider: "deepseek" | "openai" | "custom";
   cloudApiKey: string;
+  cloudBaseUrl: string;
   cloudModel: string;
   theme: "dark" | "light";
 }
@@ -16,7 +18,9 @@ const defaults: AppConfig = {
   modelType: "local",
   localModelPath: "",
   localLlmEndpoint: "http://localhost:8080",
+  cloudProvider: "deepseek",
   cloudApiKey: "",
+  cloudBaseUrl: "https://api.deepseek.com",
   cloudModel: "deepseek-chat",
   theme: "dark",
 };

@@ -14,6 +14,8 @@ pub struct AgentConfig {
     pub local_model_path: String,
     pub local_llm_endpoint: String,
     pub cloud_api_key: String,
+    pub cloud_base_url: String,
+    pub cloud_provider: String,
     pub cloud_model: String,
 }
 
@@ -24,6 +26,8 @@ impl Default for AgentConfig {
             local_model_path: String::new(),
             local_llm_endpoint: "http://localhost:8080".into(),
             cloud_api_key: String::new(),
+            cloud_base_url: "https://api.deepseek.com".into(),
+            cloud_provider: "deepseek".into(),
             cloud_model: "deepseek-chat".into(),
         }
     }
@@ -273,9 +277,28 @@ impl AgentManager {
 
         cmd.env("KUAFFU_GATEWAY_PORT", GATEWAY_PORT.to_string());
         if cfg.model_type == "cloud" {
-            cmd.env("KUAFFU_LLM_BACKEND", "openai");
-            cmd.env("OPENAI_API_KEY", cfg.cloud_api_key.clone());
-            cmd.env("KUAFFU_LLM_MODEL", cfg.cloud_model.clone());
+            cmd.env("KUAFFU_LLM_BACKEND", "cloud");
+            // 根据 provider 设置环境变量
+            match cfg.cloud_provider.as_str() {
+                "openai" => {
+                    cmd.env("KUAFFU_PROVIDERS", "openai");
+                    cmd.env("OPENAI_API_KEY", cfg.cloud_api_key.clone());
+                    cmd.env("OPENAI_BASE_URL", cfg.cloud_base_url.clone());
+                    cmd.env("OPENAI_MODEL", cfg.cloud_model.clone());
+                }
+                "custom" => {
+                    cmd.env("KUAFFU_PROVIDERS", "custom");
+                    cmd.env("CUSTOM_API_KEY", cfg.cloud_api_key.clone());
+                    cmd.env("CUSTOM_BASE_URL", cfg.cloud_base_url.clone());
+                    cmd.env("CUSTOM_MODEL", cfg.cloud_model.clone());
+                }
+                _ => { // deepseek (default)
+                    cmd.env("KUAFFU_PROVIDERS", "deepseek");
+                    cmd.env("DEEPSEEK_API_KEY", cfg.cloud_api_key.clone());
+                    cmd.env("DEEPSEEK_BASE_URL", cfg.cloud_base_url.clone());
+                    cmd.env("DEEPSEEK_MODEL", cfg.cloud_model.clone());
+                }
+            }
         } else {
             cmd.env("KUAFFU_LLM_BACKEND", "llama");
             cmd.env("KUAFFU_LLM_ENDPOINT", cfg.local_llm_endpoint.clone());

@@ -98,9 +98,35 @@
           </div>
         {:else}
           <div class="field">
+            <label>API 提供商</label>
+            <div class="toggle-group">
+              <button
+                class="toggle-btn"
+                class:active={config.cloudProvider === "deepseek"}
+                onclick={() => { config.cloudProvider = "deepseek"; config.cloudBaseUrl = "https://api.deepseek.com"; config.cloudModel = "deepseek-chat"; }}
+              >DeepSeek</button>
+              <button
+                class="toggle-btn"
+                class:active={config.cloudProvider === "openai"}
+                onclick={() => { config.cloudProvider = "openai"; config.cloudBaseUrl = "https://api.openai.com/v1"; config.cloudModel = "gpt-4o-mini"; }}
+              >OpenAI</button>
+              <button
+                class="toggle-btn"
+                class:active={config.cloudProvider === "custom"}
+                onclick={() => { config.cloudProvider = "custom"; }}
+              >自定义</button>
+            </div>
+          </div>
+          <div class="field">
             <label>API Key</label>
             <input type="password" bind:value={config.cloudApiKey} placeholder="sk-..." />
           </div>
+          {#if config.cloudProvider === "custom"}
+          <div class="field">
+            <label>API 地址</label>
+            <input type="text" bind:value={config.cloudBaseUrl} placeholder="https://api.example.com/v1" />
+          </div>
+          {/if}
           <div class="field">
             <label>模型名称</label>
             <input type="text" bind:value={config.cloudModel} placeholder="deepseek-chat" />

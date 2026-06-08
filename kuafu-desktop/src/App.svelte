@@ -62,6 +62,8 @@
           local_model_path: config.localModelPath,
           local_llm_endpoint: config.localLlmEndpoint,
           cloud_api_key: config.cloudApiKey,
+          cloud_base_url: config.cloudBaseUrl,
+          cloud_provider: config.cloudProvider,
           cloud_model: config.cloudModel,
         },
       });
