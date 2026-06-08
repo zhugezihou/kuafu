@@ -211,11 +211,20 @@ jobs:
           # 预装 pyyaml 到嵌入式 Python
           if ($sysPython) {
             echo "pre-installing pyyaml via $sysPython..."
-            & $sysPython -m pip install pyyaml --target "$out\Lib\site-packages" --quiet 2>$null
-            if ($LASTEXITCODE -eq 0) {
-              echo "pyyaml pre-installed to embedded python"
+            # 直接 pip install 到系统 Python 的 site-packages，然后复制 yaml 包到嵌入式 Python
+            $tmpDir = "$env:RUNNER_TEMP\pyyaml_tmp"
+            mkdir $tmpDir -Force | Out-Null
+            & $sysPython -m pip install pyyaml --target $tmpDir --quiet 2>&1 | Out-Null
+            if (Test-Path "$tmpDir\yaml") {
+              # 复制 yaml 包到嵌入式 Python 根目录（site-packages 在 python._pth 启用 import site 后生效）
+              mkdir "$out\Lib\site-packages" -Force | Out-Null
+              Copy-Item "$tmpDir\yaml" "$out\Lib\site-packages\" -Recurse -Force
+              Copy-Item "$tmpDir\yaml-*" "$out\Lib\site-packages\" -Force
+              # 验证
+              $check = & $out\python.exe -c "import yaml; print('ok')" 2>&1
+              echo "pyyaml pre-installed: $check"
             } else {
-              echo "WARNING: pyyaml pre-install failed, fallback to runtime install"
+              echo "WARNING: pyyaml pre-install failed"
             }
           } else {
             echo "WARNING: no system python for pre-install, will try ensurepip at runtime"
