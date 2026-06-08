@@ -284,10 +284,20 @@ impl AgentManager {
             return Err(err);
         }
 
-        let python = PathBuf::from(&setup.python_path);
+        // 独立确定 Python 路径：先找嵌入式，再找系统 Python
+        let python = self.find_python();
         let kuafu = self.kuafu_dir();
         let kuafu_str = kuafu.to_string_lossy().to_string();
         let python_str = python.to_string_lossy().to_string();
+
+        // 验证 python 可执行文件存在
+        if !python.exists() && !python.is_absolute() {
+            // 可能是 PATH 中的名称（如 "python"），尝试 which/where
+            // 在 Windows 上直接用
+        }
+        if !python.exists() && python.is_absolute() {
+            return Err(format!("Python 可执行文件不存在: {}", python_str));
+        }
 
         if !kuafu.join("core").exists() {
             return Err(format!("未找到夸父模块 (路径: {})", kuafu_str));
@@ -301,6 +311,15 @@ impl AgentManager {
             "import sys; sys.path.insert(0, r'{}'); sys.argv = ['core.cli', 'gateway', 'start', '--port', '{}']; from core.cli import main; sys.exit(main())",
             kuafu_str, GATEWAY_PORT
         );
+
+        // Debug: 打印启动命令
+        eprintln!("[Hermes] starting: {} -c ...", python_str);
+        eprintln!("[Hermes] sys.path: {}", kuafu_str);
+        eprintln!("[Hermes] KUAFFU_PROVIDERS={:?}, KUAFFU_DESKTOP=1, KUAFFU_LLM_BACKEND={:?}",
+            cfg.model_type,
+            if cfg.model_type == "cloud" { &cfg.cloud_provider } else { "llama" }
+        );
+
         cmd.args(["-c", &bootstrap])
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
@@ -482,19 +501,7 @@ impl AgentManager {
     }
 
     fn find_python(&self) -> PathBuf {
-        let embedded = self.embedded_python();
-        if embedded.exists() {
-            let ok = Command::new(&embedded)
-                .args(["-c", "import yaml"])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            if ok {
-                return embedded;
-            }
-        }
+        // Desktop 模式优先用系统 Python（已有 pyyaml），备用嵌入式
         if let Some(sys) = Self::find_system_python() {
             let ok = Command::new(&sys)
                 .args(["-c", "import yaml"])
@@ -507,11 +514,8 @@ impl AgentManager {
                 return sys;
             }
         }
-        if embedded.exists() {
-            embedded
-        } else {
-            PathBuf::from("python")
-        }
+        // 兜底：嵌入式 Python
+        self.embedded_python()
     }
 
     fn get_last_error(&self) -> String {
