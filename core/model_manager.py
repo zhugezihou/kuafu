@@ -151,7 +151,27 @@ class ModelManager:
 
     @staticmethod
     def _ping(base_url: str, timeout: int = 2) -> bool:
-        """快速检测后端是否可用。"""
+        """快速检测后端是否可用。（DNS 超时也受 timeout 约束）"""
+        # DNS 预检：socket.getaddrinfo 不支持 timeout，用线程包装
+        from urllib.parse import urlparse
+        import socket, threading
+
+        parsed = urlparse(base_url)
+        host = parsed.hostname or ""
+        if host:
+            dns_ok = [False]
+            def _dns():
+                try:
+                    socket.getaddrinfo(host, parsed.port or 80)
+                    dns_ok[0] = True
+                except OSError:
+                    pass
+            t = threading.Thread(target=_dns, daemon=True)
+            t.start()
+            t.join(timeout=timeout)
+            if not dns_ok[0]:
+                return False  # DNS 超时或失败
+
         import urllib.request
         try:
             req = urllib.request.Request(f"{base_url}/v1/models", method="GET")
