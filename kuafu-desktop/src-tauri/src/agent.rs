@@ -94,6 +94,7 @@ impl AgentManager {
     fn find_system_python() -> Option<PathBuf> {
         for name in &["py", "python3", "python"] {
             let p = PathBuf::from(name);
+            // 先查 PATH 版本号
             let ok = Command::new(&p)
                 .args(["--version"])
                 .stdout(Stdio::null())
@@ -102,6 +103,21 @@ impl AgentManager {
                 .map(|s| s.success())
                 .unwrap_or(false);
             if ok {
+                // py 是 launcher，换成真实路径
+                if name == &"py" {
+                    // py -c "import sys; print(sys.executable)" 出完整路径
+                    if let Ok(out) = Command::new("py")
+                        .args(["-c", "import sys; print(sys.executable)"])
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::null())
+                        .output()
+                    {
+                        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                        if !path.is_empty() {
+                            return Some(PathBuf::from(path));
+                        }
+                    }
+                }
                 return Some(p);
             }
         }
