@@ -173,7 +173,11 @@ impl AgentManager {
         let py = PathBuf::from(&status.python_path);
 
         if !status.pyyaml_installed {
-            let pip_result = Command::new(&py)
+            // 先试试系统 Python 的 pip（可能比嵌入式 Python 更可靠）
+            let sys_py = Self::find_system_python();
+            let pip_py = sys_py.as_ref().unwrap_or(&py);
+
+            let pip_result = Command::new(pip_py)
                 .args(["-m", "pip", "install", "pyyaml", "--quiet"])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -185,17 +189,17 @@ impl AgentManager {
             }
 
             if !status.pyyaml_installed {
-                let _ = Command::new(&py)
+                let _ = Command::new(pip_py)
                     .args(["-m", "ensurepip", "--upgrade", "--quiet"])
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
                     .status();
-                let _ = Command::new(&py)
+                let _ = Command::new(pip_py)
                     .args(["-m", "pip", "install", "pyyaml", "--quiet"])
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
                     .status();
-                let check = Command::new(&py)
+                let check = Command::new(pip_py)
                     .args(["-c", "import yaml"])
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
@@ -203,6 +207,13 @@ impl AgentManager {
                     .map(|s| s.success())
                     .unwrap_or(false);
                 status.pyyaml_installed = check;
+            }
+
+            // 如果系统 Python 装上了 pyyaml，就用系统 Python 启动
+            if status.pyyaml_installed {
+                if let Some(ref sys) = sys_py {
+                    status.python_path = sys.to_string_lossy().to_string();
+                }
             }
         }
 
