@@ -257,6 +257,7 @@ jobs:
           $match = [regex]::Match($content, 'version = "([^"]+)"')
           $ver = $match.Groups[1].Value
           $tag = "desktop-v$ver"
+          $prevTag = "desktop-v$ver"  # 备份原始 tag，用于 changelog 对比
 
           # 检查 tag 是否已存在
           $exists = gh release view $tag --json tagName 2>$null
@@ -283,4 +284,16 @@ jobs:
             $tag = $newTag
           }
 
-          gh release create "$tag" --title "夸父 Desktop v$ver" --notes "夸父 Desktop 桌面客户端发布" src-tauri/target/release/bundle/nsis/*.exe
+          # 生成改动说明：从上个 tag 到当前 HEAD
+          $changelog = git log --oneline --no-decorate "$prevTag..HEAD" 2>$null
+          if (-not $changelog) {
+            # 没有前一个 tag，用最近 10 条
+            $changelog = git log --oneline --no-decorate -10 2>$null
+          }
+          $notes = $changelog | ForEach-Object { $_ -replace '^[a-f0-9]+ ', '• ' }
+          $notesStr = if ($notes) { $notes -join "`n" } else { "无新增改动" }
+
+          gh release create "$tag" `
+            --title "夸父 Desktop v$ver" `
+            --notes $notesStr `
+            src-tauri/target/release/bundle/nsis/*.exe
