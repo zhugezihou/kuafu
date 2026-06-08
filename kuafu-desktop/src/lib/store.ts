@@ -148,6 +148,8 @@ export function deleteArchivedSession(id: string) {
 // 追加消息
 export function addMessage(msg: Message) {
   messages.update((msgs) => [...msgs, msg]);
+  // 每次添加消息自动保存
+  saveMessages();
 }
 
 // 追加到最后一条助手消息（流式输出）
@@ -159,11 +161,32 @@ export function appendToLastAssistant(chunk: string) {
     }
     return [...msgs, { role: "assistant", content: chunk }];
   });
+  // 流式追加也自动保存
+  saveMessages();
+}
+
+// 保存当前消息到 localStorage（每次变更自动触发）
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+function saveMessages() {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    let msgs: Message[] = [];
+    const unsub = messages.subscribe((m) => (msgs = m));
+    unsub();
+    try {
+      localStorage.setItem(CURRENT_SESSION_KEY, JSON.stringify(msgs));
+    } catch {}
+  }, 300); // 300ms 防抖
 }
 
 // 清空当前会话（存档后再清）
 export function clearMessages() {
   archiveCurrentSession();
   messages.set([]);
-  currentSessionId.set(genId());
+  const newId = genId();
+  currentSessionId.set(newId);
+  // 清空当前会话时也保存空的会话状态
+  try {
+    localStorage.setItem(CURRENT_SESSION_KEY, JSON.stringify([]));
+  } catch {}
 }

@@ -3,10 +3,15 @@
   import { onMount } from "svelte";
 
   let version = $state("?");
-  let debugVisible = $state(false);
 
-  onMount(() => {
-    version = "1.0.27";
+  onMount(async () => {
+    // 从 Tauri 获取版本号
+    try {
+      const { getVersion } = await import("@tauri-apps/api/app");
+      version = await getVersion();
+    } catch {
+      version = "?";
+    }
   });
 
   function toggleDebug() {

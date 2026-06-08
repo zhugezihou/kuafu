@@ -138,11 +138,29 @@
     addMessage({ role: "user", content: text });
     addMessage({ role: "assistant", content: "" });
 
+    // 发消息前同步配置到引擎（热更新）
+    try {
+      if (invokeFn) {
+        const cfg = loadConfig();
+        await invokeFn("update_agent_config", {
+          config: {
+            model_type: cfg.modelType,
+            local_model_path: cfg.localModelPath,
+            local_llm_endpoint: cfg.localLlmEndpoint,
+            cloud_api_key: cfg.cloudApiKey,
+            cloud_base_url: cfg.cloudBaseUrl,
+            cloud_provider: cfg.cloudProvider,
+            cloud_model: cfg.cloudModel,
+          },
+        });
+      }
+    } catch {}  // 静默失败，不影响对话
+
     try {
       await sendMessageStream(
         text,
         (chunk) => appendToLastAssistant(chunk),
-        () => { isRunning.set(false); saveSession(); }
+        () => { isRunning.set(false); }
       );
     } catch (e: any) {
       appendToLastAssistant(`\n\n错误: ${e.message}`);
