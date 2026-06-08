@@ -208,21 +208,25 @@ jobs:
           Add-Content "$out\python._pth" "`n..\kuafu"
           Add-Content "$out\python._pth" "`nimport site"
 
-          # 预装 pyyaml 到嵌入式 Python
+          # 预装 pyyaml 到嵌入式 Python（直接下载 yaml 包，避免 pip 在 CI 上出错）
           if ($sysPython) {
             echo "pre-installing pyyaml via $sysPython..."
-            # 直接 pip install 到系统 Python 的 site-packages，然后复制 yaml 包到嵌入式 Python
-            $tmpDir = "$env:RUNNER_TEMP\pyyaml_tmp"
-            mkdir $tmpDir -Force | Out-Null
-            & $sysPython -m pip install pyyaml --target $tmpDir --quiet 2>&1 | Out-Null
-            if (Test-Path "$tmpDir\yaml") {
-              # 复制 yaml 包到嵌入式 Python 根目录（site-packages 在 python._pth 启用 import site 后生效）
-              mkdir "$out\Lib\site-packages" -Force | Out-Null
-              Copy-Item "$tmpDir\yaml" "$out\Lib\site-packages\" -Recurse -Force
-              Copy-Item "$tmpDir\yaml-*" "$out\Lib\site-packages\" -Force
-              # 验证
-              $check = & $out\python.exe -c "import yaml; print('ok')" 2>&1
-              echo "pyyaml pre-installed: $check"
+            # 直接 pip install（忽略 PowerShell 的 NativeCommandError）
+            $errorActionPrefSave = $ErrorActionPreference
+            $ErrorActionPreference = 'SilentlyContinue'
+            $pipResult = & $sysPython -m pip install pyyaml --target "$out\Lib\site-packages" --quiet 2>&1
+            $ErrorActionPreference = $errorActionPrefSave
+            $pipOk = $LASTEXITCODE -eq 0
+            if (-not $pipOk) {
+              # 重试：用 get-pip 激活嵌入式 Python 的 pip
+              echo "trying ensurepip for embedded python..."
+              & "$out\python.exe" -m ensurepip --upgrade --quiet 2>&1 | Out-Null
+              & "$out\python.exe" -m pip install pyyaml --quiet 2>&1 | Out-Null
+              $check = & "$out\python.exe" -c "import yaml; print('ok')" 2>&1
+              $pipOk = $check -eq 'ok'
+            }
+            if ($pipOk) {
+              echo "pyyaml pre-installed"
             } else {
               echo "WARNING: pyyaml pre-install failed"
             }
