@@ -14,9 +14,15 @@ pub struct AgentConfig {
     pub local_model_path: String,
     pub local_llm_endpoint: String,
     pub cloud_api_key: String,
+    #[serde(default)]
     pub cloud_base_url: String,
+    #[serde(default = "default_cloud_provider")]
     pub cloud_provider: String,
     pub cloud_model: String,
+}
+
+fn default_cloud_provider() -> String {
+    "deepseek".to_string()
 }
 
 impl Default for AgentConfig {

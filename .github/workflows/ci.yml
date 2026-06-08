@@ -248,7 +248,7 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "VERSION=$ver"
           Add-Content -Path $env:GITHUB_ENV -Value "TAG_NAME=desktop-v$ver"
 
-      - name: 创建 Release（自动检测 tag 冲突并 bump）
+      - name: 创建 Release（自动覆盖已有 tag）
         shell: powershell
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -257,41 +257,24 @@ jobs:
           $match = [regex]::Match($content, 'version = "([^"]+)"')
           $ver = $match.Groups[1].Value
           $tag = "desktop-v$ver"
-          $prevTag = "desktop-v$ver"  # 备份原始 tag，用于 changelog 对比
 
-          # 检查 tag 是否已存在
+          # 如果 tag 已存在，删除旧的 release 和 tag
           $exists = gh release view $tag --json tagName 2>$null
           if ($exists) {
-            # 自动 bump patch 版本
-            $parts = $ver.Split('.')
-            $parts[2] = [int]$parts[2] + 1
-            $newVer = $parts -join '.'
-            $newTag = "desktop-v$newVer"
-            Write-Host "Tag $tag already exists, bumping to $newVer"
-
-            # 更新 Cargo.toml 和 tauri.conf.json
-            (Get-Content src-tauri/Cargo.toml) -replace 'version = "'+$ver+'"', 'version = "'+$newVer+'"' | Set-Content src-tauri/Cargo.toml
-            (Get-Content src-tauri/tauri.conf.json) -replace '"version": "'+$ver+'"', '"version": "'+$newVer+'"' | Set-Content src-tauri/tauri.conf.json
-
-            # 提交 bump（只提交版本文件，忽略其他改动）
-            git config user.name "kuafu-ci"
-            git config user.email "ci@kuafu.dev"
-            git add src-tauri/Cargo.toml src-tauri/tauri.conf.json
-            git commit -m "desktop v${newVer}: auto bump for CI release" 2>$null
-            git push 2>$null
-
-            $ver = $newVer
-            $tag = $newTag
+            Write-Host "Tag $tag exists, deleting old release..."
+            gh release delete $tag --yes 2>$null
+            git tag -d $tag 2>$null
+            git push origin :refs/tags/$tag 2>$null
           }
 
-          # 获取远程 tag
+          # 获取上个发布 tag 用于 changelog
           git fetch --tags origin 2>$null
-          $prevTag = "desktop-v$ver"
+          $prevTag = git tag --list 'desktop-v*' --sort=-version:refname | Select-Object -First 2 | Select-Object -Last 1
+          if (-not $prevTag) { $prevTag = "desktop-v$ver" }
 
           # 生成改动说明
           $changelog = git log --oneline --no-decorate "$prevTag..HEAD" 2>$null
           if (-not $changelog) {
-            # 没有前一个 tag，用最近 10 条
             $changelog = git log --oneline --no-decorate -10 2>$null
           }
           $notesLines = $changelog | ForEach-Object { $_ -replace '^[a-f0-9]+ ', '- ' }
