@@ -114,10 +114,21 @@ impl AgentManager {
         let embedded_exists = embedded.exists();
         let system_py = Self::find_system_python();
 
-        let (python_path, python_found) = if embedded_exists {
+        // 优先用系统 Python（避免嵌入式 Python 的 python._pth 路径问题）
+        let (python_path, python_found) = if let Some(ref p) = system_py {
+            let pyyaml_ok = Command::new(p)
+                .args(["-c", "import yaml"])
+                .stdout(Stdio::null()).stderr(Stdio::null())
+                .status().map(|s| s.success()).unwrap_or(false);
+            if pyyaml_ok {
+                (p.to_string_lossy().to_string(), true)
+            } else if embedded_exists {
+                (embedded.to_string_lossy().to_string(), true)
+            } else {
+                (p.to_string_lossy().to_string(), true)
+            }
+        } else if embedded_exists {
             (embedded.to_string_lossy().to_string(), true)
-        } else if let Some(ref p) = system_py {
-            (p.to_string_lossy().to_string(), true)
         } else {
             (String::new(), false)
         };
