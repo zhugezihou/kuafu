@@ -205,7 +205,8 @@ jobs:
           Copy-Item "$pwd\..\pyproject.toml" "$out\kuafu\" -Force
 
           # 配置 python._pth（启用 import site，使 site-packages 生效）
-          Add-Content "$out\python._pth" "`n..\kuafu"
+          # 注意：路径相对于 python.exe 所在目录，所以 .\kuafu 指向 python/kuafu/
+          Add-Content "$out\python._pth" "`n.\kuafu"
           Add-Content "$out\python._pth" "`nimport site"
 
           # 预装 pyyaml 到嵌入式 Python（直接下载 yaml 包，避免 pip 在 CI 上出错）

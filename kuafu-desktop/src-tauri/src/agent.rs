@@ -269,20 +269,14 @@ impl AgentManager {
         let cfg = self.config.lock().map_err(|e| e.to_string())?.clone();
 
         let mut cmd = Command::new(&python);
-        cmd.args([
-            "-m",
-            "core.cli",
-            "gateway",
-            "start",
-            "--port",
-            &GATEWAY_PORT.to_string(),
-        ])
-        .current_dir(&kuafu)
+        // 使用 -c 脚本方式启动（避免 python._pth 禁用 PYTHONPATH 的问题）
+        let bootstrap = format!(
+            "import sys; sys.path.insert(0, r'{}'); sys.argv = ['core.cli', 'gateway', 'start', '--port', '{}']; from core.cli import main; sys.exit(main())",
+            kuafu_str, GATEWAY_PORT
+        );
+        cmd.args(["-c", &bootstrap])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-
-        // 设置 PYTHONPATH 确保能找到 core 模块（解决中文路径下 python._pth 失效问题）
-        cmd.env("PYTHONPATH", &kuafu_str);
 
         cmd.env("KUAFFU_GATEWAY_PORT", GATEWAY_PORT.to_string());
         if cfg.model_type == "cloud" {

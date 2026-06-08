@@ -63,9 +63,9 @@ if not exist "%OUT%\python.exe" (
     mkdir "%OUT%\kuafu" 2>nul
     xcopy /E /I /Y "%~dp0..\core" "%OUT%\kuafu\core\"
     copy /Y "%~dp0..\pyproject.toml" "%OUT%\kuafu\" >nul
-    REM python._pth
+    REM python._pth (relative to python.exe dir, so .\kuafu = python/kuafu/)
     echo.>>"%OUT%\python._pth"
-    echo ..\kuafu>>"%OUT%\python._pth"
+    echo .\kuafu>>"%OUT%\python._pth"
     echo import site>>"%OUT%\python._pth"
     echo [OK] Embedded Python ready.
 ) else (
