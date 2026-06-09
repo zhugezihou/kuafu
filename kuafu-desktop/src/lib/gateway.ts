@@ -276,3 +276,59 @@ export async function checkForUpdates(): Promise<UpdateInfo | null> {
     return JSON.parse(raw);
   } catch { return null; }
 }
+
+// ── P3: 本地模型管理 ──
+
+export interface LocalEngineStatus {
+  llama_server: boolean;
+  ollama: boolean;
+  llama_server_running: boolean;
+  ollama_running: boolean;
+  models_dir: string;
+  models: ModelFile[];
+}
+
+export interface ModelFile {
+  name: string;
+  path: string;
+  size_mb: number;
+  quant?: string;
+}
+
+/** 检测本地推理引擎和可用模型 */
+export async function checkLocalEngines(): Promise<LocalEngineStatus | null> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    // python_dir 传空，Rust 端用空路径会只检测引擎不扫描 models
+    return await invoke("check_local_engines", { pythonDir: "" }) as LocalEngineStatus;
+  } catch { return null; }
+}
+
+/** 启动本地 llama-server */
+export async function startLlamaServer(
+  modelPath: string,
+  contextLength = 32768,
+  gpuLayers = 999
+): Promise<string> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await invoke("start_llama_server", {
+      pythonDir: "",
+      modelPath,
+      contextLength,
+      gpuLayers,
+    }) as string;
+  } catch (e: any) {
+    return `启动失败: ${e.message || e}`;
+  }
+}
+
+/** 停止本地 llama-server */
+export async function stopLlamaServer(): Promise<string> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await invoke("stop_llama_server") as string;
+  } catch (e: any) {
+    return `停止失败: ${e.message || e}`;
+  }
+}

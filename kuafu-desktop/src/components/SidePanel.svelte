@@ -3,12 +3,13 @@
   import SkillManager from "./SkillManager.svelte";
   import CronPanel from "./CronPanel.svelte";
   import ApprovalPanel from "./ApprovalPanel.svelte";
+  import ModelManager from "./ModelManager.svelte";
 
   let {
     onClose = () => {},
   }: { onClose: () => void } = $props();
 
-  type Tab = "tree" | "skills" | "cron" | "approval";
+  type Tab = "tree" | "skills" | "cron" | "approval" | "models";
   let activeTab = $state<Tab>("approval");
 </script>
 
@@ -18,6 +19,7 @@
     <button class="tab" class:active={activeTab === "tree"} onclick={() => (activeTab = "tree")} title="Agent树">🌳</button>
     <button class="tab" class:active={activeTab === "skills"} onclick={() => (activeTab = "skills")} title="技能">🧩</button>
     <button class="tab" class:active={activeTab === "cron"} onclick={() => (activeTab = "cron")} title="定时">⏰</button>
+    <button class="tab" class:active={activeTab === "models"} onclick={() => (activeTab = "models")} title="本地模型">🧠</button>
     <button class="close-btn" onclick={onClose}>✕</button>
   </div>
 
@@ -30,6 +32,8 @@
       <SkillManager />
     {:else if activeTab === "cron"}
       <CronPanel />
+    {:else if activeTab === "models"}
+      <ModelManager />
     {/if}
   </div>
 </div>

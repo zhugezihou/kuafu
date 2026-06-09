@@ -27,6 +27,8 @@
           model_type: config.modelType,
           local_model_path: config.localModelPath,
           local_llm_endpoint: config.localLlmEndpoint,
+          local_context_length: config.localContextLength,
+          local_gpu_layers: config.localGpuLayers,
           cloud_api_key: config.cloudApiKey,
           cloud_model: config.cloudModel,
         },
@@ -105,6 +107,26 @@
           <div class="field">
             <label>模型路径 (GGUF, 可选)</label>
             <input type="text" bind:value={config.localModelPath} placeholder="/path/to/model.gguf" />
+          </div>
+          <div class="field">
+            <label>上下文长度 (context)</label>
+            <select bind:value={config.localContextLength}>
+              <option value={8192}>8K</option>
+              <option value={16384}>16K</option>
+              <option value={32768}>32K</option>
+              <option value={65536}>64K</option>
+              <option value={131072}>128K</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>GPU 加速层数</label>
+            <select bind:value={config.localGpuLayers}>
+              <option value={0}>CPU 模式</option>
+              <option value={16}>16 层</option>
+              <option value={32}>32 层</option>
+              <option value={64}>64 层</option>
+              <option value={999}>全部</option>
+            </select>
           </div>
         {:else}
           <div class="field">

@@ -5,6 +5,8 @@ export interface AppConfig {
   modelType: "local" | "cloud";
   localModelPath: string;
   localLlmEndpoint: string;
+  localContextLength: number;
+  localGpuLayers: number;
   cloudProvider: "deepseek" | "openai" | "custom";
   cloudApiKey: string;
   cloudBaseUrl: string;
@@ -19,6 +21,8 @@ const defaults: AppConfig = {
   modelType: "cloud",
   localModelPath: "",
   localLlmEndpoint: "http://localhost:8080",
+  localContextLength: 32768,
+  localGpuLayers: 999,
   cloudProvider: "deepseek",
   cloudApiKey: "",
   cloudBaseUrl: "https://api.deepseek.com",
