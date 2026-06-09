@@ -180,9 +180,20 @@ class GatewayHandler(BaseHTTPRequestHandler):
         mode = body.get("mode", "standard")
         sync = body.get("sync", True)
 
+        import datetime as _dt
+        ts = _dt.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        print(f"[Gateway] {ts} 收到任务: mode={mode} sync={sync} len={len(task_text)}", flush=True)
+
         if sync:
             try:
+                print(f"[Gateway] {_dt.datetime.now().strftime('%H:%M:%S.%f')[:-3]} agent.run() 开始...", flush=True)
                 result = self.agent.run(task_text, mode=mode)
+                duration = result.get("duration", 0)
+                print(f"[Gateway] {_dt.datetime.now().strftime('%H:%M:%S.%f')[:-3]} agent.run() 完成: "
+                      f"success={result.get('success')} turns={result.get('turns')} "
+                      f"duration={duration}s "
+                      f"result_len={len(result.get('result', ''))}",
+                      flush=True)
                 self._send_json(200, {
                     "success": result.get("success", False),
                     "result": result.get("result", ""),
@@ -476,10 +487,15 @@ class GatewayHandler(BaseHTTPRequestHandler):
         vals = qs.get(name, [])
         return vals[0] if vals else default
 
-    # ── 日志静默 ────────────────────────────────────────────
+    # ── Gateway 详细日志 ──────────────────────────────────────
 
     def log_message(self, format, *args):
-        pass  # 静默，不打印每个请求
+        """HTTP 访问日志 — Desktop 模式静默"""
+        if os.environ.get("KUAFFU_DESKTOP") == "1":
+            pass  # Desktop 模式静默
+        else:
+            import time
+            print(f"[Gateway] {self.client_address[0]} - {self.command} {self.path} - {time.strftime('%H:%M:%S')}")
 
 
 class GatewayServer:
@@ -504,7 +520,26 @@ class GatewayServer:
         # 通道管理器
         self.channels: Any = None
         self._gateway_loop: Any = None
+        self._inject_desktop_env()
         self._init_channels()
+
+    def _inject_desktop_env(self):
+        """注入 Desktop 环境变量（确保首次启动配置正确）"""
+        import datetime
+        if os.environ.get("KUAFFU_DESKTOP") != "1":
+            return
+        os.environ.setdefault("KUAFFU_PROVIDERS", "deepseek")
+        os.environ.setdefault("KUAFFU_LLM_BACKEND", "cloud")
+        msg = (
+            f"\n{'='*50}\n"
+            f"  夸父 Gateway (Desktop)\n"
+            f"  启动时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"  后端: {os.environ.get('KUAFFU_LLM_BACKEND', 'cloud')}\n"
+            f"  提供商: {os.environ.get('KUAFFU_PROVIDERS', 'deepseek')}\n"
+            f"  端口: {self.port}\n"
+            f"{'='*50}"
+        )
+        print(msg, flush=True)
 
     def _init_channels(self):
         """初始化消息通道（直连模式：飞书WS + 微信iLink）。"""
@@ -575,9 +610,23 @@ class GatewayServer:
             )
             self._thread.start()
 
-            print(f"[Gateway] 启动: http://{self.host}:{self.port}")
+            print(f"[Gateway] 启动: http://{self.host}:{self.port}", flush=True)
             if self.api_key:
                 print(f"[Gateway] API Key 认证已启用")
+            # 打印环境关键参数
+            import datetime as _dt
+            print(f"[Gateway] 时间: {_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+            print(f"[Gateway] Python: {sys.version.split()[0]} {sys.executable}", flush=True)
+            print(f"[Gateway] PYTHONPATH: {os.environ.get('PYTHONPATH', '(未设置)')}", flush=True)
+            print(f"[Gateway] 工作目录: {os.getcwd()}", flush=True)
+            for key in ["KUAFFU_DESKTOP", "KUAFFU_LLM_BACKEND", "KUAFFU_PROVIDERS",
+                         "DEEPSEEK_API_KEY", "DEEPSEEK_MODEL",
+                         "KUAFFU_LLM_ENDPOINT", "KUAFFU_LLM_MODEL_PATH"]:
+                val = os.environ.get(key, "")
+                if key.endswith("API_KEY") and val:
+                    val = val[:8] + "..."
+                if val:
+                    print(f"[Gateway]   {key}={val}", flush=True)
             return True
 
         except OSError as e:

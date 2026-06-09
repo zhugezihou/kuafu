@@ -243,12 +243,18 @@
     <div class="cloud-guide-overlay">
       <div class="cloud-guide-card">
         <h2>☁️ 配置云端大模型</h2>
-        <p>夸父需要 API Key 才能运行。请配置你的云端模型提供商。</p>
+        <p>夸父 Desktop 默认使用 <strong>DeepSeek Chat</strong> 云端 API。</p>
+        <p>请在设置中填入你的 DeepSeek API Key。如果没有，可以<a href="https://platform.deepseek.com" target="_blank" rel="noopener">在这里注册获取</a>。</p>
         <div class="cloud-guide-actions">
           <button class="btn-primary" onclick={() => { showCloudGuide = false; showSettings = true; }}>
             去设置
           </button>
-          <button class="btn-secondary" onclick={() => { showCloudGuide = false; }}>
+          <button class="btn-secondary" onclick={() => {
+            showCloudGuide = false;
+            // 用户跳过后也设为已完成，避免每次启动都弹
+            const cfg = loadConfig();
+            saveConfig({ ...cfg, setupComplete: true });
+          }}>
             稍后配置
           </button>
         </div>
