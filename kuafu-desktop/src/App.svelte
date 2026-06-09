@@ -17,7 +17,7 @@
     loadSession,
     saveSession,
   } from "./lib/store";
-  import { sendMessageStream } from "./lib/gateway";
+  import { sendMessageStream, waitForGateway } from "./lib/gateway";
   import { log } from "./lib/debug";
   import DebugPanel from "./components/DebugPanel.svelte";
   import { loadConfig, saveConfig } from "./lib/config";
@@ -62,7 +62,7 @@
     };
   });
  
-   async function startAgentAsync() {
+  async function startAgentAsync() {
     if (!invokeFn) return;
     log("info", "startAgentAsync: configuring and starting engine...");
     try {
@@ -83,6 +83,21 @@
       log("info", `startAgentAsync: running=${status.running} error=${status.error || "none"}`);
       agentRunning.set(status.running);
       if (status.error) agentError.set(status.error);
+
+      // 启动后轮询等待 gateway 就绪（最长 15 秒）
+      if (status.running) {
+        log("info", "startAgentAsync: waiting for gateway...");
+        const ready = await waitForGateway(15, 1000);
+        if (ready) {
+          agentRunning.set(true);
+          agentError.set(null);
+          log("info", "startAgentAsync: gateway ready");
+        } else {
+          agentRunning.set(false);
+          agentError.set("引擎启动后网关无响应");
+          log("warn", "startAgentAsync: gateway not ready after 15s");
+        }
+      }
     } catch (e: any) {
       const msg = e.message || String(e);
       log("error", `startAgentAsync failed: ${msg}`);

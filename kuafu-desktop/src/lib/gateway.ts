@@ -38,6 +38,27 @@ export async function sendMessage(
   }
 }
 
+/** 带重试的健康检查：每秒一次，最多 retries 次 */
+export async function waitForGateway(
+  retries = 15,
+  interval = 1000
+): Promise<boolean> {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const resp = await fetch(`${GATEWAY_URL}/api/status`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      if (resp.ok) return true;
+    } catch {
+      // 还没就绪
+    }
+    if (i < retries - 1) {
+      await new Promise((r) => setTimeout(r, interval));
+    }
+  }
+  return false;
+}
+
 /** 通过 Tauri invoke + event 实现流式输出 */
 export async function sendMessageStream(
   task: string,

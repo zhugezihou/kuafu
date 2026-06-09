@@ -32,11 +32,21 @@
         },
       });
       saveMsg = "✅ 配置已保存";
+      await new Promise((r) => setTimeout(r, 500));
 
-      // 如果引擎正在运行，询问是否重启使配置生效
+      // 如果引擎正在运行，自动重启让配置生效
       const status = await invoke("agent_status") as any;
       if (status.running) {
-        saveMsg = "✅ 配置已保存（重启引擎生效）";
+        saveMsg = "🔄 重启引擎...";
+        await invoke("restart_agent");
+        // 等待 gateway 就绪
+        const { waitForGateway } = await import("../lib/gateway");
+        const ready = await waitForGateway(15, 1000);
+        if (ready) {
+          saveMsg = "✅ 配置已生效";
+        } else {
+          saveMsg = "✅ 配置已保存（引擎重启中，请稍候）";
+        }
       }
     } catch (e: any) {
       saveMsg = `⚠ 保存失败: ${e}`;
