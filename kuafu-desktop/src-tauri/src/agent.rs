@@ -484,7 +484,7 @@ impl AgentManager {
                 // 跨平台 SIGTERM: 用 libc 或 std::process::Command
                 #[cfg(target_family = "unix")]
                 {
-                    use std::os::unix::process::CommandExt;
+                    
                     // 用 kill 命令更可靠
                     let _ = std::process::Command::new("kill")
                         .args(["-TERM", &child.id().to_string()])

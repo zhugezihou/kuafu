@@ -4,11 +4,8 @@ use agent::AgentManager;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::tray::{TrayIconBuilder, MouseButton, MouseButtonState, TrayIconEvent};
-use tauri::menu::{Menu, MenuItem};
 use tauri::Emitter;
 use tauri::Manager;
-use tauri::Runtime;
 
 struct AppState {
     agent: Mutex<AgentManager>,
@@ -29,7 +26,7 @@ fn agent_status(state: tauri::State<AppState>) -> agent::AgentStatus {
     state
         .agent
         .lock()
-        .map(|mut a| a.status())
+        .map(|a| a.status())
         .unwrap_or(agent::AgentStatus {
             running: false,
             pid: None,
@@ -126,7 +123,7 @@ fn send_task(task: String, app_handle: tauri::AppHandle) -> Result<String, Strin
                 thread::sleep(Duration::from_millis(30)); // 模拟打字速度
             }
         }
-        if let Some(error) = data.get("result").and_then(|r| r.as_str()).filter(|r| r.is_empty()) {
+        if let Some(_error) = data.get("result").and_then(|r| r.as_str()).filter(|r| r.is_empty()) {
             let _ = app_handle.emit("task-chunk", data.get("error").and_then(|e| e.as_str()).unwrap_or("(无输出)"));
         }
     } else {
@@ -150,7 +147,7 @@ fn auto_setup(state: tauri::State<AppState>) -> Result<agent::SetupStatus, Strin
 
 /// 截图：调用系统截图工具，保存到截图目录，返回文件路径
 #[tauri::command]
-fn take_screenshot(app_handle: tauri::AppHandle) -> Result<String, String> {
+fn take_screenshot(_app_handle: tauri::AppHandle) -> Result<String, String> {
     use std::process::Command;
 
     let ts = SystemTime::now()
@@ -244,7 +241,7 @@ fn check_update() -> Result<String, String> {
         .call()
         .map_err(|e| format!("检查更新失败: {e}"))?;
 
-    let mut body = resp.body_mut()
+    let body = resp.body_mut()
         .read_to_string()
         .map_err(|e| format!("读取响应失败: {e}"))?;
 
@@ -281,7 +278,7 @@ pub fn run() {
             });
 
             // 系统托盘：带右键菜单（显示/隐藏/退出）
-            use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+            use tauri::tray::TrayIconBuilder;
             use tauri::menu::{Menu, MenuItem};
 
             let show_item = MenuItem::with_id(app, "show", "显示窗口", true, None::<&str>)?;

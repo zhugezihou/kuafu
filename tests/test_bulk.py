@@ -2108,7 +2108,7 @@ class TestAgentLoop:
              patch('core.agent_loop.PromptCache'), \
              patch('core.agent_loop.init_hooks'):
             loop = AgentLoop()
-            assert loop.max_turns == 20
+            assert loop.max_turns == 90
 
     def test_build_system_prompt(self):
         loop = self._make_loop()
