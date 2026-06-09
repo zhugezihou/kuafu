@@ -1616,7 +1616,7 @@ dependencies = [
 
 [[package]]
 name = "kuafu-desktop"
-version = "1.0.47"
+version = "1.0.49"
 dependencies = [
  "dirs",
  "serde",

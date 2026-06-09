@@ -331,10 +331,10 @@ impl AgentManager {
         );
 
         cmd.args(["-c", &bootstrap])
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-        // Desktop 模式下，stderr 重定向日志文件，方便排查
+        // Desktop 模式下，stdout+stderr 重定向日志文件，方便排查
         let log_dir = self.python_dir.join("logs");
         let _ = std::fs::create_dir_all(&log_dir);
         let ts = std::time::SystemTime::now()
@@ -343,8 +343,14 @@ impl AgentManager {
             .as_secs();
         let log_file = log_dir.join(format!("gateway_{}.log", ts));
         if let Ok(file) = std::fs::File::create(&log_file) {
-            cmd.stderr(file);
+            // 把 stdout 和 stderr 都写入同一个日志文件
+            let file_clone = file.try_clone().ok();
+            cmd.stdout(file);
+            if let Some(fc) = file_clone {
+                cmd.stderr(fc);
+            }
         }
+        eprintln!("[Hermes] gateway log: {}", log_file.display());
 
         cmd.env("KUAFFU_GATEWAY_PORT", GATEWAY_PORT.to_string());
         cmd.env("KUAFFU_DESKTOP", "1");  // Desktop 模式：禁用微信/飞书等交互通道
@@ -381,11 +387,13 @@ impl AgentManager {
 
         let mut child = cmd.spawn().map_err(|e| format!("启动夸父失败: {e}"))?;
         let pid = child.id();
+        eprintln!("[Hermes] child spawned: pid={}", pid);
 
         // 轮询 5 秒: 每 500ms 检查进程退出 + Gateway HTTP 就绪
         let mut gateway_ready = false;
-        for _ in 0..10 {
+        for i in 0..10 {
             std::thread::sleep(Duration::from_millis(500));
+            eprintln!("[Hermes] poll #{}/10: checking...", i + 1);
 
             // 进程是否已退出？
             if let Some(exit) = child.try_wait().ok().flatten() {
