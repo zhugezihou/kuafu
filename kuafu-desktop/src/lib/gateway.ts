@@ -248,3 +248,31 @@ export async function denyRequest(id: string): Promise<boolean> {
     return resp.ok;
   } catch { return false; }
 }
+
+// ── P3: 截图 ──
+
+/** 调用 Rust 命令截图，返回截图路径 */
+export async function takeScreenshot(): Promise<string> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    return await invoke("take_screenshot") as string;
+  } catch (e: any) {
+    return `截图失败: ${e.message || e}`;
+  }
+}
+
+// ── P3: 自动更新 ──
+
+export interface UpdateInfo {
+  latest_version: string;
+  download_url: string;
+}
+
+/** 检查 GitHub 最新 Release */
+export async function checkForUpdates(): Promise<UpdateInfo | null> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    const raw = await invoke("check_update") as string;
+    return JSON.parse(raw);
+  } catch { return null; }
+}

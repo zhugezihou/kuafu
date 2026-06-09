@@ -3,6 +3,7 @@ mod agent;
 use agent::AgentManager;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::tray::{TrayIconBuilder, MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::menu::{Menu, MenuItem};
 use tauri::Emitter;
@@ -147,6 +148,125 @@ fn auto_setup(state: tauri::State<AppState>) -> Result<agent::SetupStatus, Strin
     state.agent.lock().map_err(|e| e.to_string())?.auto_setup()
 }
 
+/// 截图：调用系统截图工具，保存到截图目录，返回文件路径
+#[tauri::command]
+fn take_screenshot(app_handle: tauri::AppHandle) -> Result<String, String> {
+    use std::process::Command;
+
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let filename = format!("screenshot_{}.png", ts);
+
+    // 截图保存路径：桌面/Screenshots/kuafu/
+    let pic_dir = dirs::picture_dir().unwrap_or_else(|| PathBuf::from("."));
+    let save_dir = pic_dir.join("Screenshots").join("kuafu");
+    std::fs::create_dir_all(&save_dir).map_err(|e| format!("创建截图目录失败: {e}"))?;
+    let save_path = save_dir.join(&filename);
+
+    #[cfg(target_os = "windows")]
+    {
+        // Windows: 用 PowerShell 截图（.NET 方式）
+        let ps_script = format!(
+            r#"
+Add-Type -AssemblyName System.Windows.Forms
+$screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+$bitmap = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
+$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+$graphics.CopyFromScreen($screen.Left, $screen.Top, 0, 0, $bitmap.Size)
+$bitmap.Save('{}', [System.Drawing.Imaging.ImageFormat]::Png)
+$bitmap.Dispose()
+$graphics.Dispose()
+"#,
+            save_path.to_string_lossy().replace("'", "''")
+        );
+        let output = Command::new("powershell")
+            .args(["-NoProfile", "-Command", &ps_script])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .map_err(|e| format!("调用 PowerShell 截图失败: {e}"))?;
+
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr);
+            // 如果 PowerShell 截图失败，回退到 SnippingTool
+            if !save_path.exists() {
+                Command::new("SnippingTool")
+                    .spawn()
+                    .map_err(|e| format!("截图失败（PowerShell + SnippingTool 均不可用）: {e}"))?;
+                return Err("已启动截图工具，截图后请手动保存到剪贴板".into());
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Linux: 用 import (imagemagick) 或 gnome-screenshot
+        let path_arg = save_path.to_string_lossy().to_string();
+        let result = Command::new("import")
+            .args([&path_arg])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        match result {
+            Ok(s) if s.success() => {}
+            _ => {
+                // 回退 gnome-screenshot
+                Command::new("gnome-screenshot")
+                    .args(["-f", &path_arg])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .map_err(|e| format!("截图失败: {e}"))?;
+            }
+        }
+    }
+
+    // 返回文件路径
+    let path_str = save_path.to_string_lossy().to_string();
+    if save_path.exists() {
+        Ok(path_str)
+    } else {
+        Ok(format!("截图已启动，文件将保存到: {}", path_str))
+    }
+}
+
+/// 检查更新：读取 GitHub 最新 Release 版本号
+#[tauri::command]
+fn check_update() -> Result<String, String> {
+    use std::io::Read;
+
+    let url = "https://api.github.com/repos/zhugezihou/kuafu/releases/latest";
+    let mut resp = ureq::get(url)
+        .header("User-Agent", "kuafu-desktop")
+        .header("Accept", "application/vnd.github.v3+json")
+        .call()
+        .map_err(|e| format!("检查更新失败: {e}"))?;
+
+    let mut body = resp.body_mut()
+        .read_to_string()
+        .map_err(|e| format!("读取响应失败: {e}"))?;
+
+    // 解析 tag_name
+    let json: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| format!("解析失败: {e}"))?;
+    let tag = json["tag_name"]
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
+    let html_url = json["html_url"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+
+    Ok(serde_json::json!({
+        "latest_version": tag,
+        "download_url": html_url,
+    })
+    .to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -214,6 +334,8 @@ pub fn run() {
             check_setup,
             auto_setup,
             send_task,
+            take_screenshot,
+            check_update,
         ])
         .run(tauri::generate_context!())
         .expect("夸父 Desktop 启动失败");
