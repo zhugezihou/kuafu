@@ -465,9 +465,21 @@ impl AgentManager {
             }
             #[cfg(not(windows))]
             {
-                use nix::sys::signal::{self, Signal};
-                use nix::unistd::Pid;
-                let _ = signal::kill(Pid::from_raw(child.id() as i32), Signal::SIGTERM);
+                // 跨平台 SIGTERM: 用 libc 或 std::process::Command
+                #[cfg(target_family = "unix")]
+                {
+                    use std::os::unix::process::CommandExt;
+                    // 用 kill 命令更可靠
+                    let _ = std::process::Command::new("kill")
+                        .args(["-TERM", &child.id().to_string()])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status();
+                }
+                #[cfg(not(target_family = "unix"))]
+                {
+                    let _ = child.kill();
+                }
                 std::thread::sleep(Duration::from_secs(2));
                 let _ = child.wait();
             }

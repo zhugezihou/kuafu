@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::tray::{TrayIconBuilder, MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::menu::{Menu, MenuItem};
+use tauri::Emitter;
 use tauri::Manager;
 use tauri::Runtime;
 
