@@ -453,7 +453,13 @@ impl AgentManager {
             // Windows 上 kill 相当于 TerminateProcess
             #[cfg(windows)]
             {
-                let _ = child.kill();
+                // Windows: 先 taskkill（不加 /F = 发 WM_CLOSE，相当于 SIGTERM）
+                let pid = child.id();
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/PID", &pid.to_string()])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
                 // 等 2 秒让进程处理收尾
                 for _ in 0..4 {
                     if child.try_wait().ok().flatten().is_some() {
