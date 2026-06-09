@@ -443,6 +443,15 @@ impl AgentManager {
             last.clear();
         }
 
+        if !gateway_ready {
+            // 进程还在但 Gateway 没起来，等启动日志
+            let err: String = "网关启动超时（夸父进程可能初始化较慢，请稍后重试）".into();
+            if let Ok(mut last) = self.last_error.lock() {
+                *last = err.clone();
+            }
+            return Err(err);
+        }
+
         Ok(AgentStatus {
             running: true,
             pid: Some(pid),
