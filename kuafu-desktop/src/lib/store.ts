@@ -176,6 +176,24 @@ export function appendToLastAssistant(chunk: string) {
   saveMessages();
 }
 
+// 编辑消息（替换指定索引的消息内容）
+export function editMessage(index: number, newContent: string) {
+  messages.update((msgs) => {
+    if (index < 0 || index >= msgs.length) return msgs;
+    return msgs.map((m, i) => i === index ? { ...m, content: newContent, edited: true } : m);
+  });
+  saveMessages();
+}
+
+// 删除消息（移除指定索引的消息）
+export function deleteMessage(index: number) {
+  messages.update((msgs) => {
+    if (index < 0 || index >= msgs.length) return msgs;
+    return msgs.filter((_, i) => i !== index);
+  });
+  saveMessages();
+}
+
 // 保存当前消息到 localStorage（每次变更自动触发）
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 function saveMessages() {

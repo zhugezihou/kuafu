@@ -1,10 +1,12 @@
 <script lang="ts">
-  import { messages } from "../lib/store";
+  import { messages, editMessage, deleteMessage } from "../lib/store";
   import MarkdownRenderer from "./MarkdownRenderer.svelte";
 
   let msgContainer: HTMLDivElement | undefined = $state();
   let hoveredIdx = $state<number | null>(null);
   let copiedIdx = $state<number | null>(null);
+  let editingIdx = $state<number | null>(null);
+  let editText = $state("");
   let searchQuery = $state("");
   let showSearch = $state(false);
 
@@ -41,6 +43,32 @@
     navigator.clipboard.writeText(content);
     copiedIdx = idx;
     setTimeout(() => { copiedIdx = null; }, 2000);
+  }
+
+  function startEdit(idx: number, content: string) {
+    editingIdx = idx;
+    editText = content;
+  }
+
+  function commitEdit(idx: number) {
+    if (editText.trim()) {
+      editMessage(idx, editText.trim());
+    }
+    editingIdx = null;
+  }
+
+  function handleEditKeydown(e: KeyboardEvent, idx: number) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      commitEdit(idx);
+    }
+    if (e.key === "Escape") {
+      editingIdx = null;
+    }
+  }
+
+  function handleDelete(idx: number) {
+    deleteMessage(idx);
   }
 </script>
 
@@ -82,12 +110,23 @@
             <button class="copy-btn" onclick={() => copyContent(msg.content, i)}>
               {copiedIdx === i ? "✓" : "📋"}
             </button>
+            <button class="edit-btn" onclick={() => startEdit(i, msg.content)}>✎</button>
+            <button class="delete-btn" onclick={() => handleDelete(i)}>🗑</button>
           {/if}
         </div>
-        {#if msg.role === "user"}
-          <div class="text">{msg.content}</div>
+        {#if editingIdx === i}
+          <div class="edit-area">
+            <textarea bind:value={editText} onkeydown={(e) => handleEditKeydown(e, i)} rows="3"></textarea>
+            <div class="edit-actions">
+              <button class="save-btn" onclick={() => commitEdit(i)}>保存</button>
+              <button class="cancel-btn" onclick={() => (editingIdx = null)}>取消</button>
+            </div>
+          </div>
+        {:else if msg.role === "user"}
+          <div class="text">{msg.content}{#if msg.edited} <span class="edited-badge">已编辑</span>{/if}</div>
         {:else}
           <MarkdownRenderer content={msg.content} />
+          {#if msg.edited}<div class="edited-badge">已编辑</div>{/if}
         {/if}
       </div>
     </div>
@@ -244,4 +283,47 @@
     line-height: 1.5;
     font-size: 14px;
   }
+
+  .edit-btn, .delete-btn {
+    background: none;
+    border: none;
+    color: var(--text2);
+    cursor: pointer;
+    font-size: 12px;
+    padding: 0 4px;
+    opacity: 0.5;
+    line-height: 1.6;
+  }
+  .edit-btn:hover, .delete-btn:hover { opacity: 1; }
+  .delete-btn:hover { color: #ef4444; }
+
+  .edit-area {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .edit-area textarea {
+    width: 100%;
+    padding: 6px 8px;
+    font-size: 13px;
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--text);
+    resize: vertical;
+  }
+  .edit-actions { display: flex; gap: 6px; }
+  .save-btn, .cancel-btn {
+    font-size: 12px; padding: 3px 12px; border-radius: 4px; cursor: pointer;
+  }
+  .save-btn {
+    background: var(--accent); color: #fff; border: none;
+  }
+  .cancel-btn {
+    background: transparent; border: 1px solid var(--border); color: var(--text);
+  }
+  .edited-badge {
+    font-size: 10px; color: var(--text2); opacity: 0.6; margin-left: 4px;
+  }
+  .message.assistant .edited-badge { margin-left: 0; margin-top: 4px; }
 </style>

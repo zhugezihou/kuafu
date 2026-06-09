@@ -35,6 +35,15 @@
     loadSession();
     log("info", "App mounted, loading Tauri API...");
 
+    // 预存 invoke 引用，避免 cleanup 时动态 import
+    import("@tauri-apps/api/core").then((core) => {
+      invokeFn = core.invoke;
+      log("info", "Tauri API ready");
+    }).catch((e) => {
+      log("error", `Tauri API import failed: ${e}`);
+      invokeFn = () => Promise.resolve(); // 兜底空函数，避免 null 引用
+    });
+
     // 检查是否首次运行
     const cfg = loadConfig();
     if (!cfg.setupComplete) {
@@ -44,14 +53,6 @@
       log("info", "未配置云端 API，显示引导");
       showCloudGuide = true;
     }
-
-    // 预存 invoke 引用
-    import("@tauri-apps/api/core").then((core) => {
-      invokeFn = core.invoke;
-      log("info", "Tauri API ready");
-    }).catch((e) => {
-      log("error", `Tauri API import failed: ${e}`);
-    });
 
     // 每15秒检查引擎状态
     healthCheckInterval = setInterval(checkHealth, 15000);
@@ -191,6 +192,19 @@
     if (e.ctrlKey && e.shiftKey && e.key === 'D') {
       e.preventDefault();
       if (debugPanel) debugPanel.toggle();
+      return;
+    }
+    // Ctrl+N 新对话
+    if (e.ctrlKey && e.key === 'n') {
+      e.preventDefault();
+      handleNewChat();
+      return;
+    }
+    // Esc 取消当前请求
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      isRunning.set(false);
+      return;
     }
   }
   onMount(() => {

@@ -1,10 +1,13 @@
 <script lang="ts">
+  import { log } from "../lib/debug";
+
   let {
     onSend = (_text: string) => {},
     disabled = false,
   }: { onSend: (text: string) => void; disabled: boolean } = $props();
 
   let text = $state("");
+  let isDragging = $state(false);
 
   function submit(e: Event) {
     e.preventDefault();
@@ -15,22 +18,44 @@
 
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === "Enter" && !e.shiftKey) {
-      // Ctrl+Enter 发送（改：防止误触，明确区分）
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
         submit(e);
         return;
       }
-      // 单独的 Enter 也发送（不改原有习惯）
       if (!e.ctrlKey && !e.shiftKey) {
         e.preventDefault();
         submit(e);
       }
     }
   }
+
+  // 拖拽支持
+  function handleDragOver(e: DragEvent) {
+    e.preventDefault();
+    isDragging = true;
+  }
+  function handleDragLeave() {
+    isDragging = false;
+  }
+  function handleDrop(e: DragEvent) {
+    e.preventDefault();
+    isDragging = false;
+    if (!e.dataTransfer?.files.length) return;
+    const files = Array.from(e.dataTransfer.files);
+    // 用文件名构建消息文本
+    const fileInfo = files.map(f => `[文件] ${f.name} (${(f.size / 1024).toFixed(1)}KB)`).join("\n");
+    if (text.trim()) {
+      text = text + "\n" + fileInfo;
+    } else {
+      text = fileInfo;
+    }
+    log("info", `handleDrop: ${files.length} file(s)`);
+  }
 </script>
 
-<form class="input-area" onsubmit={submit}>
+<form class="input-area" class:dragging={isDragging} onsubmit={submit}
+      ondragover={handleDragOver} ondragleave={handleDragLeave} ondrop={handleDrop}>
   <textarea
     bind:value={text}
     onkeydown={handleKeydown}
@@ -51,6 +76,11 @@
     border-top: 1px solid var(--border);
     background: var(--surface);
     flex-shrink: 0;
+    transition: border-color 0.15s;
+  }
+  .input-area.dragging {
+    border-top: 2px dashed var(--accent);
+    background: rgba(108, 99, 255, 0.05);
   }
 
   textarea {

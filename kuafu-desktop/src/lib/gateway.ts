@@ -12,6 +12,7 @@ export interface Message {
   content: string;
   id?: string;
   timestamp?: number;
+  edited?: boolean;
 }
 
 export interface Session {

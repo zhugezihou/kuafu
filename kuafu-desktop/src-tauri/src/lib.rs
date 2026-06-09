@@ -3,7 +3,10 @@ mod agent;
 use agent::AgentManager;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use tauri::tray::{TrayIconBuilder, MouseButton, MouseButtonState, TrayIconEvent};
+use tauri::menu::{Menu, MenuItem};
 use tauri::Manager;
+use tauri::Runtime;
 
 struct AppState {
     agent: Mutex<AgentManager>,
@@ -156,16 +159,48 @@ pub fn run() {
                 agent: Mutex::new(agent_mgr),
             });
 
-            // 系统托盘：点击恢复窗口
-            use tauri::tray::TrayIconBuilder;
+            // 系统托盘：带右键菜单（显示/隐藏/退出）
+            use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+            use tauri::menu::{Menu, MenuItem};
+
+            let show_item = MenuItem::with_id(app, "show", "显示窗口", true, None::<&str>)?;
+            let hide_item = MenuItem::with_id(app, "hide", "隐藏窗口", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "退出", true, Some("CmdOrCtrl+Q"))?;
+            let menu = Menu::with_items(app, &[&show_item, &hide_item, &quit_item])?;
+
             let _ = TrayIconBuilder::new()
-                .on_click(|tray, _kind, _event| {
-                    if let Some(window) = tray.app_handle().get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
+                .menu(&menu)
+                .on_menu_event(|app, event| {
+                    let _ = match event.id().as_ref() {
+                        "show" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                        "hide" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.hide();
+                            }
+                        }
+                        "quit" => {
+                            app.exit(0);
+                        }
+                        _ => {}
+                    };
                 })
-                .build(app);
+                .build(app)?;
+
+            // 关闭窗口时最小化到托盘（不退出）
+            if let Some(window) = app.get_webview_window("main") {
+                let handle = app.handle().clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = handle.get_webview_window("main").map(|w| w.hide());
+                    }
+                });
+            }
 
             Ok(())
         })
