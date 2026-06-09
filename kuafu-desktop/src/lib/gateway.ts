@@ -102,3 +102,149 @@ export async function getSessions(): Promise<Session[]> {
   const data = await resp.json();
   return data.sessions || [];
 }
+
+// ── P2: Agent 树可视化 ──
+
+export interface AgentTreeNode {
+  name: string;
+  path: string;
+  status: string;
+  children: AgentTreeNode[];
+  /** 当前 LLM 调用链 */
+  current_llm_call?: string;
+  tool_calls?: number;
+  token_usage?: { prompt: number; completion: number; total: number };
+  duration?: number;
+}
+
+export async function getAgentTree(): Promise<AgentTreeNode | null> {
+  try {
+    const resp = await fetch(`${GATEWAY_URL}/api/agent/tree`, { signal: AbortSignal.timeout(5000) });
+    if (!resp.ok) return null;
+    return resp.json();
+  } catch { return null; }
+}
+
+// ── P2: 技能管理器 ──
+
+export interface SkillInfo {
+  name: string;
+  description: string;
+  enabled: boolean;
+  category?: string;
+}
+
+export async function getSkills(): Promise<SkillInfo[]> {
+  try {
+    const resp = await fetch(`${GATEWAY_URL}/api/skills`, { signal: AbortSignal.timeout(5000) });
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    return data.skills || [];
+  } catch { return []; }
+}
+
+export async function toggleSkill(name: string, enabled: boolean): Promise<boolean> {
+  try {
+    const resp = await fetch(`${GATEWAY_URL}/api/skills/toggle`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, enabled }),
+    });
+    return resp.ok;
+  } catch { return false; }
+}
+
+// ── P2: Cron 任务管理器 ──
+
+export interface CronJob {
+  id: string;
+  name: string;
+  schedule: string;
+  enabled: boolean;
+  last_run?: string;
+  next_run?: string;
+  result?: string;
+}
+
+export async function getCronJobs(): Promise<CronJob[]> {
+  try {
+    const resp = await fetch(`${GATEWAY_URL}/api/cron`, { signal: AbortSignal.timeout(5000) });
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    return data.jobs || [];
+  } catch { return []; }
+}
+
+export async function createCronJob(name: string, schedule: string, prompt: string): Promise<boolean> {
+  try {
+    const resp = await fetch(`${GATEWAY_URL}/api/cron/create`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, schedule, prompt }),
+    });
+    return resp.ok;
+  } catch { return false; }
+}
+
+export async function deleteCronJob(id: string): Promise<boolean> {
+  try {
+    const resp = await fetch(`${GATEWAY_URL}/api/cron/remove`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    });
+    return resp.ok;
+  } catch { return false; }
+}
+
+export async function toggleCronJob(id: string, enabled: boolean): Promise<boolean> {
+  try {
+    const endpoint = enabled ? "start" : "stop";
+    const resp = await fetch(`${GATEWAY_URL}/api/cron/${endpoint}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    });
+    return resp.ok;
+  } catch { return false; }
+}
+
+// ── P2: 审批通知 ──
+
+export interface ApprovalRequest {
+  id: string;
+  command: string;
+  detail: string;
+  timestamp: number;
+}
+
+export async function getPendingApprovals(): Promise<ApprovalRequest[]> {
+  try {
+    const resp = await fetch(`${GATEWAY_URL}/api/approval/pending`, { signal: AbortSignal.timeout(5000) });
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    return data.pending || [];
+  } catch { return []; }
+}
+
+export async function approveRequest(id: string): Promise<boolean> {
+  try {
+    const resp = await fetch(`${GATEWAY_URL}/api/approval/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    });
+    return resp.ok;
+  } catch { return false; }
+}
+
+export async function denyRequest(id: string): Promise<boolean> {
+  try {
+    const resp = await fetch(`${GATEWAY_URL}/api/approval/deny`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    });
+    return resp.ok;
+  } catch { return false; }
+}

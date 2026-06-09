@@ -136,7 +136,7 @@ class AgentLoop:
         evolution: Optional[EvolutionEngine] = None,
         tool_registry: Optional[ToolRegistry] = None,
         session_store: Optional[SessionStore] = None,
-        max_turns: int = 20,
+        max_turns: int = 90,
         on_step: Optional[Callable[[str], None]] = None,
     ):
         global _BOOTUP_LOGGED

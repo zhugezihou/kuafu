@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 logger = logging.getLogger("kuafu.subagent")
 
 MAX_CONCURRENT = 3
-MAX_TURNS = 10
+MAX_TURNS = 30
 TIMEOUT = 600
 
 # P1-2: 子 Agent Profile 目录

@@ -20,10 +20,12 @@
   import { sendMessageStream, waitForGateway } from "./lib/gateway";
   import { log } from "./lib/debug";
   import DebugPanel from "./components/DebugPanel.svelte";
+  import SidePanel from "./components/SidePanel.svelte";
   import { loadConfig, saveConfig } from "./lib/config";
 
   let sidebarOpen = $state(true);
   let showSettings = $state(false);
+  let sidePanelOpen = $state(false);
   let healthCheckInterval: ReturnType<typeof setInterval> | undefined;
 
   let invokeFn: any = null;
@@ -260,6 +262,7 @@
     <header class="header">
       <button class="menu-btn" onclick={() => (sidebarOpen = !sidebarOpen)}>☰</button>
       <div class="header-title">夸父 Desktop</div>
+      <button class="sidepanel-btn" onclick={() => (sidePanelOpen = !sidePanelOpen)}>📊</button>
       <button class="settings-btn" onclick={() => (showSettings = true)}>⚙</button>
       <button class="new-btn" onclick={handleNewChat}>＋ 新对话</button>
     </header>
@@ -279,6 +282,9 @@
     <MessageInput onSend={handleSend} disabled={$isRunning || !$agentRunning} />
     <StatusBar />
   </div>
+  {#if sidePanelOpen}
+    <SidePanel onClose={() => (sidePanelOpen = false)} />
+  {/if}
 </div>
 
 {#if showSettings}
