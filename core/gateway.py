@@ -211,12 +211,20 @@ class GatewayHandler(BaseHTTPRequestHandler):
                       f"duration={duration}s "
                       f"result_len={len(result.get('result', ''))}",
                       flush=True)
+
+                # 安全兜底：空结果+空错误时注入诊断信息
+                final_result = result.get("result", "")
+                final_errors = result.get("errors", [])
+                if not final_result and not final_errors:
+                    final_errors = ["夸父引擎未能生成回答。这可能因为 LLM 调用失败（API Key 无效/网络不通/账户余额不足），请联系管理员检查 Gateway 日志。"]
+                    print(f"[Gateway] ⚠️ 空结果空错误，注入诊断提示", flush=True)
+
                 self._send_json(200, {
                     "success": result.get("success", False),
-                    "result": result.get("result", ""),
+                    "result": final_result,
                     "duration": result.get("duration", 0),
                     "turns": result.get("turns", 0),
-                    "errors": result.get("errors", []),
+                    "errors": final_errors,
                 })
             except Exception as e:
                 import traceback
