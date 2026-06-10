@@ -438,7 +438,7 @@ class SafetyLayer:
         # 检查锁定文件
         lockfile = ROOT_DIR / ".safety-lock"
         if lockfile.exists():
-            locked_commands = lockfile.read_text().strip().split("\n")
+            locked_commands = lockfile.read_text(encoding='utf-8').strip().split("\n")
             for lc in locked_commands:
                 if lc and lc.strip() in command:
                     return (CommandLevel.FORBIDDEN, "锁定命令", f"命令「{lc.strip()}」被安全锁禁止")
@@ -608,7 +608,7 @@ class SafetyLayer:
         lockfile = ROOT_DIR / ".safety-lock"
         locked_commands = []
         if lockfile.exists():
-            locked_commands = [l.strip() for l in lockfile.read_text().split("\n") if l.strip()]
+            locked_commands = [l.strip() for l in lockfile.read_text(encoding='utf-8').split("\n") if l.strip()]
 
         return {
             "locked_commands": locked_commands,
@@ -635,7 +635,7 @@ class SafetyLayer:
         lockfile = ROOT_DIR / ".safety-lock"
         existing = set()
         if lockfile.exists():
-            existing = set(l.strip() for l in lockfile.read_text().split("\n") if l.strip())
+            existing = set(l.strip() for l in lockfile.read_text(encoding='utf-8').split("\n") if l.strip())
         if command in existing:
             return False
         existing.add(command)
@@ -648,7 +648,7 @@ class SafetyLayer:
         lockfile = ROOT_DIR / ".safety-lock"
         if not lockfile.exists():
             return False
-        lines = [l.strip() for l in lockfile.read_text().split("\n")]
+        lines = [l.strip() for l in lockfile.read_text(encoding='utf-8').split("\n")]
         if command not in lines:
             return False
         lines = [l for l in lines if l != command]

@@ -105,7 +105,7 @@ def _get_env_or_dotenv(key: str, default: str = "") -> str:
     for env_path in search_paths:
         if env_path.exists():
             try:
-                for line in env_path.read_text().splitlines():
+                for line in env_path.read_text(encoding='utf-8').splitlines():
                     line = line.strip()
                     if line.startswith("#") or "=" not in line:
                         continue
@@ -173,7 +173,7 @@ class FileMemoryBackend:
     def _load_index(self) -> dict:
         if self._index_path.exists():
             try:
-                return json.loads(self._index_path.read_text())
+                return json.loads(self._index_path.read_text(encoding='utf-8'))
             except (json.JSONDecodeError, OSError, UnicodeDecodeError, LookupError) as e:
                 # 编码或格式错误时，备份旧文件并重新创建
                 backup = self._index_path.with_suffix(".json.bak")
@@ -203,7 +203,7 @@ class FileMemoryBackend:
             if not file_path.exists():
                 continue
             try:
-                entry = json.loads(file_path.read_text())
+                entry = json.loads(file_path.read_text(encoding='utf-8'))
             except (json.JSONDecodeError, OSError):
                 continue
             existing = entry.get("content", "")
@@ -251,7 +251,7 @@ class FileMemoryBackend:
             if not fp.exists():
                 continue
             try:
-                entry = json.loads(fp.read_text())
+                entry = json.loads(fp.read_text(encoding='utf-8'))
             except (json.JSONDecodeError, OSError):
                 continue
             key = entry.get("source", "") or entry.get("context", "")
@@ -414,7 +414,7 @@ class FileMemoryBackend:
             if not file_path.exists():
                 continue
             try:
-                entry = json.loads(file_path.read_text())
+                entry = json.loads(file_path.read_text(encoding='utf-8'))
             except (json.JSONDecodeError, OSError):
                 continue
 
@@ -470,7 +470,7 @@ class FileMemoryBackend:
     def load_task(self, task_id: str) -> Optional[dict]:
         path = self.tasks_dir / f"{task_id}.json"
         if path.exists():
-            return json.loads(path.read_text())
+            return json.loads(path.read_text(encoding='utf-8'))
         return None
 
     def list_recent(self, limit: int = 10) -> list[dict]:
@@ -485,7 +485,7 @@ class FileMemoryBackend:
             file_path = self.memory_dir / f"{m['id']}.json"
             if file_path.exists():
                 try:
-                    recent.append(json.loads(file_path.read_text()))
+                    recent.append(json.loads(file_path.read_text(encoding='utf-8')))
                 except (json.JSONDecodeError, OSError):
                     recent.append(m)
             else:
