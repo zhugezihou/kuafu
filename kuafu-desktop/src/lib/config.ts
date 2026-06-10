@@ -2,11 +2,6 @@
 import { writable } from "svelte/store";
 
 export interface AppConfig {
-  modelType: "local" | "cloud";
-  localModelPath: string;
-  localLlmEndpoint: string;
-  localContextLength: number;
-  localGpuLayers: number;
   cloudProvider: "deepseek" | "openai" | "custom";
   cloudApiKey: string;
   cloudBaseUrl: string;
@@ -18,11 +13,6 @@ export interface AppConfig {
 const STORAGE_KEY = "kuafu-desktop-config";
 
 const defaults: AppConfig = {
-  modelType: "cloud",
-  localModelPath: "",
-  localLlmEndpoint: "http://localhost:8080",
-  localContextLength: 32768,
-  localGpuLayers: 999,
   cloudProvider: "deepseek",
   cloudApiKey: "",
   cloudBaseUrl: "https://api.deepseek.com",
@@ -39,7 +29,9 @@ export function loadConfig(): AppConfig {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      return { ...defaults, ...parsed };
+      // 兼容旧配置：删除已废弃的本地模型字段
+      const { modelType, localModelPath, localLlmEndpoint, localContextLength, localGpuLayers, ...clean } = parsed;
+      return { ...defaults, ...clean };
     }
   } catch {}
   return { ...defaults };

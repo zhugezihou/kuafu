@@ -56,7 +56,6 @@
       const modelName = apiModel || (apiProvider === "deepseek" ? "deepseek-chat" : "gpt-4o");
       saveConfig({
         ...cfg,
-        modelType: "cloud",
         cloudProvider: apiProvider,
         cloudApiKey: apiKey.trim(),
         cloudBaseUrl: baseUrl,
@@ -91,9 +90,6 @@
       const config = loadConfig();
       await invokeFn("update_agent_config", {
         config: {
-          model_type: config.modelType,
-          local_model_path: config.localModelPath,
-          local_llm_endpoint: config.localLlmEndpoint,
           cloud_api_key: config.cloudApiKey,
           cloud_base_url: config.cloudBaseUrl,
           cloud_provider: config.cloudProvider,

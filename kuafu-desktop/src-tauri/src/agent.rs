@@ -10,13 +10,6 @@ const GATEWAY_PORT: u16 = 8081;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AgentConfig {
-    pub model_type: String,
-    pub local_model_path: String,
-    pub local_llm_endpoint: String,
-    #[serde(default = "default_local_context_length")]
-    pub local_context_length: u32,
-    #[serde(default = "default_local_gpu_layers")]
-    pub local_gpu_layers: u32,
     pub cloud_api_key: String,
     #[serde(default)]
     pub cloud_base_url: String,
@@ -29,18 +22,9 @@ fn default_cloud_provider() -> String {
     "deepseek".to_string()
 }
 
-fn default_local_context_length() -> u32 { 32768 }
-
-fn default_local_gpu_layers() -> u32 { 999 }
-
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            model_type: "local".into(),
-            local_model_path: String::new(),
-            local_llm_endpoint: "http://localhost:8080".into(),
-            local_context_length: 32768,
-            local_gpu_layers: 999,
             cloud_api_key: String::new(),
             cloud_base_url: "https://api.deepseek.com".into(),
             cloud_provider: "deepseek".into(),
@@ -325,10 +309,7 @@ impl AgentManager {
         // Debug: 打印启动命令
         eprintln!("[Hermes] starting: {} -c ...", python_str);
         eprintln!("[Hermes] sys.path: {}", kuafu_str);
-        eprintln!("[Hermes] KUAFFU_PROVIDERS={:?}, KUAFFU_DESKTOP=1, KUAFFU_LLM_BACKEND={:?}",
-            cfg.model_type,
-            if cfg.model_type == "cloud" { &cfg.cloud_provider } else { "llama" }
-        );
+        eprintln!("[Hermes] KUAFFU_PROVIDERS=deepseek, KUAFFU_DESKTOP=1, KUAFFU_LLM_BACKEND=cloud");
 
         cmd.args(["-c", &bootstrap])
         .stdout(Stdio::piped())
@@ -353,35 +334,28 @@ impl AgentManager {
         eprintln!("[Hermes] gateway log: {}", log_file.display());
 
         cmd.env("KUAFFU_GATEWAY_PORT", GATEWAY_PORT.to_string());
-        cmd.env("KUAFFU_DESKTOP", "1");  // Desktop 模式：禁用微信/飞书等交互通道
-        if cfg.model_type == "cloud" {
-            cmd.env("KUAFFU_LLM_BACKEND", "cloud");
-            // 根据 provider 设置环境变量
-            match cfg.cloud_provider.as_str() {
-                "openai" => {
-                    cmd.env("KUAFFU_PROVIDERS", "openai");
-                    cmd.env("OPENAI_API_KEY", cfg.cloud_api_key.clone());
-                    cmd.env("OPENAI_BASE_URL", cfg.cloud_base_url.clone());
-                    cmd.env("OPENAI_MODEL", cfg.cloud_model.clone());
-                }
-                "custom" => {
-                    cmd.env("KUAFFU_PROVIDERS", "custom");
-                    cmd.env("CUSTOM_API_KEY", cfg.cloud_api_key.clone());
-                    cmd.env("CUSTOM_BASE_URL", cfg.cloud_base_url.clone());
-                    cmd.env("CUSTOM_MODEL", cfg.cloud_model.clone());
-                }
-                _ => { // deepseek (default)
-                    cmd.env("KUAFFU_PROVIDERS", "deepseek");
-                    cmd.env("DEEPSEEK_API_KEY", cfg.cloud_api_key.clone());
-                    cmd.env("DEEPSEEK_BASE_URL", cfg.cloud_base_url.clone());
-                    cmd.env("DEEPSEEK_MODEL", cfg.cloud_model.clone());
-                }
+        cmd.env("KUAFFU_DESKTOP", "1"); // Desktop 模式：禁用微信/飞书等交互通道
+        cmd.env("KUAFFU_LLM_BACKEND", "cloud");
+        // 根据 provider 设置环境变量
+        match cfg.cloud_provider.as_str() {
+            "openai" => {
+                cmd.env("KUAFFU_PROVIDERS", "openai");
+                cmd.env("OPENAI_API_KEY", cfg.cloud_api_key.clone());
+                cmd.env("OPENAI_BASE_URL", cfg.cloud_base_url.clone());
+                cmd.env("OPENAI_MODEL", cfg.cloud_model.clone());
             }
-        } else {
-            cmd.env("KUAFFU_LLM_BACKEND", "llama");
-            cmd.env("KUAFFU_LLM_ENDPOINT", cfg.local_llm_endpoint.clone());
-            if !cfg.local_model_path.is_empty() {
-                cmd.env("KUAFFU_LLM_MODEL_PATH", cfg.local_model_path.clone());
+            "custom" => {
+                cmd.env("KUAFFU_PROVIDERS", "custom");
+                cmd.env("CUSTOM_API_KEY", cfg.cloud_api_key.clone());
+                cmd.env("CUSTOM_BASE_URL", cfg.cloud_base_url.clone());
+                cmd.env("CUSTOM_MODEL", cfg.cloud_model.clone());
+            }
+            _ => {
+                // deepseek (default)
+                cmd.env("KUAFFU_PROVIDERS", "deepseek");
+                cmd.env("DEEPSEEK_API_KEY", cfg.cloud_api_key.clone());
+                cmd.env("DEEPSEEK_BASE_URL", cfg.cloud_base_url.clone());
+                cmd.env("DEEPSEEK_MODEL", cfg.cloud_model.clone());
             }
         }
 
@@ -569,174 +543,4 @@ impl AgentManager {
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
-}
-
-// ── P3: 本地模型管理 ──
-
-/// 检测本地可用的推理引擎
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct LocalEngineStatus {
-    pub llama_server: bool,
-    pub ollama: bool,
-    pub llama_server_running: bool,
-    pub ollama_running: bool,
-    pub models_dir: String,
-    #[serde(default)]
-    pub models: Vec<ModelInfo>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ModelInfo {
-    pub name: String,
-    pub path: String,
-    pub size_mb: f64,
-    pub quant: Option<String>,
-}
-
-/// 检测本地推理引擎状态
-#[tauri::command]
-pub fn check_local_engines(python_dir: String) -> Result<LocalEngineStatus, String> {
-    use std::process::Command;
-    let models_dir = PathBuf::from(&python_dir).join("models");
-
-    // 检测 llama-server
-    let llama_server = Command::new("llama-server")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-
-    // 检测 ollama
-    let ollama = Command::new("ollama")
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-
-    // 检测是否正在运行
-    let llama_server_running = std::net::TcpStream::connect_timeout(
-        &"127.0.0.1:8080".parse().unwrap(),
-        std::time::Duration::from_millis(500),
-    )
-    .is_ok();
-
-    let ollama_running = std::net::TcpStream::connect_timeout(
-        &"127.0.0.1:11434".parse().unwrap(),
-        std::time::Duration::from_millis(500),
-    )
-    .is_ok();
-
-    // 扫描 models 目录
-    let mut models = Vec::new();
-    if models_dir.exists() {
-        if let Ok(entries) = std::fs::read_dir(&models_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().map_or(false, |e| e == "gguf") {
-                    let size = std::fs::metadata(&path).map(|m| m.len() as f64 / 1_048_576.0).unwrap_or(0.0);
-                    let name = path.file_stem().unwrap_or_default().to_string_lossy().to_string();
-                    let quant = name.rsplit('-').next().map(|s| s.to_string());
-                    models.push(ModelInfo {
-                        name: path.file_name().unwrap_or_default().to_string_lossy().to_string(),
-                        path: path.to_string_lossy().to_string(),
-                        size_mb: (size * 10.0).round() / 10.0,
-                        quant,
-                    });
-                }
-            }
-        }
-    }
-
-    // 按大小降序排列
-    models.sort_by(|a, b| b.size_mb.partial_cmp(&a.size_mb).unwrap_or(std::cmp::Ordering::Equal));
-
-    Ok(LocalEngineStatus {
-        llama_server,
-        ollama,
-        llama_server_running,
-        ollama_running,
-        models_dir: models_dir.to_string_lossy().to_string(),
-        models,
-    })
-}
-
-/// 启动本地 llama-server
-#[tauri::command]
-pub fn start_llama_server(
-    python_dir: String,
-    model_path: String,
-    context_length: u32,
-    gpu_layers: u32,
-) -> Result<String, String> {
-    use std::process::Command;
-
-    // 验证模型文件存在
-    let model = PathBuf::from(&model_path);
-    if !model.exists() {
-        return Err(format!("模型文件不存在: {}", model_path));
-    }
-
-    let log_dir = PathBuf::from(&python_dir).join("logs");
-    let _ = std::fs::create_dir_all(&log_dir);
-    let log_file = log_dir.join("llama-server.log");
-
-    let mut cmd = Command::new("llama-server");
-    cmd.args([
-        "-m", &model_path,
-        "--host", "127.0.0.1",
-        "--port", "8080",
-        "-c", &context_length.to_string(),
-        "-ngl", &gpu_layers.to_string(),
-    ])
-    .stdout(std::process::Stdio::null())
-    .stderr(std::process::Stdio::null());
-
-    // stderr 重定向到日志文件
-    if let Ok(file) = std::fs::File::create(&log_file) {
-        cmd.stderr(file);
-    }
-
-    cmd.spawn()
-        .map_err(|e| format!("启动 llama-server 失败: {e}"))?;
-
-    // 等待 3 秒检测是否正常启动
-    std::thread::sleep(std::time::Duration::from_secs(3));
-    let running = std::net::TcpStream::connect_timeout(
-        &"127.0.0.1:8080".parse().unwrap(),
-        std::time::Duration::from_millis(500),
-    )
-    .is_ok();
-
-    if running {
-        Ok("llama-server 已启动".into())
-    } else {
-        Err("llama-server 进程已启动但端口 8080 未就绪，请查看日志文件".into())
-    }
-}
-
-/// 停止 llama-server（通过 kill 命令）
-#[tauri::command]
-pub fn stop_llama_server() -> Result<String, String> {
-    #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("taskkill")
-            .args(["/IM", "llama-server.exe", "/F"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = std::process::Command::new("pkill")
-            .args(["-f", "llama-server"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-    }
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    Ok("llama-server 已停止".into())
 }

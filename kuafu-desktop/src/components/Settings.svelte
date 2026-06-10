@@ -24,12 +24,9 @@
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("update_agent_config", {
         config: {
-          model_type: config.modelType,
-          local_model_path: config.localModelPath,
-          local_llm_endpoint: config.localLlmEndpoint,
-          local_context_length: config.localContextLength,
-          local_gpu_layers: config.localGpuLayers,
           cloud_api_key: config.cloudApiKey,
+          cloud_base_url: config.cloudBaseUrl,
+          cloud_provider: config.cloudProvider,
           cloud_model: config.cloudModel,
         },
       });
@@ -82,88 +79,41 @@
 
     <div class="settings-body">
       <section>
-        <h3>模型</h3>
+        <h3>云端大模型</h3>
         <div class="field">
-          <label>运行模式</label>
+          <label>API 提供商</label>
           <div class="toggle-group">
             <button
               class="toggle-btn"
-              class:active={config.modelType === "local"}
-              onclick={() => (config.modelType = "local")}
-            >本地模型</button>
+              class:active={config.cloudProvider === "deepseek"}
+              onclick={() => { config.cloudProvider = "deepseek"; config.cloudBaseUrl = "https://api.deepseek.com"; config.cloudModel = "deepseek-chat"; }}
+            >DeepSeek</button>
             <button
               class="toggle-btn"
-              class:active={config.modelType === "cloud"}
-              onclick={() => (config.modelType = "cloud")}
-            >云端 API</button>
+              class:active={config.cloudProvider === "openai"}
+              onclick={() => { config.cloudProvider = "openai"; config.cloudBaseUrl = "https://api.openai.com/v1"; config.cloudModel = "gpt-4o-mini"; }}
+            >OpenAI</button>
+            <button
+              class="toggle-btn"
+              class:active={config.cloudProvider === "custom"}
+              onclick={() => { config.cloudProvider = "custom"; }}
+            >自定义</button>
           </div>
         </div>
-
-        {#if config.modelType === "local"}
-          <div class="field">
-            <label>LLM 端点</label>
-            <input type="text" bind:value={config.localLlmEndpoint} placeholder="http://localhost:8080" />
-          </div>
-          <div class="field">
-            <label>模型路径 (GGUF, 可选)</label>
-            <input type="text" bind:value={config.localModelPath} placeholder="/path/to/model.gguf" />
-          </div>
-          <div class="field">
-            <label>上下文长度 (context)</label>
-            <select bind:value={config.localContextLength}>
-              <option value={8192}>8K</option>
-              <option value={16384}>16K</option>
-              <option value={32768}>32K</option>
-              <option value={65536}>64K</option>
-              <option value={131072}>128K</option>
-            </select>
-          </div>
-          <div class="field">
-            <label>GPU 加速层数</label>
-            <select bind:value={config.localGpuLayers}>
-              <option value={0}>CPU 模式</option>
-              <option value={16}>16 层</option>
-              <option value={32}>32 层</option>
-              <option value={64}>64 层</option>
-              <option value={999}>全部</option>
-            </select>
-          </div>
-        {:else}
-          <div class="field">
-            <label>API 提供商</label>
-            <div class="toggle-group">
-              <button
-                class="toggle-btn"
-                class:active={config.cloudProvider === "deepseek"}
-                onclick={() => { config.cloudProvider = "deepseek"; config.cloudBaseUrl = "https://api.deepseek.com"; config.cloudModel = "deepseek-chat"; }}
-              >DeepSeek</button>
-              <button
-                class="toggle-btn"
-                class:active={config.cloudProvider === "openai"}
-                onclick={() => { config.cloudProvider = "openai"; config.cloudBaseUrl = "https://api.openai.com/v1"; config.cloudModel = "gpt-4o-mini"; }}
-              >OpenAI</button>
-              <button
-                class="toggle-btn"
-                class:active={config.cloudProvider === "custom"}
-                onclick={() => { config.cloudProvider = "custom"; }}
-              >自定义</button>
-            </div>
-          </div>
-          <div class="field">
-            <label>API Key</label>
-            <input type="password" bind:value={config.cloudApiKey} placeholder="sk-..." />
-          </div>
-          {#if config.cloudProvider === "custom"}
-          <div class="field">
-            <label>API 地址</label>
-            <input type="text" bind:value={config.cloudBaseUrl} placeholder="https://api.example.com/v1" />
-          </div>
-          {/if}
-          <div class="field">
-            <label>模型名称</label>
-            <input type="text" bind:value={config.cloudModel} placeholder="deepseek-chat" />
-          </div>
+        <div class="field">
+          <label>API Key</label>
+          <input type="password" bind:value={config.cloudApiKey} placeholder="sk-..." />
+        </div>
+        {#if config.cloudProvider === "custom"}
+        <div class="field">
+          <label>API 地址</label>
+          <input type="text" bind:value={config.cloudBaseUrl} placeholder="https://api.example.com/v1" />
+        </div>
         {/if}
+        <div class="field">
+          <label>模型名称</label>
+          <input type="text" bind:value={config.cloudModel} placeholder="deepseek-chat" />
+        </div>
       </section>
 
       <section>

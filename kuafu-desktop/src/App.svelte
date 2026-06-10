@@ -73,14 +73,9 @@
     log("info", "startAgentAsync: configuring and starting engine...");
     try {
       const config = (await import("./lib/config")).loadConfig();
-      log("debug", `startAgentAsync: config loaded modelType=${config.modelType}`);
+      log("debug", `startAgentAsync: config loaded cloudProvider=${config.cloudProvider}`);
       await invokeFn("update_agent_config", {
         config: {
-          model_type: config.modelType,
-          local_model_path: config.localModelPath,
-          local_llm_endpoint: config.localLlmEndpoint,
-          local_context_length: config.localContextLength,
-          local_gpu_layers: config.localGpuLayers,
           cloud_api_key: config.cloudApiKey,
           cloud_base_url: config.cloudBaseUrl,
           cloud_provider: config.cloudProvider,
@@ -167,11 +162,6 @@
         const cfg = loadConfig();
         await invokeFn("update_agent_config", {
           config: {
-            model_type: cfg.modelType,
-            local_model_path: cfg.localModelPath,
-            local_llm_endpoint: cfg.localLlmEndpoint,
-            local_context_length: cfg.localContextLength,
-            local_gpu_layers: cfg.localGpuLayers,
             cloud_api_key: cfg.cloudApiKey,
             cloud_base_url: cfg.cloudBaseUrl,
             cloud_provider: cfg.cloudProvider,

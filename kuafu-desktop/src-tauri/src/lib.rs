@@ -387,9 +387,6 @@ pub fn run() {
             send_task,
             take_screenshot,
             check_update,
-            agent::check_local_engines,
-            agent::start_llama_server,
-            agent::stop_llama_server,
         ])
         .run(tauri::generate_context!())
         .expect("夸父 Desktop 启动失败");
