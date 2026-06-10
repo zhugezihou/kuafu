@@ -1,0 +1,9 @@
+{
+  "identifier": "default",
+  "description": "默认权限集 — 核心 + 事件 + 自定义命令",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:default"
+  ]
+}
