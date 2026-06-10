@@ -581,6 +581,10 @@ class GatewayServer:
                 sys.stderr.reconfigure(encoding='utf-8')
             except Exception:
                 pass
+        # 暴力替换 stdout/stderr 为 UTF-8 编码包装器
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
         os.environ.setdefault("KUAFFU_PROVIDERS", "deepseek")
         os.environ.setdefault("KUAFFU_LLM_BACKEND", "cloud")
         # 打印当前编码以便调试

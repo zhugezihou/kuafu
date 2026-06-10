@@ -13,6 +13,7 @@ import json
 import os
 import time
 import threading
+import sys
 from pathlib import Path
 from typing import Optional, Callable
 
@@ -789,6 +790,13 @@ class AgentLoop:
         if self.on_step:
             self.on_step(text)
 
+        # 安全打印：替换无法编码的字符而非抛异常
+        try:
+            encoding = sys.stdout.encoding or 'utf-8'
+            safe = text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+            print(f"  {safe}", flush=True)
+        except Exception:
+            print(f"  [日志编码错误]", flush=True)
     def _on_budget_warning(self, snapshot, critical_categories):
         """预算预警回调：当某类别达到 warning 阈值时触发。"""
         self._log(f"⚠️ Budget Warning: {', '.join(critical_categories)} "
