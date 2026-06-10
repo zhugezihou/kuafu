@@ -70,7 +70,7 @@ fn check_setup(state: tauri::State<AppState>) -> agent::SetupStatus {
 /// 支持流式返回：通过 Tauri event 推送每段响应
 #[tauri::command]
 fn send_task(task: String, app_handle: tauri::AppHandle) -> Result<String, String> {
-    use std::io::{Read, Write};
+    use std::io::{Read, Write, BufRead, BufReader};
     use std::net::TcpStream;
     use std::time::Duration;
     use std::thread;
@@ -88,8 +88,16 @@ fn send_task(task: String, app_handle: tauri::AppHandle) -> Result<String, Strin
     )
     .map_err(|e| format!("连接 Gateway 失败: {e}"))?;
 
+    // 读写各设 30 秒超时，避免 Windows 上阻塞
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .ok();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(10)))
+        .ok();
+
     let request = format!(
-        "POST /api/task HTTP/1.0\r\n\
+        "POST /api/task HTTP/1.1\r\n\
          Host: localhost:8081\r\n\
          Content-Type: application/json\r\n\
          Content-Length: {}\r\n\
@@ -104,13 +112,51 @@ fn send_task(task: String, app_handle: tauri::AppHandle) -> Result<String, Strin
         .write_all(request.as_bytes())
         .map_err(|e| format!("发送请求失败: {e}"))?;
 
-    let mut response = String::new();
-    stream
-        .read_to_string(&mut response)
-        .map_err(|e| format!("读取响应失败: {e}"))?;
+    // 用 BufReader 逐行解析响应头，根据 Content-Length 精确读取 body
+    let mut reader = BufReader::new(&stream);
+    let mut status_line = String::new();
+    reader
+        .read_line(&mut status_line)
+        .map_err(|e| format!("读取状态行失败: {e}"))?;
 
-    // 提取 HTTP body（第一个空行之后的内容）
-    let body = response.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+    let mut content_length: usize = 0;
+    let mut headers = String::new();
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).map_err(|e| format!("读取响应头失败: {e}"))? == 0 {
+            break;
+        }
+        if line == "\r\n" || line == "\n" {
+            break;
+        }
+        headers.push_str(&line);
+        // 检测 Content-Length
+        if line.to_lowercase().starts_with("content-length:") {
+            if let Ok(n) = line
+                .trim_start_matches(|c: char| c.is_ascii_alphabetic() || c == ':' || c == ' ')
+                .trim()
+                .parse::<usize>()
+            {
+                content_length = n;
+            }
+        }
+    }
+
+    // 根据 Content-Length 读取精确长度的 body
+    let body = if content_length > 0 {
+        let mut buf = vec![0u8; content_length];
+        reader
+            .read_exact(&mut buf)
+            .map_err(|e| format!("读取响应体失败: {e}"))?;
+        String::from_utf8_lossy(&buf).to_string()
+    } else {
+        // 没有 Content-Length 时兜底读取所有剩余数据
+        let mut buf = String::new();
+        reader
+            .read_to_string(&mut buf)
+            .map_err(|e| format!("读取剩余数据失败: {e}"))?;
+        buf
+    };
 
     // 尝试解析 JSON，提取 result 字段用于流式推送
     if let Ok(data) = serde_json::from_str::<serde_json::Value>(&body) {
@@ -120,7 +166,7 @@ fn send_task(task: String, app_handle: tauri::AppHandle) -> Result<String, Strin
             for chunk in chars.chunks(20) {
                 let text: String = chunk.iter().collect();
                 let _ = app_handle.emit("task-chunk", text);
-                thread::sleep(Duration::from_millis(30)); // 模拟打字速度
+                thread::sleep(Duration::from_millis(30));
             }
         }
         if let Some(_error) = data.get("result").and_then(|r| r.as_str()).filter(|r| r.is_empty()) {
