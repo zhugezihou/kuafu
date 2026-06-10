@@ -54,6 +54,9 @@
     } else if (!cfg.cloudApiKey) {
       log("info", "未配置云端 API，显示引导");
       showCloudGuide = true;
+    } else {
+      // 已配置完毕，自动启动引擎
+      startAgentAsync();
     }
 
     // 每15秒检查引擎状态

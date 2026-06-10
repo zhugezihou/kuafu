@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { agentRunning, agentError } from "../lib/store";
-  import { loadConfig } from "../lib/config";
+  import { loadConfig, saveConfig } from "../lib/config";
 
   let invokeFn: any = null;
 
@@ -33,8 +33,43 @@
   let timeoutSec = $state(0);
   let { onComplete }: { onComplete?: (ok: boolean) => void } = $props();
 
+  // API Key 配置状态
+  let showApiKeyForm = $state(false);
+  let apiKey = $state("");
+  let apiProvider = $state<"deepseek" | "openai" | "custom">("deepseek");
+  let apiBaseUrl = $state("https://api.deepseek.com");
+  let apiModel = $state("deepseek-chat");
+  let savingKey = $state(false);
+
   function addLog(msg: string) {
     logLines = [...logLines, `[${new Date().toLocaleTimeString()}] ${msg}`];
+  }
+
+  async function handleSaveApiKey() {
+    if (!apiKey.trim()) return;
+    savingKey = true;
+    try {
+      const cfg = loadConfig();
+      const baseUrl = apiProvider === "deepseek" ? "https://api.deepseek.com"
+        : apiProvider === "openai" ? "https://api.openai.com/v1"
+        : apiBaseUrl;
+      const modelName = apiModel || (apiProvider === "deepseek" ? "deepseek-chat" : "gpt-4o");
+      saveConfig({
+        ...cfg,
+        modelType: "cloud",
+        cloudProvider: apiProvider,
+        cloudApiKey: apiKey.trim(),
+        cloudBaseUrl: baseUrl,
+        cloudModel: modelName,
+        setupComplete: true,
+      });
+      addLog("✓ API Key 已保存");
+      savingKey = false;
+      if (onComplete) onComplete(true);
+    } catch (e: any) {
+      addLog(`✗ 保存失败: ${e.message || e}`);
+      savingKey = false;
+    }
   }
 
   function updateCheck(key: string, status: SetupCheck["status"], detail: string) {
@@ -158,8 +193,17 @@
       }
 
       overallStatus = "ok";
-      addLog("✓ 全部检测通过！");
-      if (onComplete) onComplete(true);
+      addLog("✓ 环境检测通过！");
+
+      // 检查是否已配置 API Key，未配置则弹出输入表单
+      const currentCfg = loadConfig();
+      if (currentCfg.cloudApiKey) {
+        addLog("✓ API Key 已配置");
+        if (onComplete) onComplete(true);
+      } else {
+        addLog("ℹ 需要配置 API Key");
+        showApiKeyForm = true;
+      }
       return true;
     } catch (e: any) {
       const msg = e.message || String(e);
@@ -252,6 +296,53 @@
       {/each}
     </div>
   {/if}
+
+  {#if showApiKeyForm}
+    <div class="apikey-section">
+      <h3>🔑 配置大模型 API Key</h3>
+      <p class="apikey-desc">夸父使用 DeepSeek 云端 API 进行对话。填入你的 API Key 即可开始使用。</p>
+
+      <div class="field">
+        <label>提供商</label>
+        <select bind:value={apiProvider} class="apikey-select">
+          <option value="deepseek">DeepSeek</option>
+          <option value="openai">OpenAI</option>
+          <option value="custom">自定义兼容</option>
+        </select>
+      </div>
+
+      {#if apiProvider === "custom"}
+        <div class="field">
+          <label>API 地址</label>
+          <input type="text" bind:value={apiBaseUrl} placeholder="https://api.xxx.com/v1" class="apikey-input" />
+        </div>
+      {:else if apiProvider === "openai"}
+        <div class="field">
+          <label>API 地址</label>
+          <input type="text" bind:value={apiBaseUrl} placeholder="https://api.openai.com/v1" class="apikey-input" />
+        </div>
+      {/if}
+
+      <div class="field">
+        <label>API Key</label>
+        <input type="password" bind:value={apiKey} placeholder={apiProvider === "deepseek" ? "sk-..." : "输入你的 API Key"} class="apikey-input" />
+      </div>
+
+      <div class="field">
+        <label>模型名称</label>
+        <input type="text" bind:value={apiModel} placeholder={apiProvider === "deepseek" ? "deepseek-chat" : "gpt-4o"} class="apikey-input" />
+      </div>
+
+      <div class="apikey-actions">
+        <button class="btn btn-primary" onclick={handleSaveApiKey} disabled={savingKey || !apiKey.trim()}>
+          {savingKey ? "保存中..." : "✅ 保存并继续"}
+        </button>
+        <button class="btn btn-skip" onclick={() => { if (onComplete) onComplete(false); }}>
+          跳过（稍后设置）
+        </button>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -339,4 +430,31 @@
     font-size: 11px;
   }
   .log-line { color: #888; line-height: 1.6; }
+
+  .apikey-section {
+    margin-top: 16px;
+    border-top: 1px solid var(--border, #2a2a4a);
+    padding-top: 16px;
+  }
+  .apikey-section h3 { margin: 0 0 8px 0; font-size: 15px; }
+  .apikey-desc { font-size: 12px; color: #888; margin: 0 0 16px 0; line-height: 1.5; }
+  .field { margin-bottom: 12px; }
+  .field label { display: block; font-size: 12px; color: #aaa; margin-bottom: 4px; }
+  .apikey-input, .apikey-select {
+    width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border, #2a2a4a);
+    background: rgba(0,0,0,0.2); color: #eee; font-size: 13px; box-sizing: border-box;
+  }
+  .apikey-select { cursor: pointer; }
+  .apikey-actions { display: flex; gap: 8px; margin-top: 16px; }
+  .btn-primary {
+    flex: 1; padding: 10px 16px; border-radius: 6px; border: none;
+    background: #2563eb; color: #fff; font-size: 14px; font-weight: 500; cursor: pointer;
+  }
+  .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-primary:hover:not(:disabled) { background: #1d4ed8; }
+  .btn-skip {
+    padding: 10px 16px; border-radius: 6px; border: 1px solid var(--border, #2a2a4a);
+    background: transparent; color: #888; font-size: 13px; cursor: pointer;
+  }
+  .btn-skip:hover { background: rgba(255,255,255,0.05); }
 </style>

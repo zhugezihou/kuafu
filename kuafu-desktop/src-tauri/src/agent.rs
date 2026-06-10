@@ -389,11 +389,11 @@ impl AgentManager {
         let pid = child.id();
         eprintln!("[Hermes] child spawned: pid={}", pid);
 
-        // 轮询 5 秒: 每 500ms 检查进程退出 + Gateway HTTP 就绪
+        // 轮询 15 秒: 每 750ms 检查进程退出 + Gateway HTTP 就绪
         let mut gateway_ready = false;
-        for i in 0..10 {
-            std::thread::sleep(Duration::from_millis(500));
-            eprintln!("[Hermes] poll #{}/10: checking...", i + 1);
+        for i in 0..20 {
+            std::thread::sleep(Duration::from_millis(750));
+            eprintln!("[Hermes] poll #{}/20: checking...", i + 1);
 
             // 进程是否已退出？
             if let Some(exit) = child.try_wait().ok().flatten() {
