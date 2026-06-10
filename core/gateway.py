@@ -222,9 +222,17 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 import traceback
                 tb = traceback.format_exc()
                 print(f"[Gateway] _handle_task 异常: {e}\n{tb}", flush=True)
+                error_detail = f"引擎内部错误: {e}"
+                # 如果 result 有内容但异常阻止了发送，尝试取出
+                result_text = ""
+                try:
+                    if "result" in dir() and isinstance(result, dict):
+                        result_text = result.get("result", "")
+                except:
+                    pass
                 self._send_json(500, {
                     "success": False,
-                    "result": f"引擎内部错误: {e}",
+                    "result": error_detail,
                     "error": str(e),
                     "traceback": tb[-500:],
                 })

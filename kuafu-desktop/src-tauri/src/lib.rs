@@ -160,17 +160,25 @@ fn send_task(task: String, app_handle: tauri::AppHandle) -> Result<String, Strin
 
     // 尝试解析 JSON，提取 result 字段用于流式推送
     if let Ok(data) = serde_json::from_str::<serde_json::Value>(&body) {
-        if let Some(result) = data.get("result").and_then(|r| r.as_str()) {
-            // 按字符分批推送（每 20 个字符发一个 event）
-            let chars: Vec<char> = result.chars().collect();
+        let result_text = data.get("result").and_then(|r| r.as_str()).unwrap_or("");
+        let errors = data.get("errors").and_then(|e| e.as_array()).map(|a| {
+            a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join("; ")
+        }).unwrap_or_default();
+
+        if !result_text.is_empty() {
+            // 有有效结果：按字符分批推送
+            let chars: Vec<char> = result_text.chars().collect();
             for chunk in chars.chunks(20) {
                 let text: String = chunk.iter().collect();
                 let _ = app_handle.emit("task-chunk", text);
                 thread::sleep(Duration::from_millis(30));
             }
-        }
-        if let Some(_error) = data.get("result").and_then(|r| r.as_str()).filter(|r| r.is_empty()) {
-            let _ = app_handle.emit("task-chunk", data.get("error").and_then(|e| e.as_str()).unwrap_or("(无输出)"));
+        } else if !errors.is_empty() {
+            // 结果为空但有错误：推送错误信息
+            let _ = app_handle.emit("task-chunk", format!("\n\n⚠️ {}", errors));
+        } else {
+            // 结果和错误都为空
+            let _ = app_handle.emit("task-chunk", "(无输出)");
         }
     } else {
         // 纯文本直接推送
