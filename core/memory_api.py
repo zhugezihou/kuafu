@@ -204,7 +204,7 @@ class FileMemoryBackend:
                 continue
             try:
                 entry = json.loads(file_path.read_text(encoding='utf-8'))
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError, LookupError):
                 continue
             existing = entry.get("content", "")
             ratio = _keyword_overlap_ratio(content, existing)
@@ -252,7 +252,7 @@ class FileMemoryBackend:
                 continue
             try:
                 entry = json.loads(fp.read_text(encoding='utf-8'))
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError, LookupError):
                 continue
             key = entry.get("source", "") or entry.get("context", "")
             if not key:
@@ -415,7 +415,7 @@ class FileMemoryBackend:
                 continue
             try:
                 entry = json.loads(file_path.read_text(encoding='utf-8'))
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError, LookupError):
                 continue
 
             text = (entry.get("content", "") + " " + entry.get("context", "")).lower()
@@ -486,7 +486,7 @@ class FileMemoryBackend:
             if file_path.exists():
                 try:
                     recent.append(json.loads(file_path.read_text(encoding='utf-8')))
-                except (json.JSONDecodeError, OSError):
+                except (json.JSONDecodeError, OSError, UnicodeDecodeError, LookupError):
                     recent.append(m)
             else:
                 recent.append(m)
