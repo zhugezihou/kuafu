@@ -239,20 +239,16 @@ class GatewayHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 import traceback
                 tb = traceback.format_exc()
-                print(f"[Gateway] _handle_task 异常: {e}\n{tb}", flush=True)
-                error_detail = f"引擎内部错误: {e}"
-                # 如果 result 有内容但异常阻止了发送，尝试取出
-                result_text = ""
-                try:
-                    if "result" in dir() and isinstance(result, dict):
-                        result_text = result.get("result", "")
-                except:
-                    pass
+                error_msg = str(e)
+                print(f"[Gateway] _handle_task 异常: {error_msg}\n{tb}", flush=True)
+                # 尝试用 errors=replace 打印完整错误信息
+                safe_error = error_msg.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
+                safe_tb = tb.encode("utf-8", errors="replace").decode("utf-8", errors="replace")[-500:]
                 self._send_json(500, {
                     "success": False,
-                    "result": error_detail,
-                    "error": str(e),
-                    "traceback": tb[-500:],
+                    "result": f"引擎内部错误: {safe_error}",
+                    "error": safe_error,
+                    "traceback": safe_tb,
                 })
         else:
             # 异步执行
@@ -574,8 +570,22 @@ class GatewayServer:
         # Windows 上强制 UTF-8 编码，避免 emoji 等字符导致 GBK 编码错误
         os.environ.setdefault("PYTHONIOENCODING", "utf-8")
         os.environ["PYTHONUTF8"] = "1"
+        # 在 Python 运行时层面强制 stdout/stderr 编码
+        if hasattr(sys.stdout, 'reconfigure'):
+            try:
+                sys.stdout.reconfigure(encoding='utf-8')
+            except Exception:
+                pass
+        if hasattr(sys.stderr, 'reconfigure'):
+            try:
+                sys.stderr.reconfigure(encoding='utf-8')
+            except Exception:
+                pass
         os.environ.setdefault("KUAFFU_PROVIDERS", "deepseek")
         os.environ.setdefault("KUAFFU_LLM_BACKEND", "cloud")
+        # 打印当前编码以便调试
+        print(f"[Gateway] sys.stdout.encoding={sys.stdout.encoding}", flush=True)
+        print(f"[Gateway] PYTHONIOENCODING={os.environ.get('PYTHONIOENCODING', '(未设置)')}", flush=True)
         msg = (
             f"\n{'='*50}\n"
             f"  夸父 Gateway (Desktop)\n"
