@@ -174,13 +174,21 @@ class FileMemoryBackend:
         if self._index_path.exists():
             try:
                 return json.loads(self._index_path.read_text())
-            except (json.JSONDecodeError, OSError):
-                pass
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError, LookupError) as e:
+                # 编码或格式错误时，备份旧文件并重新创建
+                backup = self._index_path.with_suffix(".json.bak")
+                try:
+                    import shutil
+                    shutil.copy2(str(self._index_path), str(backup))
+                    print(f"[Memory] index.json 损坏 ({e})，已备份到 {backup.name}")
+                except Exception:
+                    pass
         return {"memories": [], "last_id": 0}
 
     def _save_index(self):
         self._index_path.write_text(
-            json.dumps(_clean_surrogates(self._index), ensure_ascii=False, indent=2)
+            json.dumps(_clean_surrogates(self._index), ensure_ascii=False, indent=2),
+            encoding="utf-8"
         )
 
     def _find_duplicate(self, content: str, context: str = "") -> Optional[dict]:
