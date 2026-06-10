@@ -2216,17 +2216,23 @@ def main() -> int:
     2. 否则 → 直接执行任务或交互模式（走原有的 main.py）
     3. 无参数 → 交互模式
     """
-    # 子命令模式
-    if len(sys.argv) >= 2 and sys.argv[1] in SUBCOMMANDS:
-        parser = _build_subcommand_parser()
-        args = parser.parse_args()
-        from core.main import KuafuAgent
-        agent = KuafuAgent()
-        return args.sub_handler(args, agent)
+    try:
+        # 子命令模式
+        if len(sys.argv) >= 2 and sys.argv[1] in SUBCOMMANDS:
+            parser = _build_subcommand_parser()
+            args = parser.parse_args()
+            from core.main import KuafuAgent
+            agent = KuafuAgent()
+            return args.sub_handler(args, agent)
 
-    # 直接执行/交互模式 — 走原有 main.py
-    from core.main import main as agent_main
-    return agent_main()
+        # 直接执行/交互模式 — 走原有 main.py
+        from core.main import main as agent_main
+        return agent_main()
+    except Exception as e:
+        import traceback
+        print(f"[FATAL] CLI 入口异常: {e}", flush=True)
+        traceback.print_exc()
+        return 1
 
 
 if __name__ == "__main__":
