@@ -188,7 +188,9 @@
         () => { isRunning.set(false); }
       );
     } catch (e: any) {
-      appendToLastAssistant(`\n\n错误: ${e.message}`);
+      const errMsg = e?.message || e?.toString?.() || JSON.stringify(e) || "未知错误";
+      log("error", `handleSend error: ${errMsg}`);
+      appendToLastAssistant(`\n\n错误: ${errMsg}`);
       isRunning.set(false);
     }
   }

@@ -83,9 +83,11 @@ export async function sendMessageStream(
   try {
     log("debug", `[invoke] send_task: "${task.slice(0, 50)}..."`);
     await invoke("send_task", { task });
+    log("debug", "sendMessageStream: invoke returned OK");
   } catch (e: any) {
-    log("error", `sendMessageStream: ${e.message || e}`);
-    onChunk(`\n\n错误: ${e.message || e}`);
+    const errStr = e?.message || e?.toString?.() || JSON.stringify(e) || "unknown";
+    log("error", `sendMessageStream invoke error: ${errStr}`);
+    onChunk(`\n\n错误: ${errStr}`);
     unlistenChunk();
     unlistenDone();
     onDone();
