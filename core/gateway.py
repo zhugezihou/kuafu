@@ -80,11 +80,14 @@ class GatewayHandler(BaseHTTPRequestHandler):
     # ── _send_json 统一加 CORS ─────────────────────────────
 
     def _send_json(self, code: int, data: dict):
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self._add_cors_headers()
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
+        self.wfile.write(body)
+        self.wfile.flush()
 
     # ── GET 路由 ────────────────────────────────────────────
 
