@@ -391,9 +391,9 @@ impl AgentManager {
                 let msg = if output.is_empty() {
                     format!("夸父启动失败 (exit code: {})", exit.code().unwrap_or(-1))
                 } else {
-                    // 截断过长输出（最多 300 字符）
-                    let truncated = if output.len() > 300 {
-                        format!("{}...", &output[..300])
+                    // 截断过长输出（最多 2000 字符）
+                    let truncated = if output.len() > 2000 {
+                        format!("{}...", &output[..2000])
                     } else {
                         output
                     };
