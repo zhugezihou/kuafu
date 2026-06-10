@@ -218,6 +218,16 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 if not final_result and not final_errors:
                     final_errors = ["夸父引擎未能生成回答。这可能因为 LLM 调用失败（API Key 无效/网络不通/账户余额不足），请联系管理员检查 Gateway 日志。"]
                     print(f"[Gateway] ⚠️ 空结果空错误，注入诊断提示", flush=True)
+                elif not final_result and final_errors:
+                    # result 为空但 errors 有内容，直接显示错误
+                    final_result = f"⚠️ {final_errors[0]}"
+
+                # 如果 result 非空但非常短（可能是 LLM 调用失败但 Gateway 没捕获），补充日志到响应
+                if final_result and len(final_result) < 5 and not final_errors:
+                    import traceback as _tb
+                    # 打印实际 agent.run 返回的完整内容到日志
+                    print(f"[Gateway] ⚠️ 返回结果过短: {repr(final_result)}", flush=True)
+                    print(f"[Gateway] ⚠️ 完整 result 字典: {json.dumps(result, ensure_ascii=False, default=str)[:500]}", flush=True)
 
                 self._send_json(200, {
                     "success": result.get("success", False),
@@ -561,6 +571,9 @@ class GatewayServer:
         import datetime
         if os.environ.get("KUAFFU_DESKTOP") != "1":
             return
+        # Windows 上强制 UTF-8 编码，避免 emoji 等字符导致 GBK 编码错误
+        os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+        os.environ["PYTHONUTF8"] = "1"
         os.environ.setdefault("KUAFFU_PROVIDERS", "deepseek")
         os.environ.setdefault("KUAFFU_LLM_BACKEND", "cloud")
         msg = (

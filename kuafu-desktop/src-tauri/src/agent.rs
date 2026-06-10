@@ -336,6 +336,9 @@ impl AgentManager {
         cmd.env("KUAFFU_GATEWAY_PORT", GATEWAY_PORT.to_string());
         cmd.env("KUAFFU_DESKTOP", "1"); // Desktop 模式：禁用微信/飞书等交互通道
         cmd.env("KUAFFU_LLM_BACKEND", "cloud");
+        // Windows 上强制 UTF-8，避免 GBK 编码错误（emoji 等字符）
+        cmd.env("PYTHONIOENCODING", "utf-8");
+        cmd.env("PYTHONUTF8", "1");
         // 根据 provider 设置环境变量
         match cfg.cloud_provider.as_str() {
             "openai" => {
