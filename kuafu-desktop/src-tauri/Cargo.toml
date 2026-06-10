@@ -1,6 +1,6 @@
 [package]
 name = "kuafu-desktop"
-version = "1.0.66"
+version = "1.0.67"
 description = "夸父 Desktop — AI Agent 桌面客户端"
 authors = ["zhugezihou"]
 edition = "2021"
