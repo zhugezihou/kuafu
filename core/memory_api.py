@@ -325,6 +325,13 @@ class FileMemoryBackend:
           - 超长内容自动截断
           - 自动触发过期清理（每存储 10 条触发一次 _delete_expired）
         """
+        try:
+            return self._store_impl(content, context, source)
+        except Exception as e:
+            print(f"[Memory] store 异常 ({type(e).__name__}): {e}，静默跳过")
+            return "store_failed"
+
+    def _store_impl(self, content: str, context: str = "", source: str = "") -> str:
         # 防御：确保 content/context 是字符串（测试可能传入 dict）
         if not isinstance(content, str):
             content = str(content)
