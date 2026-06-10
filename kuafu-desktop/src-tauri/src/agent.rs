@@ -315,23 +315,16 @@ impl AgentManager {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-        // Desktop 模式下，stdout+stderr 重定向日志文件，方便排查
+        // Desktop 模式下：stdout+stderr 通过 pipe 读取，同时写入日志文件
         let log_dir = self.python_dir.join("logs");
         let _ = std::fs::create_dir_all(&log_dir);
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        let log_file = log_dir.join(format!("gateway_{}.log", ts));
-        if let Ok(file) = std::fs::File::create(&log_file) {
-            // 把 stdout 和 stderr 都写入同一个日志文件
-            let file_clone = file.try_clone().ok();
-            cmd.stdout(file);
-            if let Some(fc) = file_clone {
-                cmd.stderr(fc);
-            }
-        }
-        eprintln!("[Hermes] gateway log: {}", log_file.display());
+        let log_file_path = log_dir.join(format!("gateway_{}.log", ts));
+        let log_path_str = log_file_path.to_string_lossy().to_string();
+        eprintln!("[Hermes] gateway log: {}", log_path_str);
 
         cmd.env("KUAFFU_GATEWAY_PORT", GATEWAY_PORT.to_string());
         cmd.env("KUAFFU_DESKTOP", "1"); // Desktop 模式：禁用微信/飞书等交互通道
@@ -374,19 +367,20 @@ impl AgentManager {
 
             // 进程是否已退出？
             if let Some(exit) = child.try_wait().ok().flatten() {
-                // 确保读完 stderr（等一小会儿让 pipe 缓冲刷出）
-                std::thread::sleep(Duration::from_millis(100));
+                // 等 500ms 让 pipe 缓冲刷出（Windows 上可能延迟）
+                std::thread::sleep(Duration::from_millis(500));
                 let mut stderr = String::new();
                 if let Some(ref mut pipe) = child.stderr {
                     let _ = pipe.read_to_string(&mut stderr);
                 }
-                // 如果 stderr 为空，也可能 stdout 里有错误
                 let mut stdout = String::new();
-                if stderr.is_empty() {
-                    if let Some(ref mut pipe) = child.stdout {
-                        let _ = pipe.read_to_string(&mut stdout);
-                    }
+                if let Some(ref mut pipe) = child.stdout {
+                    let _ = pipe.read_to_string(&mut stdout);
                 }
+                // 把输出写入日志文件
+                let combined = format!("[stderr]\n{}\n[stdout]\n{}", stderr, stdout);
+                let _ = std::fs::write(&log_file_path, &combined);
+                eprintln!("[Hermes] process exited, wrote log to {}", log_path_str);
                 let output = if !stderr.is_empty() {
                     stderr.trim().to_string()
                 } else if !stdout.is_empty() {
