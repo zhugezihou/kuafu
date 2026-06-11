@@ -56,7 +56,7 @@ REPOS_DIR.mkdir(parents=True, exist_ok=True)
 DEFAULT_CACHE_TTL = 3600     # 1 小时
 SHORT_CACHE_TTL = 300        # 5 分钟（强制刷新时使用）
 
-# 默认仓库列表（用户可通过 KUAFFU_SKILL_REPOS 环境变量覆盖）
+# 默认仓库列表（用户可通过 KUAFU_SKILL_REPOS 环境变量覆盖）
 DEFAULT_REPOS = [
     {
         "name": "kuafu-official",
@@ -193,8 +193,8 @@ class RepoManager:
         """从环境变量和默认配置加载仓库列表。"""
         repos = []
 
-        # 1. 从环境变量 KUAFFU_SKILL_REPOS 加载（JSON 格式，支持多仓库）
-        env_repos = os.environ.get("KUAFFU_SKILL_REPOS", "")
+        # 1. 从环境变量 KUAFU_SKILL_REPOS 加载（JSON 格式，支持多仓库）
+        env_repos = os.environ.get("KUAFU_SKILL_REPOS", "")
         if env_repos:
             try:
                 items = json.loads(env_repos)
@@ -227,13 +227,13 @@ class RepoManager:
                     enabled=r.get("enabled", True),
                 ))
 
-        # 3. 也支持 KUAFFU_SKILL_MARKET_URL 旧格式（向下兼容）
-        legacy_url = os.environ.get("KUAFFU_SKILL_MARKET_URL", "")
+        # 3. 也支持 KUAFU_SKILL_MARKET_URL 旧格式（向下兼容）
+        legacy_url = os.environ.get("KUAFU_SKILL_MARKET_URL", "")
         if legacy_url and not any(r.url == legacy_url for r in repos):
             repos.append(RepoConfig(
                 name="legacy-market",
                 url=legacy_url,
-                description="遗留技能市场（从 KUAFFU_SKILL_MARKET_URL 加载）",
+                description="遗留技能市场（从 KUAFU_SKILL_MARKET_URL 加载）",
                 enabled=True,
             ))
 

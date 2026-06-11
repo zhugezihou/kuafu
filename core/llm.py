@@ -9,7 +9,7 @@ v2 相对 v1 的改进：
   5. 保留原有兼容接口
 
 后端配置（通过 .env 或 ModelManager）：
-  KUAFFU_PROVIDERS=deepseek,openai,qwen  # 降级顺序
+  KUAFU_PROVIDERS=deepseek,openai,qwen  # 降级顺序
   DEEPSEEK_API_KEY=sk-xxx
   DEEPSEEK_BASE_URL=https://api.deepseek.com
   DEEPSEEK_MODEL=deepseek-chat
@@ -46,13 +46,13 @@ if ENV_PATH.exists():
 
 # ── 默认配置模板 ──────────────────────────────────────────────
 
-DEFAULT_PROVIDERS = os.environ.get("KUAFFU_PROVIDERS", "deepseek").split(",")
+DEFAULT_PROVIDERS = os.environ.get("KUAFU_PROVIDERS", "deepseek").split(",")
 
 PROVIDER_CONFIGS: dict[str, dict] = {
     "deepseek": {
         "name": "DeepSeek Chat",
         "base_url": os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-        "api_key_env": ["KUAFFU_API_KEY", "DEEPSEEK_API_KEY"],
+        "api_key_env": ["KUAFU_API_KEY", "DEEPSEEK_API_KEY"],
         "model": os.environ.get("DEEPSEEK_MODEL", "deepseek-chat"),
         "max_tokens": 4096,
         "temperature": 0.7,
@@ -71,14 +71,6 @@ PROVIDER_CONFIGS: dict[str, dict] = {
         "api_key_env": ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"],
         "model": os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-20250514"),
         "max_tokens": 4096,
-        "temperature": 0.7,
-    },
-    "qwen": {
-        "name": "Qwen (本地)",
-        "base_url": os.environ.get("QWEN_BASE_URL", "http://localhost:8080"),
-        "api_key_env": [],
-        "model": os.environ.get("QWEN_MODEL", "Qwen3.5-9B-UD-Q4_K_XL.gguf"),
-        "max_tokens": int(os.environ.get("QWEN_MAX_TOKENS", "4096")),
         "temperature": 0.7,
     },
     "openrouter": {
@@ -172,7 +164,7 @@ class LLMClient:
                  temperature: float = 0.7, timeout: int = 15):
         # 构建后端列表
         if providers is None:
-            providers = os.environ.get("KUAFFU_PROVIDERS", "deepseek").split(",")
+            providers = os.environ.get("KUAFU_PROVIDERS", "deepseek").split(",")
         if isinstance(providers, str):
             providers = [p.strip() for p in providers.split(",") if p.strip()]
 
@@ -489,6 +481,32 @@ class LLMClient:
         }
 
     # ── Token 估算 ──────────────────────────────────────────────
+
+    def get_context_window(self) -> int:
+        """获取当前激活后端的上下文窗口大小。
+
+        不同模型的上下文窗口：
+        - DeepSeek V3/R1: 1M (1048576)
+        - GPT-4o: 128K
+        - Claude Sonnet 4: 200K
+        - OpenRouter: 依赖具体路由的模型
+
+        返回安全阈值（80% 窗口大小），留充足空间给输出。
+        """
+        # 根据模型名称推断
+        model_lower = self.model.lower()
+        if "deepseek" in model_lower:
+            return 800000  # 1M 的 80%
+        elif "claude" in model_lower and "sonnet" in model_lower:
+            return 160000  # 200K 的 80%
+        elif "claude" in model_lower:
+            return 160000
+        elif "gpt-4" in model_lower:
+            return 100000  # 128K 的 80%
+        elif "gpt" in model_lower:
+            return 80000
+        # 默认安全值
+        return 100000
 
     @staticmethod
     def count_tokens(text: str) -> int:

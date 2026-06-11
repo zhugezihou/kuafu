@@ -99,7 +99,7 @@ def _get_env_or_dotenv(key: str, default: str = "") -> str:
     # 尝试从 .env 读取
     search_paths = [
         Path.cwd() / ".env",
-        Path.home() / ".hermes" / ".env",
+        Path.home() / ".夸父" / ".env",
         Path(__file__).resolve().parent.parent / ".env",
     ]
     for env_path in search_paths:
@@ -562,12 +562,20 @@ class MemoryAPI:
 
     def __init__(self, mode: Optional[str] = None, memory_dir: Optional[Path] = None):
         self._file_backend = FileMemoryBackend(memory_dir)
+        self._nmm_backend = None  # 懒加载
 
-        mode = mode or _get_env_or_dotenv("KUAFU_MEMORY_MODE", "file")
+        mode = mode or _get_env_or_dotenv("KUAFU_MEMORY_MODE", "nmm")
         self._mode = mode.lower()
 
-        # 非 file 模式回退到 file
-        if self._mode != "file":
+        if self._mode == "nmm":
+            try:
+                from core.memory_nmm import NMMMemoryBackend
+                self._nmm_backend = NMMMemoryBackend(memory_dir)
+                logger.info("[MemoryAPI] 使用 NMM 记忆后端")
+            except Exception as e:
+                logger.warning(f"[MemoryAPI] NMM 后端加载失败: {e}，回退到 file")
+                self._mode = "file"
+        elif self._mode != "file":
             print(f"[MemoryAPI] 不支持的模式 '{self._mode}'，回退到 file 模式")
             self._mode = "file"
 
@@ -579,14 +587,20 @@ class MemoryAPI:
 
     def store(self, content: str, context: str = "", source: str = "") -> str:
         """存储一条记忆"""
+        if self._mode == "nmm" and self._nmm_backend:
+            return self._nmm_backend.store(content, context, source)
         return self._file_backend.store(content, context, source)
 
     def search(self, query: str, limit: int = 5) -> list[dict]:
-        """搜索记忆（语义搜索或关键词搜索）"""
+        """搜索记忆"""
+        if self._mode == "nmm" and self._nmm_backend:
+            return self._nmm_backend.search(query, limit)
         return self._file_backend.search(query, limit)
 
     def reflect(self, query: str) -> str:
         """综合推理"""
+        if self._mode == "nmm" and self._nmm_backend:
+            return self._nmm_backend.reflect(query)
         return self._file_backend.reflect(query)
 
     # ── 兼容别名（旧接口 remember/recall，供测试和 agent_loop 使用） ─
@@ -632,23 +646,36 @@ class MemoryAPI:
         return self._file_backend.load_task(task_id)
 
     def list_recent(self, limit: int = 10) -> list[dict]:
+        if self._mode == "nmm" and self._nmm_backend:
+            return self._nmm_backend.list_recent(limit)
         return self._file_backend.list_recent(limit)
 
     def clear(self):
-        self._file_backend.clear()
+        if self._mode == "nmm" and self._nmm_backend:
+            self._nmm_backend.clear()
+        else:
+            self._file_backend.clear()
 
     # ── v0.4 新增：记忆管理接口 ──────────────────────────────────────
 
     def maintenance(self) -> dict:
-        """主动触发记忆维护（过期清理 + 合并）"""
+        """主动触发记忆维护"""
+        if self._mode == "nmm" and self._nmm_backend:
+            return self._nmm_backend.maintenance()
         return self._file_backend.maintenance()
 
     def count(self) -> int:
         """当前有效记忆条数"""
+        if self._mode == "nmm" and self._nmm_backend:
+            return self._nmm_backend.get_stats().get("total", 0)
         return self._file_backend.count()
 
     def get_stats(self) -> dict:
         """记忆系统完整统计"""
+        if self._mode == "nmm" and self._nmm_backend:
+            stats = self._nmm_backend.get_stats()
+            stats["mode"] = self._mode
+            return stats
         stats = self._file_backend.get_stats()
         stats["mode"] = self._mode
         return stats

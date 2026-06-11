@@ -7,7 +7,7 @@ core/agents_md.py — AGENTS.md 层次化发现与注入
   - 注入到 TurnContext
 
 发现层级（从低到高）：
-  1. ~/.kuafu/AGENTS.md（全局用户指令）
+  1. ~/.config/kuafu/AGENTS.md（全局用户指令）
   2. <project_root>/.kuafu/AGENTS.md（项目指令）
   3. <project_root>/AGENTS.md（项目根指令，最高优先级）
 """
@@ -114,7 +114,7 @@ class AgentsMdManager:
         """从所有层级发现 AGENTS.md，返回最高优先级的有效结果。
 
         层级（从低到高合并）：
-          1. ~/.kuafu/AGENTS.md — 全局指令
+          1. ~/.config/kuafu/AGENTS.md — 全局指令
           2. <project>/.kuafu/AGENTS.md — 项目指令
           3. <project>/AGENTS.md — 项目根指令
 
@@ -125,7 +125,7 @@ class AgentsMdManager:
         found = []
 
         # Layer 1: 全局用户配置
-        global_path = Path.home() / ".kuafu" / "AGENTS.md"
+        global_path = Path("~/.config/kuafu").expanduser() / "AGENTS.md"
         if global_path.exists():
             loaded = self._load(global_path, "global")
             if loaded:

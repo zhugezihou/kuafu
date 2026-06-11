@@ -313,7 +313,7 @@ _SUBAGENT_ENABLED = None
 def _is_subagent_enabled() -> bool:
     """查询子 Agent 是否启用。
 
-    由 SUBAGENT_ENABLED 环境变量和 KUAFFU_BACKEND 共同控制。
+    由 SUBAGENT_ENABLED 环境变量和 KUAFU_BACKEND 共同控制。
     优先级：
     1. SUBAGENT_ENABLED 显式设置 → 直接使用
     2. 未设置 → 自动推断：cloud=启用, local=禁用
@@ -328,7 +328,7 @@ def _is_subagent_enabled() -> bool:
     elif env_val in ("false", "0", "no"):
         _SUBAGENT_ENABLED = False
     else:
-        backend = os.environ.get("KUAFFU_BACKEND", "cloud").strip().lower()
+        backend = os.environ.get("KUAFU_BACKEND", "cloud").strip().lower()
         _SUBAGENT_ENABLED = (backend == "cloud")
 
     return _SUBAGENT_ENABLED

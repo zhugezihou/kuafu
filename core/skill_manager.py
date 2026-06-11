@@ -34,7 +34,7 @@ logger = logging.getLogger("kuafu.skill_manager")
 ROOT_DIR = Path(__file__).resolve().parent.parent
 SKILLS_DIR = ROOT_DIR / "skills"
 MARKET_DIR = SKILLS_DIR / "market"
-MARKET_INDEX_URL = os.environ.get("KUAFFU_SKILL_MARKET_URL", "")
+MARKET_INDEX_URL = os.environ.get("KUAFU_SKILL_MARKET_URL", "")
 CACHE_TTL = 3600
 
 

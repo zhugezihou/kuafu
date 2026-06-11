@@ -530,7 +530,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         """HTTP 访问日志 — Desktop 模式静默"""
-        if os.environ.get("KUAFFU_DESKTOP") == "1":
+        if os.environ.get("KUAFU_DESKTOP") == "1":
             pass  # Desktop 模式静默
         else:
             import time
@@ -550,7 +550,7 @@ class GatewayServer:
         self.agent = agent
         self.host = host
         self.port = port
-        self.api_key = api_key or os.environ.get("KUAFFU_GATEWAY_KEY", "")
+        self.api_key = api_key or os.environ.get("KUAFU_GATEWAY_KEY", "")
         self._server: Optional[HTTPServer] = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
@@ -565,7 +565,7 @@ class GatewayServer:
     def _inject_desktop_env(self):
         """注入 Desktop 环境变量（确保首次启动配置正确）"""
         import datetime
-        if os.environ.get("KUAFFU_DESKTOP") != "1":
+        if os.environ.get("KUAFU_DESKTOP") != "1":
             return
         # Windows 上强制 UTF-8 编码，避免 emoji 等字符导致 GBK 编码错误
         os.environ.setdefault("PYTHONIOENCODING", "utf-8")
@@ -585,8 +585,8 @@ class GatewayServer:
         import io
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
         sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
-        os.environ.setdefault("KUAFFU_PROVIDERS", "deepseek")
-        os.environ.setdefault("KUAFFU_LLM_BACKEND", "cloud")
+        os.environ.setdefault("KUAFU_PROVIDERS", "deepseek")
+        os.environ.setdefault("KUAFU_LLM_BACKEND", "cloud")
         # 打印当前编码以便调试
         print(f"[Gateway] sys.stdout.encoding={sys.stdout.encoding}", flush=True)
         print(f"[Gateway] PYTHONIOENCODING={os.environ.get('PYTHONIOENCODING', '(未设置)')}", flush=True)
@@ -594,8 +594,8 @@ class GatewayServer:
             f"\n{'='*50}\n"
             f"  夸父 Gateway (Desktop)\n"
             f"  启动时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"  后端: {os.environ.get('KUAFFU_LLM_BACKEND', 'cloud')}\n"
-            f"  提供商: {os.environ.get('KUAFFU_PROVIDERS', 'deepseek')}\n"
+            f"  后端: {os.environ.get('KUAFU_LLM_BACKEND', 'cloud')}\n"
+            f"  提供商: {os.environ.get('KUAFU_PROVIDERS', 'deepseek')}\n"
             f"  端口: {self.port}\n"
             f"{'='*50}"
         )
@@ -604,7 +604,7 @@ class GatewayServer:
     def _init_channels(self):
         """初始化消息通道（直连模式：飞书WS + 微信iLink）。"""
         # Desktop 模式下不加载消息通道（微信扫码/飞书 WS 无意义）
-        if os.environ.get("KUAFFU_DESKTOP") == "1":
+        if os.environ.get("KUAFU_DESKTOP") == "1":
             print("[Gateway] Desktop 模式：跳过消息通道注册")
             return
 
@@ -679,9 +679,9 @@ class GatewayServer:
             print(f"[Gateway] Python: {sys.version.split()[0]} {sys.executable}", flush=True)
             print(f"[Gateway] PYTHONPATH: {os.environ.get('PYTHONPATH', '(未设置)')}", flush=True)
             print(f"[Gateway] 工作目录: {os.getcwd()}", flush=True)
-            for key in ["KUAFFU_DESKTOP", "KUAFFU_LLM_BACKEND", "KUAFFU_PROVIDERS",
+            for key in ["KUAFU_DESKTOP", "KUAFU_LLM_BACKEND", "KUAFU_PROVIDERS",
                          "DEEPSEEK_API_KEY", "DEEPSEEK_MODEL",
-                         "KUAFFU_LLM_ENDPOINT", "KUAFFU_LLM_MODEL_PATH"]:
+                         "KUAFU_LLM_ENDPOINT", "KUAFU_LLM_MODEL_PATH"]:
                 val = os.environ.get(key, "")
                 if key.endswith("API_KEY") and val:
                     val = val[:8] + "..."
@@ -728,7 +728,7 @@ Type=simple
 ExecStart={sys.executable} -m core.gateway --serve
 WorkingDirectory={ROOT_DIR}
 Environment=PYTHONPATH={ROOT_DIR}
-Environment=KUAFFU_INTERACTIVE=0
+Environment=KUAFU_INTERACTIVE=0
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal

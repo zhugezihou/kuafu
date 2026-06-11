@@ -23,7 +23,7 @@ from core.evolution import EvolutionEngine
 from core.observer import Observer
 from core.tool_registry import ToolRegistry
 from core.session_store import SessionStore
-from core.context_compress import ContextCompressor, LocalSummarizer, ToolResultStore, ContextCollapse, CollapseResult, budget_reduce_output
+from core.context_compress import ContextCompressor, LLMSummarizer, ToolResultStore, ContextCollapse, CollapseResult, budget_reduce_output
 from core.budget_allocator import BudgetAllocator, BudgetSnapshot, BudgetPolicy
 from core.prompt_template import PromptManager, PromptCache, Section, build_reminders
 from core.safety import SafetyLayer
@@ -140,9 +140,7 @@ class AgentLoop:
         max_turns: int = 90,
         on_step: Optional[Callable[[str], None]] = None,
     ):
-        global _BOOTUP_LOGGED
-        self._bootup = not _BOOTUP_LOGGED
-        _BOOTUP_LOGGED = True
+        self.max_turns = max_turns
         self.llm = llm or LLMClient()
         self.memory = memory or MemoryAPI()
         self.evolution = evolution or EvolutionEngine(memory=memory, llm=self.llm)
@@ -151,49 +149,14 @@ class AgentLoop:
         self.max_turns = max_turns
         self.on_step = on_step
 
-# ── P1-4: Prompt 缓存分块 ──
-        self.prompt_cache = PromptCache()
+        # ── 只在新实例（非子 Agent）时打印引导日志 ──
+        self._is_top_level = max_turns > 10  # 子 Agent 的 max_turns 通常很小
 
-        # 上下文压缩器 — 阈值根据后端动态设置
-        # 本地 Qwen3.5-9B: -c 32768，threshold=28000（留充足冗余给摘要调用和实时输出）
-        # 云端 DeepSeek: 64K+ context，threshold=12000
-        local_backend = getattr(self.llm, 'backend', 'cloud') == 'local'
-        ctx_threshold = 28000 if local_backend else 12000
-        self.compressor = ContextCompressor(
-            max_context_tokens=ctx_threshold,
-            keep_recent_rounds=5,
-            summarizer=LocalSummarizer(),
-        )
-
-        # Budget Allocator: Token 预算分配器
-        local_backend = getattr(self.llm, 'backend', 'cloud') == 'local'
-        ctx_threshold = 28000 if local_backend else 12000
-        self.budget_allocator = BudgetAllocator(
-            policy=BudgetPolicy(total_budget=ctx_threshold),
-            on_critical=self._on_budget_critical,
-            on_warning=self._on_budget_warning,
-        )
-        self._budget_scan_count = 0  # 预算扫描计数器
-
-        # Microcompact: 大型工具结果 → 磁盘存储
-        self.tool_result_store = ToolResultStore()
-
-        # ContextCollapse: 非破坏性上下文投影
-        self.collapser = ContextCollapse(
-            summarizer=LocalSummarizer(),
-            keep_recent_rounds=5,
-        )
-
-        # 当前会话 ID（由 run() 创建）
-        self.current_session_id: Optional[str] = None
-
-        # 注册 delegate_task 工具（子 Agent 系统）
-        self._register_delegate_tool()
-
-        # ── 以下全部惰性初始化（用到才创建） ──
+        # ── 以下全部惰性初始化（_lazy_init 中创建） ──
         self.prompt_cache = None  # PromptCache()
         self.compressor = None  # ContextCompressor()
         self.budget_allocator = None  # BudgetAllocator()
+        self._ctx_threshold = 800000  # 启动时由 _lazy_init 覆盖
         self.tool_result_store = None  # ToolResultStore()
         self.collapser = None  # ContextCollapse()
         self.mcp_bridge = None  # MCPBridge()
@@ -203,17 +166,18 @@ class AgentLoop:
         self._budget_scan_count = 0
         self._mem_maintenance_counter = 0
 
-        # 注册 skill_rollback 工具
+        # 注册工具（这些不依赖惰性初始化）
+        self._register_delegate_tool()
         self._register_skill_rollback()
 
-        # ── Hook 事件系统 ──
-        self.hooks_enabled = True
-        try:
-            init_hooks()
-            if self._bootup:
+        # ── Hook 事件系统（只需一次） ──
+        if self._is_top_level:
+            self.hooks_enabled = True
+            try:
+                init_hooks()
                 self._log("🔌 Hook 事件系统就绪")
-        except Exception as e:  # pragma: no cover
-            self._log(f"⚠️ Hook 系统初始化失败: {e}")
+            except Exception as e:  # pragma: no cover
+                self._log(f"⚠️ Hook 系统初始化失败: {e}")
 
     def _lazy_init(self):
         """惰性初始化（run() 第一次调用时才创建的组件）。"""
@@ -221,7 +185,7 @@ class AgentLoop:
             return  # 已初始化
 
         # ── Permission System ──
-        self.permission_enabled = os.environ.get("KUAFFU_DISABLE_APPROVAL", "") != "1"
+        self.permission_enabled = os.environ.get("KUAFU_DISABLE_APPROVAL", "") != "1"
         self._pretooluse_cache: dict = {}
 
         # ── 审批通知回调 ──
@@ -236,18 +200,16 @@ class AgentLoop:
         self.on_error: Optional[Callable[[str], None]] = None
         self.on_finish: Optional[Callable[[dict], None]] = None
 
-        # 上下文压缩器 — 阈值根据后端动态设置
-        local_backend = getattr(self.llm, 'backend', 'cloud') == 'local'
-        ctx_threshold = 28000 if local_backend else 12000
+        # 上下文压缩器 — 使用动态检测的阈值
         self.compressor = ContextCompressor(
-            max_context_tokens=ctx_threshold,
-            keep_recent_rounds=5,
-            summarizer=LocalSummarizer(),
+            max_context_tokens=self._ctx_threshold,
+            keep_recent_rounds=90,
+            summarizer=LLMSummarizer(),
         )
 
         # Budget Allocator: Token 预算分配器
         self.budget_allocator = BudgetAllocator(
-            policy=BudgetPolicy(total_budget=ctx_threshold),
+            policy=BudgetPolicy(total_budget=self._ctx_threshold),
             on_critical=self._on_budget_critical,
             on_warning=self._on_budget_warning,
         )
@@ -258,8 +220,8 @@ class AgentLoop:
 
         # ContextCollapse: 非破坏性上下文投影
         self.collapser = ContextCollapse(
-            summarizer=LocalSummarizer(),
-            keep_recent_rounds=5,
+            summarizer=LLMSummarizer(),
+            keep_recent_rounds=90,
         )
 
         # Observer：运行时工具调用跟踪
@@ -295,7 +257,7 @@ class AgentLoop:
             }
             schema = get_delegate_schema()
             self.tools.register("delegate_task", schema, handle_delegate)
-            if self._bootup:
+            if self._is_top_level:
                 self._log("🧩 子 Agent 系统就绪: delegate_task 工具已注册")  # pragma: no cover
         except Exception as e:  # pragma: no cover
             self._log(f"⚠️ 子 Agent 系统注册失败: {e}")
@@ -351,7 +313,7 @@ class AgentLoop:
                 except Exception as e:
                     return {"success": False, "output": f"回滚失败: {e}"}
             self.tools.register("skill_rollback", schema, handler)
-            if self._bootup:
+            if self._is_top_level:
                 self._log("↩️ 技能回滚工具已注册: skill_rollback")
         except Exception as e:
             self._log(f"⚠️ skill_rollback 注册失败: {e}")
@@ -372,7 +334,7 @@ class AgentLoop:
                     "description": desc,
                     "parameters": params,
                 }, lambda args, _n=name: mem_api.handle_tool_call(_n, args))
-            if self._bootup:  # pragma: no cover
+            if self._is_top_level:  # pragma: no cover
                 self._log(f"🧠 记忆工具就绪: {', '.join(s['name'] for s in schemas)}")  # pragma: no cover
         except Exception as e:  # pragma: no cover
             self._log(f"⚠️ 记忆工具注册失败: {e}")  # pragma: no cover
@@ -463,7 +425,7 @@ class AgentLoop:
         rules_content = "\n".join(f"- {rule}" for rule in rules)
 
         # 追加运行环境说明
-        if os.environ.get("KUAFFU_DESKTOP") == "1":
+        if os.environ.get("KUAFU_DESKTOP") == "1":
             import platform as _platform
             rules_content += (
                 "\n\n## 运行环境\n"
@@ -834,7 +796,7 @@ class AgentLoop:
         self._init_orchestrator()
 
         # 强制 gateway 模式：审批走通道推送不阻塞
-        os.environ["KUAFFU_GATEWAY_RUNNING"] = "1"
+        os.environ["KUAFU_GATEWAY_RUNNING"] = "1"
 
         req = ToolExecutionRequest(
             tool_name=fn_name,
@@ -999,9 +961,8 @@ class AgentLoop:
         if matched:
             _simple, complex_skills = resolve_skill_execution(matched)  # pragma: no cover
 
-        # 本地模式禁止子 Agent（子 Agent 硬编码 cloud，本地无翻墙容易超时）
-        local_mode = getattr(self.llm, 'backend', 'cloud') == 'local'
-        if complex_skills and not local_mode:  # pragma: no cover
+        # 复杂 skill 走子 Agent 委派
+        if complex_skills:  # pragma: no cover
             top_skill = complex_skills[0]
             self._log(f"🧩 检测到复杂 skill: {top_skill['name']} → 后台委派子 Agent")
             sub_prompt = build_delegation_prompt(top_skill, task)

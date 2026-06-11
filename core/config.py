@@ -31,7 +31,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 class ConfigLayer(Enum):
     CLOUD = "cloud"           # 云端默认值（最低优先级）
     SYSTEM = "system"         # 系统默认（/etc/kuafu/config.yaml）
-    USER = "user"             # 用户配置（~/.kuafu/config.yaml）
+    USER = "user"             # 用户配置（~/.config/kuafu/config.yaml）
     PROJECT = "project"       # 项目配置（<cwd>/.kuafu/config.yaml）
     PROFILE = "profile"       # 命名 profile
     CLI = "cli"               # CLI 参数（最高优先级）
@@ -82,7 +82,7 @@ class ConstrainedValue:
 DEFAULT_SEARCH_PATHS = [
     # (layer, path)
     # 用户配置
-    (ConfigLayer.USER, Path.home() / ".kuafu" / "config.yaml"),
+    (ConfigLayer.USER, Path("~/.config/kuafu").expanduser() / "config.yaml"),
     # 项目配置（从 cwd 向上查找）
     (ConfigLayer.PROJECT, None),  # 动态决定
 ]

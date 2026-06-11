@@ -56,87 +56,65 @@ class CompressionResult:
             )
 
 
-class LocalSummarizer:
-    """本地 llama-server 摘要器。
+class LLMSummarizer:
+    """LLM 自摘要器。
 
-    使用已在运行的 llama-server（port 8080）对旧对话做智能摘要。
-    因为是独立 HTTP 请求，不会阻塞主 Agent 的推理。
+    用主干 LLM（DeepSeek 等）自身对旧对话做摘要。
+    不是阻塞调用——LLM 调用本来就由 AgentLoop 调度，
+    压缩是异步触发的，不会影响主推理。
+
+    Args:
+        llm_chat: LLMChat 函数，接收 messages 列表返回 response
+        max_summary_tokens: 摘要最大 token 数
+        timeout: 超时秒数
     """
 
     def __init__(
         self,
-        base_url: str = SUMMARY_BASE_URL,
-        max_tokens: int = SUMMARY_MAX_TOKENS,
-        timeout: int = SUMMARY_TIMEOUT,
+        llm_chat: Optional[callable] = None,
+        max_summary_tokens: int = 512,
+        timeout: int = 30,
     ):
-        self.base_url = base_url.rstrip("/")
-        self.max_tokens = max_tokens
+        self._llm_chat = llm_chat
+        self.max_summary_tokens = max_summary_tokens
         self.timeout = timeout
 
+    def set_llm(self, llm_chat: callable):
+        """设置 LLM 聊天函数（惰性注入）。"""
+        self._llm_chat = llm_chat
+
     def summarize(self, text: str) -> str:
-        """调用本地 LLM 生成摘要。
+        """用 LLM 生成摘要。
 
         Args:
             text: 需要摘要的对话文本
 
         Returns:
-            摘要文本（失败时返回空字符串，用截断文本兜底）
+            摘要文本（失败时截断兜底）
         """
         if not text.strip():
             return ""
-
-        try:
-            return self._call_llm(text)
-        except Exception as e:
-            # fallback: 截断
+        if not self._llm_chat:
             return text[:600] + "..." if len(text) > 600 else text
 
-    def _call_llm(self, text: str) -> str:
-        """调用本地 llama-server 的 chat/completions API。"""
-        prompt = (
-            "你是一个对话摘要器。请将以下多轮对话浓缩为 2-3 句中文摘要，"
-            "保留关键信息：用户的核心需求、做出的决策、已知结果。\n\n"
-            f"对话内容：\n{text}\n\n摘要："
-        )
-
-        payload = {
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "你是一个高效的对话摘要器。"
-                        "你只输出摘要内容本身，不加前缀、不加评价、不反问。"
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ],
-            "max_tokens": self.max_tokens,
-            "temperature": 0.3,
-            "stream": False,
-        }
-
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        req = urllib.request.Request(
-            f"{self.base_url}/v1/chat/completions",
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            result = json.loads(resp.read().decode("utf-8", errors="replace"))
-
-        content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
-        return content.strip() or text[:600] + "..."
+        try:
+            prompt = (
+                "你是一个对话摘要器。请将以下多轮对话浓缩为 2-3 句中文摘要，"
+                "保留关键信息：用户的核心需求、做出的决策、已知结果。\n\n"
+                f"对话内容：\n{text}\n\n摘要："
+            )
+            resp = self._llm_chat([{"role": "user", "content": prompt}])
+            content = ""
+            if isinstance(resp, dict):
+                content = resp.get("content", "")
+            elif isinstance(resp, str):
+                content = resp
+            return content.strip() or text[:600] + "..."
+        except Exception:
+            return text[:600] + "..." if len(text) > 600 else text
 
     def is_available(self) -> bool:
-        """检查本地 llama-server 是否可访问。"""
-        try:
-            req = urllib.request.Request(f"{self.base_url}/health", method="GET")
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                return resp.status == 200
-        except Exception:
-            return False
+        return self._llm_chat is not None
 
 
 class ContextCompressor:
@@ -154,12 +132,12 @@ class ContextCompressor:
         max_context_tokens: int = 12000,
         keep_recent_rounds: int = 5,
         system_token_estimation: int = 2000,
-        summarizer: Optional[LocalSummarizer] = None,
+        summarizer: Optional[LLMSummarizer] = None,
     ):
         self.max_context_tokens = max_context_tokens
         self.keep_recent_rounds = keep_recent_rounds
         self.system_token_estimation = system_token_estimation
-        self.summarizer = summarizer or LocalSummarizer()
+        self.summarizer = summarizer or LLMSummarizer()
         self.pin_manager = PinnedContentManager()
         self._pinned_summary = ""  # 缓存上次压缩时的 Pin 摘要信息
 
@@ -768,7 +746,7 @@ class ToolResultStore:
     MICRO_THRESHOLD_CHARS = 2000  # 超过此长度才做 microcompact
 
     def __init__(self, base_dir: Optional[str] = None):
-        base = base_dir or os.environ.get("KUAFU_DATA_DIR") or str(Path.home() / ".kuafu")
+        base = base_dir or os.environ.get("KUAFU_DATA_DIR") or str(Path("~/.config/kuafu").expanduser())
         self.results_dir = Path(base) / "tool_results"
         self.results_dir.mkdir(parents=True, exist_ok=True)
         # 保留最近 200 个文件
@@ -910,11 +888,11 @@ class ContextCollapse:
 
     def __init__(
         self,
-        summarizer: Optional["LocalSummarizer"] = None,
+        summarizer: Optional["LLMSummarizer"] = None,
         keep_recent_rounds: int = 5,
         summary_prompt: str = "",
     ):
-        self.summarizer = summarizer or LocalSummarizer()
+        self.summarizer = summarizer or LLMSummarizer()
         self.keep_recent_rounds = keep_recent_rounds
         self.summary_prompt = summary_prompt or (
             "你是一个对话摘要器。请将以下多轮对话内容浓缩为2-3句中文摘要，"

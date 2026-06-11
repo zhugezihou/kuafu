@@ -318,12 +318,11 @@ def handle_delegate(args: dict) -> dict:
                     sub_tools.unregister(name)
 
         # 创建隔离的 AgentLoop（不加载 MCP，不加载记忆）
-        # 子 Agent 跟随父 Agent 后端配置（cloud → DeepSeek, local → 本地模型）
-        from core.llm import LLMClient, KUAFFU_BACKEND
+        # 子 Agent 跟随父 Agent 后端配置
+        from core.llm import LLMClient
         from core.agent_loop import AgentLoop
-        # 优先使用父 Agent 的运行时配置，确保父子模型一致
-        sub_backend = PARENT_LLM_BACKEND or KUAFFU_BACKEND
-        sub_llm = LLMClient(backend=sub_backend, **(PARENT_LLM_CONFIG or {}))
+        # 使用父 Agent 的运行时配置，确保父子模型一致
+        sub_llm = LLMClient(**(PARENT_LLM_CONFIG or {}))
         sub_loop = AgentLoop(
             llm=sub_llm,
             tool_registry=sub_tools,
@@ -466,13 +465,13 @@ _SUMMARIZER_CACHE = None
 
 
 def _get_summarizer() -> Optional[object]:
-    """懒加载 LocalSummarizer（避免循环导入）。"""
+    """懒加载 LLMSummarizer（避免循环导入）。"""
     global _SUMMARIZER_CACHE
     if _SUMMARIZER_CACHE is not None:
         return _SUMMARIZER_CACHE
     try:
-        from core.context_compress import LocalSummarizer
-        s = LocalSummarizer()
+        from core.context_compress import LLMSummarizer
+        s = LLMSummarizer()
         if s.is_available():
             _SUMMARIZER_CACHE = s
             return s

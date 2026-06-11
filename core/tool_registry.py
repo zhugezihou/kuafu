@@ -636,7 +636,7 @@ class ToolRegistry:
     def _handle_terminal(self, args: dict) -> dict:  # pragma: no cover
         command = args.get("command", "")
         # Desktop 模式下默认 workdir 为用户目录
-        if os.environ.get("KUAFFU_DESKTOP") == "1":
+        if os.environ.get("KUAFU_DESKTOP") == "1":
             default_dir = os.environ.get("USERPROFILE", "C:\\Users\\Default")
         else:
             default_dir = str(ROOT_DIR)
@@ -1257,7 +1257,7 @@ class ToolRegistry:
                 "properties": {
                     "repo": {
                         "type": "string",
-                        "description": "仓库名，格式为 'owner/repo'，如 'nousresearch/hermes-agent'",
+                        "description": "仓库名，格式为 'owner/repo'，如 'nousresearch/夸父-agent'",
                     },
                     "get_readme": {
                         "type": "boolean",
@@ -1272,7 +1272,7 @@ class ToolRegistry:
         repo = args.get("repo", "")
         get_readme = args.get("get_readme", True)
         if not repo or "/" not in repo:
-            return {"success": False, "output": "仓库名格式错误，应为 'owner/repo'，如 'nousresearch/hermes-agent'"}
+            return {"success": False, "output": "仓库名格式错误，应为 'owner/repo'，如 'nousresearch/夸父-agent'"}
 
         try:
             # 获取仓库信息

@@ -50,18 +50,18 @@ def _is_interactive() -> bool:
     """判断当前是否在交互式终端中运行。
 
     检查顺序：
-    1. KUAFFU_GATEWAY_RUNNING=1 强制非交互（gateway 模式）
-    2. 环境变量 KUAFFU_INTERACTIVE=1 强制交互（kuafu.sh 启动时自动设置）
+    1. KUAFU_GATEWAY_RUNNING=1 强制非交互（gateway 模式）
+    2. 环境变量 KUAFU_INTERACTIVE=1 强制交互（kuafu.sh 启动时自动设置）
     3. TTY 检测
     """
     # Gateway 模式下即使有 TTY 也走非交互审批
-    if os.environ.get("KUAFFU_GATEWAY_RUNNING") == "1":
+    if os.environ.get("KUAFU_GATEWAY_RUNNING") == "1":
         return False
     # 有飞书或微信通道注册时，也走非交互审批
     if os.environ.get("FEISHU_APP_ID") or os.environ.get("WECHAT_ILINK_DATA_DIR"):
         return False
     return (
-        os.environ.get("KUAFFU_INTERACTIVE") == "1"
+        os.environ.get("KUAFU_INTERACTIVE") == "1"
         or (sys.stdin.isatty() and sys.stdout.isatty())
     )
 
@@ -681,7 +681,7 @@ class ApprovalManager:
             logger.info(f"{'✅' if approved else '❌'} 审批 {'通过' if approved else '拒绝'}: {title}")
             return approved
 
-    # ── 决策接口（供 Hermes/外部调用） ──────────────────────────────────
+    # ── 决策接口（供 夸父/外部调用） ──────────────────────────────────
 
     @staticmethod
     def approve(req_id: str = "") -> bool:

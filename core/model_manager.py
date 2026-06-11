@@ -25,7 +25,7 @@ PROVIDER_TEMPLATES = {
         "name": "DeepSeek Chat",
         "url": "https://api.deepseek.com",
         "model": "deepseek-chat",
-        "key_env": ["KUAFFU_API_KEY", "DEEPSEEK_API_KEY"],
+        "key_env": ["KUAFU_API_KEY", "DEEPSEEK_API_KEY"],
         "desc": "DeepSeek 官方 API",
     },
     "openai": {
@@ -41,13 +41,6 @@ PROVIDER_TEMPLATES = {
         "model": "claude-sonnet-4-20250514",
         "key_env": ["ANTHROPIC_API_KEY"],
         "desc": "Anthropic Claude Sonnet 4",
-    },
-    "qwen": {
-        "name": "Qwen (本地)",
-        "url": "http://localhost:8080",
-        "model": "Qwen3.5-9B-UD-Q4_K_XL.gguf",
-        "key_env": [],
-        "desc": "本地 llama-server (Qwen3.5-9B)",
     },
     "openrouter": {
         "name": "OpenRouter",
@@ -81,7 +74,7 @@ class ModelManager:
     def __init__(self, profile_id: str = "default"):
         self.profile_id = profile_id
         # providers 列表
-        providers_str = os.environ.get("KUAFFU_PROVIDERS", "deepseek")
+        providers_str = os.environ.get("KUAFU_PROVIDERS", "deepseek")
         self._providers = [p.strip() for p in providers_str.split(",") if p.strip()]
         self._configs: dict[str, dict] = {}  # provider -> config
         self._load()
