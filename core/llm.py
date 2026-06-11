@@ -161,7 +161,7 @@ class LLMClient:
     def __init__(self, providers: str | list[str] | None = None,
                  api_key: str | None = None, base_url: str | None = None,
                  model: str | None = None, max_tokens: int = 4096,
-                 temperature: float = 0.7, timeout: int = 15):
+                 temperature: float = 0.7, timeout: int = 60):
         # 构建后端列表
         if providers is None:
             providers = os.environ.get("KUAFU_PROVIDERS", "deepseek").split(",")
