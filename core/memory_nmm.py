@@ -93,6 +93,7 @@ class NMMMemoryBackend:
     """
 
     def __init__(self, memory_dir: Optional[Path] = None):
+        self._lock = threading.Lock()
         self._embed = NMMEmbedding(dim=384)
 
         # 把 vendor/nmm 加入 sys.path（内嵌版本）
@@ -124,23 +125,24 @@ class NMMMemoryBackend:
 
     def _lazy_init(self):
         """延迟初始化 NMM 控制器（首次使用时）"""
-        if self._initialized:
-            return
-        try:
-            from nmm.core.memory import MemoryController as NMMController
+        with self._lock:
+            if self._initialized:
+                return
+            try:
+                from nmm.core.memory import MemoryController as NMMController
 
-            self._controller = NMMController(
-                input_dim=384,
-                hidden_dim=512,
-                episodic_size=256,
-                longterm_size=512,
-                concept_count=32,
-            )
-            self._initialized = True
-            logger.info("[NMM] 记忆后端初始化完成")
-        except Exception as e:
-            logger.warning(f"[NMM] 初始化失败: {e}，将使用降级模式")
-            self._initialized = False
+                self._controller = NMMController(
+                    input_dim=384,
+                    hidden_dim=512,
+                    episodic_size=256,
+                    longterm_size=512,
+                    concept_count=32,
+                )
+                self._initialized = True
+                logger.info("[NMM] 记忆后端初始化完成")
+            except Exception as e:
+                logger.warning(f"[NMM] 初始化失败: {e}，将使用降级模式")
+                self._initialized = False
 
     def _load_text_index(self) -> dict:
         if self._text_index_path.exists():
@@ -160,10 +162,11 @@ class NMMMemoryBackend:
         """每 N 步触发一次睡眠巩固"""
         self._step += 1
         if self._step % self._auto_sleep_interval == 0 and self._initialized:
-            try:
-                self._controller.sleep()
-            except Exception:
-                pass
+            with self._lock:
+                try:
+                    self._controller.sleep()
+                except Exception:
+                    pass
 
     # ── 公开接口 ──
 
@@ -179,19 +182,20 @@ class NMMMemoryBackend:
 
         # 写入 NMM
         if self._initialized:
-            try:
-                import torch
-                v = torch.tensor(vector, dtype=torch.float32).unsqueeze(0)
-                encoded = self._controller.encoder(v).squeeze(0)
-                self._controller.episodic.push(
-                    encoded,
-                    context=0,
-                    surprise=0.5,
-                    step=self._step,
-                )
-                self._controller.total_writes += 1
-            except Exception as e:
-                logger.warning(f"[NMM] 写入失败: {e}")
+            with self._lock:
+                try:
+                    import torch
+                    v = torch.tensor(vector, dtype=torch.float32).unsqueeze(0)
+                    encoded = self._controller.encoder(v).squeeze(0)
+                    self._controller.episodic.push(
+                        encoded,
+                        context=0,
+                        surprise=0.5,
+                        step=self._step,
+                    )
+                    self._controller.total_writes += 1
+                except Exception as e:
+                    logger.warning(f"[NMM] 写入失败: {e}")
 
         # 同时保存原文（方便人类阅读和降级）
         mem_id = f"nmm_{int(time.time())}_{hash(content) % 10000}"
@@ -224,27 +228,28 @@ class NMMMemoryBackend:
 
         # NMM 联想检索
         if self._initialized:
-            try:
-                vector = self._embed.encode(query)
-                import torch
-                v = torch.tensor(vector, dtype=torch.float32).unsqueeze(0)
-                encoded = self._controller.encoder(v).squeeze(0)
-                # 直接用 encoded 在长期记忆中检索
-                weight = self._controller.longterm.memory_bank.content_addressing(encoded.unsqueeze(0))
-                top_weights, top_indices = weight.topk(min(limit, weight.shape[1]))
-                for i in range(top_indices.shape[1]):
-                    idx = top_indices[0, i].item()
-                    mem_vec = self._controller.longterm.memory_bank.memory[0, idx]
-                    score = top_weights[0, i].item()
-                    best_text = self._find_closest_text(mem_vec)
-                    results.append({
-                        "content": best_text,
-                        "score": round(score, 4),
-                        "source": "nmm_associative",
-                        "id": f"nmm_recall_{len(results)}",
-                    })
-            except Exception as e:
-                logger.warning(f"[NMM] 联想检索失败: {e}")
+            with self._lock:
+                try:
+                    vector = self._embed.encode(query)
+                    import torch
+                    v = torch.tensor(vector, dtype=torch.float32).unsqueeze(0)
+                    encoded = self._controller.encoder(v).squeeze(0)
+                    # 直接用 encoded 在长期记忆中检索
+                    weight = self._controller.longterm.memory_bank.content_addressing(encoded.unsqueeze(0))
+                    top_weights, top_indices = weight.topk(min(limit, weight.shape[1]))
+                    for i in range(top_indices.shape[1]):
+                        idx = top_indices[0, i].item()
+                        mem_vec = self._controller.longterm.memory_bank.memory[0, idx]
+                        score = top_weights[0, i].item()
+                        best_text = self._find_closest_text(mem_vec)
+                        results.append({
+                            "content": best_text,
+                            "score": round(score, 4),
+                            "source": "nmm_associative",
+                            "id": f"nmm_recall_{len(results)}",
+                        })
+                except Exception as e:
+                    logger.warning(f"[NMM] 联想检索失败: {e}")
 
         # 如果 NMM 结果不足，用关键词匹配补全
         if len(results) < limit:
@@ -282,15 +287,16 @@ class NMMMemoryBackend:
             if not text:
                 continue
             # 编码到 512 维记忆空间再比较
-            import torch
-            raw = self._embed.encode(text)
-            try:
-                raw_t = torch.tensor(raw, dtype=torch.float32).unsqueeze(0)
-                encoded = self._controller.encoder(raw_t).squeeze(0)
-                sim = torch.cosine_similarity(
-                    vector.unsqueeze(0), encoded.unsqueeze(0)).item()
-            except Exception:
-                sim = 0
+            with self._lock:
+                try:
+                    import torch
+                    raw = self._embed.encode(text)
+                    raw_t = torch.tensor(raw, dtype=torch.float32).unsqueeze(0)
+                    encoded = self._controller.encoder(raw_t).squeeze(0)
+                    sim = torch.cosine_similarity(
+                        vector.unsqueeze(0), encoded.unsqueeze(0)).item()
+                except Exception:
+                    sim = 0
             if sim > best_score:
                 best_score = sim
                 best_text = text
@@ -317,17 +323,18 @@ class NMMMemoryBackend:
             return "\n".join(lines)
 
         try:
-            from nmm.core.thinking import ThinkingEngine
+            with self._lock:
+                from nmm.core.thinking import ThinkingEngine
 
-            # 把查询转成向量
-            vector = self._embed.encode(query)
-            import torch
-            v = torch.tensor(vector, dtype=torch.float32).unsqueeze(0)
-            encoded = self._controller.encoder(v).squeeze(0)
+                # 把查询转成向量
+                vector = self._embed.encode(query)
+                import torch
+                v = torch.tensor(vector, dtype=torch.float32).unsqueeze(0)
+                encoded = self._controller.encoder(v).squeeze(0)
 
-            # 用 ThinkingEngine 做联想/推理
-            engine = ThinkingEngine(self._controller, self._controller.hidden_dim)
-            thought = engine.think(encoded, mode="auto")
+                # 用 ThinkingEngine 做联想/推理
+                engine = ThinkingEngine(self._controller, self._controller.hidden_dim)
+                thought = engine.think(encoded, mode="auto")
 
             # 从思维结果构建可读的回答
             mode = thought.get("mode", "unknown")
@@ -358,13 +365,14 @@ class NMMMemoryBackend:
             "nmm_active": self._initialized,
         }
         if self._initialized:
-            try:
-                ctrl_stats = self._controller.get_stats()
-                stats["nmm_episodic"] = ctrl_stats["episodic_used"]
-                stats["nmm_longterm"] = ctrl_stats["longterm_slots"]
-                stats["nmm_writes"] = ctrl_stats["total_writes"]
-            except Exception:
-                pass
+            with self._lock:
+                try:
+                    ctrl_stats = self._controller.get_stats()
+                    stats["nmm_episodic"] = ctrl_stats["episodic_used"]
+                    stats["nmm_longterm"] = ctrl_stats["longterm_slots"]
+                    stats["nmm_writes"] = ctrl_stats["total_writes"]
+                except Exception:
+                    pass
         return stats
 
     def list_recent(self, limit: int = 10) -> list[dict]:
