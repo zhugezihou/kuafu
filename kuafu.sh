@@ -9,7 +9,10 @@
 #   bash kuafu.sh cron list             # 定时任务
 #   bash kuafu.sh sessions list         # 会话管理
 #   bash kuafu.sh status                # 状态查看
-#   bash kuafu.sh --help                # 全部命令
+#   bash kuafu.sh gateway start       # 启动 Gateway
+#   bash kuafu.sh gateway stop        # 停止 Gateway
+#   bash kuafu.sh gateway status      # Gateway 状态（systemctl）
+#   bash kuafu.sh --help              # 全部命令
 
 set -e
 

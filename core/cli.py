@@ -1385,6 +1385,26 @@ def run_gateway(args: argparse.Namespace, agent: Any) -> int:
         uninstall_service()
         return 0
 
+    elif args.cmd == "stop":
+        """向运行中的 Gateway 发送 shutdown 信号。"""
+        port = getattr(args, "port", 8765)
+        import urllib.request
+        import json
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/shutdown",
+                data=b"{}",
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            resp = urllib.request.urlopen(req, timeout=5)
+            result = json.loads(resp.read().decode("utf-8"))
+            print(f"✅ Gateway 已停止: {result}")
+        except Exception as e:
+            print(f"❌ Gateway 停止失败: {e}")
+            return 1
+        return 0
+
     elif args.cmd == "status":
         import subprocess
         result = subprocess.run(
@@ -1883,6 +1903,12 @@ SUBCOMMANDS = {
                     ("--port", {"type": int, "default": 8765}),
                     ("--host", {"default": "127.0.0.1"}),
                     ("--key", {"default": "", "help": "API Key"}),
+                ],
+            },
+            "stop": {
+                "help": "停止 Gateway（发送 shutdown 信号）",
+                "optional": [
+                    ("--port", {"type": int, "default": 8765}),
                 ],
             },
             "install": {"help": "安装 systemd user service"},
