@@ -25,8 +25,8 @@ from dataclasses import dataclass, field
 logger = logging.getLogger("kuafu.subagent")
 
 MAX_CONCURRENT = 3
-MAX_TURNS = 30
-TIMEOUT = 600
+MAX_TURNS = 10  # 子 Agent 最大轮次（防止无限循环浪费 token）
+TIMEOUT = 300
 
 # P1-2: 子 Agent Profile 目录
 SUBAGENT_PROFILES_DIR = Path(__file__).resolve().parent.parent / "subagent_profiles"
