@@ -339,6 +339,7 @@ class WeChatILinkChannel(MessageChannel):
     def _poll_loop(self):
         """长轮询接收消息。"""
         print("[WeChat] 开始接收消息...")
+        first_poll = True  # 重启后首次轮询，丢弃历史消息
         while self._running:
             try:
                 body = {
@@ -363,6 +364,11 @@ class WeChatILinkChannel(MessageChannel):
                 else:
                     # 成功：保存游标，处理消息
                     self._poll_buf = result.get("get_updates_buf", self._poll_buf)
+                    # 首次轮询：只更新游标，不处理历史消息
+                    if first_poll:
+                        first_poll = False
+                        print(f"[WeChat] 首次轮询完成，跳过历史消息 (cursor={self._poll_buf[:20]})")
+                        continue
                     messages = result.get("msgs", result.get("messages", []))
                     for msg_data in messages:
                         self._handle_incoming(msg_data)
