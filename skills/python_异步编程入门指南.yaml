@@ -20,6 +20,6 @@ pitfalls:
 - 不要直接操作事件循环，如 loop.run_until_complete()，应使用 asyncio.run()
 - 不要在协程中使用同步阻塞操作，如 time.sleep()，会导致事件循环阻塞
 - 避免在 asyncio.run() 之外创建事件循环，可能导致资源泄漏
-usage_count: 4
+usage_count: 5
 created_at: 1779643884
 source: kuafu_impromptu_evolution

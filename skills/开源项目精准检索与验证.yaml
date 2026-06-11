@@ -14,6 +14,6 @@ steps:
 pitfalls:
 - 避免重复调用相同 API
 - 一次搜索拿到足够信息后直接回复，不要反复读文件
-usage_count: 25
+usage_count: 26
 created_at: 1779680376
 source: kuafu_impromptu_evolution

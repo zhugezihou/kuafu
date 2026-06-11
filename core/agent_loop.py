@@ -240,27 +240,46 @@ class AgentLoop:
         self.on_tool_end: Optional[Callable[[str, dict, float, str], None]] = None
 
     def _register_delegate_tool(self):
-        """注册 delegate_task 工具（子 Agent 系统）。
-        
+        """注册子 Agent 相关工具（delegate_task + invoke_expert + invoke_experts）。
+
         注入父 Agent 的 LLM 配置，确保子 Agent 与父 Agent 使用相同的模型后端。
         """
         try:
-            from core.subagent import get_delegate_schema, handle_delegate, PARENT_LLM_BACKEND, PARENT_LLM_CONFIG
+            from core.subagent import (
+                get_delegate_schema, handle_delegate,
+                get_invoke_expert_schema, handle_invoke_expert,
+                get_invoke_experts_schema, handle_invoke_experts,
+                PARENT_LLM_CONFIG,
+            )
+            from core.expert_registry import get_registry
+
             # 注入父 Agent 的运行时配置
             import core.subagent as _sa
-            _sa.PARENT_LLM_BACKEND = self.llm.backend
             _sa.PARENT_LLM_CONFIG = {
                 "base_url": self.llm.base_url,
                 "model": self.llm.model,
                 "max_tokens": self.llm.max_tokens,
                 "temperature": self.llm.temperature,
             }
+
+            # 注册 delegate_task（旧接口，向后兼容）
             schema = get_delegate_schema()
             self.tools.register("delegate_task", schema, handle_delegate)
+
+            # 注册 invoke_expert（新接口）
+            expert_schema = get_invoke_expert_schema()
+            self.tools.register("invoke_expert", expert_schema, handle_invoke_expert)
+
+            # 注册 invoke_experts（并行多专家）
+            experts_schema = get_invoke_experts_schema()
+            self.tools.register("invoke_experts", experts_schema, handle_invoke_experts)
+
             if self._is_top_level:
-                self._log("🧩 子 Agent 系统就绪: delegate_task 工具已注册")  # pragma: no cover
+                registry = get_registry()
+                expert_count = len(registry.list())
+                self._log(f"🧩 专家系统就绪: {expert_count} 个专家可用")  # pragma: no cover
         except Exception as e:  # pragma: no cover
-            self._log(f"⚠️ 子 Agent 系统注册失败: {e}")
+            self._log(f"⚠️ 专家系统注册失败: {e}")
 
         # ── P1-3: Memory 工具注册（memory_store / memory_search / memory_reflect） ──
         self._register_memory_tools()
@@ -484,6 +503,15 @@ class AgentLoop:
         tools_content += "2. 系统匹配并激活最相关的隐藏工具\n"
         tools_content += "3. 激活后直接调用\n\n"
         tools_content += "完成任务后，调用 finish() 工具结束。"
+
+        # ── 4. 专家系统说明 ──
+        try:
+            from core.expert_registry import get_registry
+            expert_block = get_registry().get_system_prompt_block()
+            if expert_block:
+                tools_content += "\n\n" + expert_block
+        except Exception:
+            pass
 
         pm.add_section(
             section_id="tools",

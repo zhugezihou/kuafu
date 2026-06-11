@@ -20,6 +20,6 @@ pitfalls:
 - inspect参数注入时需处理默认值和可选参数，避免注入失败
 - 中间件链中错误处理需捕获所有异常，防止链中断
 - 路由匹配需支持动态路径参数，避免硬编码路由模式
-usage_count: 104
+usage_count: 115
 created_at: 1779645426
 source: kuafu_impromptu_evolution

@@ -52,23 +52,26 @@ def test_sandbox():
 def test_memory_api():
     """测试记忆系统"""
     from core.memory_api import MemoryAPI
+    import tempfile
+    from pathlib import Path
 
-    api = MemoryAPI()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        api = MemoryAPI(mode="file", memory_dir=Path(tmpdir))
 
-    # 写入
-    assert api.remember("test:hello", "这是一个测试记忆", tags=["test"])
-    
-    # 检索
-    results = api.recall("测试记忆")
-    assert len(results) >= 1, f"应检索到记忆，得到 {len(results)}"
-    assert any("测试记忆" in r.get("content", "") for r in results)
+        # 写入
+        assert api.remember("test:hello", "这是一个测试记忆", tags=["test"])
+        
+        # 检索
+        results = api.recall("测试记忆")
+        assert len(results) >= 1, f"应检索到记忆，得到 {len(results)}"
+        assert any("测试记忆" in r.get("content", "") for r in results)
 
-    # 反思（无 LLM 时返回相关记忆摘要）
-    reflection = api.reflect("测试记忆")
-    assert reflection is not None
-    assert "测试记忆" in reflection or len(reflection) > 0
+        # 反思（无 LLM 时返回相关记忆摘要）
+        reflection = api.reflect("测试记忆")
+        assert reflection is not None
+        assert "测试记忆" in reflection or len(reflection) > 0
 
-    print("✅ memory_api: 写入/检索/反思正常")
+        print("✅ memory_api: 写入/检索/反思正常")
 
 
 def test_evolution():
@@ -224,7 +227,8 @@ def test_agent_loop_tools():
     tools = loop.tools.get_schemas()
     tool_names = [t["function"]["name"] for t in tools]
     expected = {"terminal", "finish",
-                "delegate_task", "memory_store",
+                "delegate_task", "invoke_expert", "invoke_experts",
+                "memory_store",
                 "memory_search", "memory_reflect",
                 "skill_rollback", "tool_search"}
     assert set(tool_names) == expected, f"工具不匹配: {set(tool_names) ^ expected}"

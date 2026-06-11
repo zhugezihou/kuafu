@@ -1,13 +1,12 @@
 """
-subagent.py — 子 Agent 系统
+subagent.py — 子 Agent 系统 (v2)
 
-提供 delegate_task 工具函数，被 agent_loop.py 注册为夸父的一个工具。
-子 Agent 在隔离的 AgentLoop 中执行，拥有独立的 ToolRegistry 和对话上下文。
+提供 delegate_task 和 invoke_expert 工具函数。
+- delegate_task: 旧接口，直接给 goal/context
+- invoke_expert: 新接口，按专家角色名加载配置
+- invoke_experts: 并行派发多个专家
 
-P1-2: 支持 YAML Frontmatter 配置化 (subagent_profiles/ 目录)
-- LLM 通过 skill 参数引用预定义的子 Agent 配置
-- 配置含 allowed_tools、max_turns、output_rules
-- 不指定 skill 时使用原来的直接 goal/context 模式（向后兼容）
+子 Agent 在隔离的 AgentLoop 中执行，拥有独立的 ToolRegistry。
 """
 
 import os
@@ -25,7 +24,7 @@ from dataclasses import dataclass, field
 logger = logging.getLogger("kuafu.subagent")
 
 MAX_CONCURRENT = 3
-MAX_TURNS = 10  # 子 Agent 最大轮次（防止无限循环浪费 token）
+MAX_TURNS = 10  # 子 Agent 最大轮次
 TIMEOUT = 300
 
 # P1-2: 子 Agent Profile 目录
@@ -619,3 +618,179 @@ def _persist_subagent_knowledge(task_id: str, goal: str, result: str):
             logger.info(f"🧠 子 Agent 知识已持久化: {len(insights)} 条 insight")
     except Exception as e:
         logger.warning(f"⚠️ 子 Agent 知识存储失败: {e}")
+
+
+# ── invoke_expert — 按角色名调用专家 ──────────────────────────────
+
+
+def get_invoke_expert_schema() -> dict:
+    """返回 invoke_expert 工具的 schema。"""
+    from core.expert_registry import get_registry
+    registry = get_registry()
+    experts = registry.list()
+
+    expert_desc = "\n".join(f"  - {e.name}: {e.description[:100]}" for e in experts)
+    if not expert_desc:
+        expert_desc = "暂无可用专家"
+
+    return {
+        "description": "调用一个专业领域的专家 Agent 来分析问题。专家有独立的身份、工具和记忆。适合需要专业领域知识的任务。如果任务需要多个角度分析，请使用 invoke_experts。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "expert": {
+                    "type": "string",
+                    "description": f"专家角色名。可用专家：\n{expert_desc}",
+                },
+                "task": {
+                    "type": "string",
+                    "description": "要交给专家分析的具体任务描述。注意：专家的记忆是空的，所有背景信息需要在这里提供。",
+                },
+            },
+            "required": ["expert", "task"],
+        },
+    }
+
+
+def get_invoke_experts_schema() -> dict:
+    """返回 invoke_experts 工具的 schema（并行调用多个专家）。"""
+    from core.expert_registry import get_registry
+    registry = get_registry()
+    experts = registry.list()
+
+    expert_desc = "\n".join(f"  - {e.name}: {e.description[:100]}" for e in experts)
+    if not expert_desc:
+        expert_desc = "暂无可用专家"
+
+    return {
+        "description": "并行调用多个专业领域的专家 Agent 从不同角度分析同一个问题。所有专家并行执行，完成后自动汇总结果。适合需要多维度分析的任务。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "experts": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": f"需要调用的专家角色名列表（至少2个）。可用专家：\n{expert_desc}",
+                },
+                "task": {
+                    "type": "string",
+                    "description": "要交给所有专家分析的问题描述。每个专家会从自己的专业角度分析同一个问题。注意：专家的记忆是空的，所有背景信息需要在这里提供。",
+                },
+            },
+            "required": ["experts", "task"],
+        },
+    }
+
+
+def handle_invoke_expert(args: dict) -> dict:
+    """处理 invoke_expert 工具调用。
+
+    从专家注册表加载配置 → 创建子 Agent → 执行 → 返回结果。
+    """
+    from core.expert_registry import get_registry
+
+    expert_name = args.get("expert", "")
+    task = args.get("task", "")
+
+    if not expert_name or not task:
+        return {"success": False, "output": "expert 和 task 参数不能为空"}
+
+    registry = get_registry()
+    profile = registry.get(expert_name)
+    if not profile:
+        available = ", ".join(e.name for e in registry.list())
+        return {
+            "success": False,
+            "output": f"专家 '{expert_name}' 不存在。可用专家: {available}",
+        }
+
+    # 把专家身份 + 任务拼成子 Agent 的 prompt
+    prompt_parts = [profile.identity, "", f"[任务]\n{task}"]
+    prompt = "\n".join(prompt_parts)
+
+    # 委派给子 Agent
+    delegate_args = {
+        "goal": prompt,
+        "context": "",
+        "tools": profile.tools if profile.tools else None,
+    }
+    result = handle_delegate(delegate_args)
+
+    # 标记来源
+    if result.get("success"):
+        result["expert"] = expert_name
+
+    return result
+
+
+def handle_invoke_experts(args: dict) -> dict:
+    """处理 invoke_experts 工具调用。
+
+    并行调用多个专家，等待所有结果后汇总返回。
+    """
+    from core.expert_registry import get_registry
+
+    expert_names = args.get("experts", [])
+    task = args.get("task", "")
+
+    if not expert_names or len(expert_names) < 2:
+        return {"success": False, "output": "experts 至少需要2个专家"}
+    if not task:
+        return {"success": False, "output": "task 参数不能为空"}
+
+    registry = get_registry()
+
+    # 验证所有专家都存在
+    profiles = []
+    for name in expert_names:
+        profile = registry.get(name)
+        if not profile:
+            available = ", ".join(e.name for e in registry.list())
+            return {
+                "success": False,
+                "output": f"专家 '{name}' 不存在。可用专家: {available}",
+            }
+        profiles.append(profile)
+
+    # 并行执行所有专家
+    results = {}
+    threads = []
+    lock = threading.Lock()
+
+    def _run_expert(profile):
+        prompt_parts = [profile.identity, "", f"[任务]\n{task}"]
+        prompt = "\n".join(prompt_parts)
+        delegate_args = {
+            "goal": prompt,
+            "context": "",
+            "tools": profile.tools if profile.tools else None,
+        }
+        result = handle_delegate(delegate_args)
+        with lock:
+            results[profile.name] = result
+
+    for profile in profiles:
+        t = threading.Thread(target=_run_expert, args=(profile,), daemon=True)
+        t.start()
+        threads.append(t)
+
+    for t in threads:
+        t.join(timeout=TIMEOUT)
+
+    # 汇总结果
+    summary_parts = []
+    all_success = True
+    for profile in profiles:
+        r = results.get(profile.name, {})
+        success = r.get("success", False)
+        output = r.get("output", r.get("result", ""))
+        if not success:
+            all_success = False
+        summary_parts.append(f"=== {profile.name} 专家分析 ===\n{output[:1000]}")
+
+    return {
+        "success": all_success,
+        "output": "\n\n".join(summary_parts),
+        "expert_count": len(profiles),
+        "experts": {p.name: results.get(p.name, {}) for p in profiles},
+    }
