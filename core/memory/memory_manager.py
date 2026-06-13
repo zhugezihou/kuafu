@@ -1,22 +1,23 @@
 """
-memory_manager.py — 夸父记忆系统 v3（Hindsight-Lite 四网络 + 置信度演化）
+memory_manager.py — 夸父记忆系统 v4（Hindsight-Lite + NMM 联想引擎）
 
-v3 相对 v2 的改进：
-  1. 四网络分层：World / Experience / Observation / Opinion
-  2. Opinion 置信度演化：store() 时自动 reinforce/weaken/contradict
-  3. LLM 萃取事实类型（降级到 rule-based 检测）
-  4. build_memory_block 带 [World]/[Opinion(c=0.85)] 标签注入
-  5. reflect() 调用 LLM 推理，返回观点更新
+v4 相对 v3 的改进：
+  1. NMM 语义联想引擎：store() 写入 NMM 神经记忆，search() 双引擎混合检索
+  2. NMM 联想注入到 build_memory_block，作为"潜意识线索"
+  3. reflect() 可传入 NMM ThinkingEngine 的结果
+  4. 向后兼容：NMM 作为可选特性，不启用时行为与 v3 一致
 
 架构：
   CacheRing (L0)     ← 当前 session 热点
   NetworkStore (L1)   ← 四网络存储（World/Experience/Observation）
   OpinionEngine (L1b) ← 信念管理 + 置信度演化
+  NMMEngine (L2)      ← NMM 神经记忆引擎（可选）
   EpisodicBuffer      ← 短期事件
 """
 
 import json
 import time
+import logging
 from pathlib import Path
 from typing import Any, Optional
 
@@ -27,6 +28,8 @@ from core.memory.hindsight_lite import (
     NETWORK_WORLD, NETWORK_EXPERIENCE, NETWORK_OBSERVATION, NETWORK_OPINION,
     detect_fact_type,
 )
+
+logger = logging.getLogger("kuafu.memory")
 
 DEFAULT_CACHE_CAPACITY = 20
 DEFAULT_EPISODIC_MAX = 30
@@ -86,12 +89,13 @@ class CacheRing:
 
 
 class MemoryManager:
-    """夸父记忆管理器 — v3（Hindsight-Lite）。"""
+    """夸父记忆管理器 — v4（Hindsight-Lite + NMM 联想引擎）。"""
 
     def __init__(self, db_path: Optional[Path] = None,
                  cache_capacity: int = DEFAULT_CACHE_CAPACITY,
                  episodic_max: int = DEFAULT_EPISODIC_MAX,
-                 llm_chat_fn: Optional[callable] = None):
+                 llm_chat_fn: Optional[callable] = None,
+                 enable_nmm: bool = False):
         # L1: SQLite 后端
         self._longterm = SQLiteFTSBackend(db_path)
         self._init_hindsight_tables()
@@ -106,6 +110,18 @@ class MemoryManager:
 
         # LLM 萃取（可选）
         self._llm_chat = llm_chat_fn
+
+        # NMM 引擎（可选，v4）
+        self._nmm = None
+        self._enable_nmm = enable_nmm
+        if enable_nmm:
+            try:
+                from core.memory.nmm_engine import NMMEngine
+                self._nmm = NMMEngine()
+                logger.info("[MemoryManager] NMM 引擎就绪")
+            except Exception as e:
+                logger.warning(f"[MemoryManager] NMM 引擎加载失败: {e}")
+                self._enable_nmm = False
 
         # 冷却期
         self._cooldown: dict[str, float] = {}
@@ -234,6 +250,15 @@ class MemoryManager:
         # EpisodicBuffer
         self._episodic.add_event(source or "memory", content, source=source, importance=importance)
 
+        # NMM 语义存储（v4）
+        if self._enable_nmm and self._nmm:
+            try:
+                nmm_result = self._nmm.store(content, text_id=mem_id)
+                if nmm_result.get('stored'):
+                    logger.debug(f"[MemoryManager] NMM 写入: {mem_id} (surprise={nmm_result['surprise']:.3f})")
+            except Exception as e:
+                logger.warning(f"[MemoryManager] NMM 写入失败: {e}")
+
         return mem_id
 
     def _detect_or_classify(self, content: str, context: str = "",
@@ -289,7 +314,37 @@ class MemoryManager:
 
     def search(self, query: str, limit: int = 5, min_importance: float = 0.0,
                source: str = "", include_cache: bool = True) -> list[dict]:
+        """搜索记忆（双引擎：FTS5 精确 + NMM 语义联想）。"""
         results = self._longterm.search(query, limit=limit, min_importance=min_importance, source=source)
+        seen_ids = {r["id"] for r in results}
+
+        # NMM 语义联想检索（v4）
+        if self._enable_nmm and self._nmm and query.strip():
+            try:
+                nmm_results = self._nmm.search(query, k=limit)
+                for nr in nmm_results:
+                    text_id = nr.get("text_id", "")
+                    if text_id and text_id not in seen_ids:
+                        # 通过 text_id 从 SQLite 读取原文
+                        text = self._load_by_id(text_id)
+                        if text:
+                            results.append({
+                                "id": text_id,
+                                "content": text,
+                                "source": "nmm_associative",
+                                "tags": [],
+                                "final_score": nr["score"],
+                                "time_decay": 1.0,
+                                "network": "nmm",
+                                "confidence": nr["score"],
+                            })
+                            seen_ids.add(text_id)
+                            if len(results) >= limit:
+                                break
+            except Exception as e:
+                logger.debug(f"[MemoryManager] NMM 检索异常: {e}")
+
+        # 缓存补全
         if include_cache and len(results) < limit:
             q = query.lower()
             for item in reversed(self._cache._items):
@@ -306,6 +361,16 @@ class MemoryManager:
                         break
         return results[:limit]
 
+    def _load_by_id(self, mem_id: str) -> Optional[str]:
+        """按 mem_id 从 SQLite 读取原文。"""
+        try:
+            row = self._longterm._conn.execute(
+                "SELECT content FROM memories WHERE id = ?", (mem_id,)
+            ).fetchone()
+            return row[0] if row else None
+        except Exception:
+            return None
+
     def search_opinions(self, query: str, limit: int = 5) -> list[dict]:
         return self._opinions.search_opinions(query, limit=limit)
 
@@ -313,26 +378,50 @@ class MemoryManager:
 
     def build_memory_block(self, budget_ratio: float = 1.0,
                            include_search: str = "") -> str:
-        """构建注入到 system prompt 的记忆块（Hindsight 四网络标签）。"""
-        parts = []
+        """构建注入到 system prompt 的记忆块（Hindsight 四网络标签 + NMM 弱联想）。
 
-        # L0: 热点缓存
+        防上下文污染设计：
+        - 所有记忆块标注来源标签，LLM 可区分事实与联想
+        - NMM 联想仅注入 1 条，标注为"弱联想"，提示可能不相关
+        - 超过 1 天的旧 Facts/Observations 减少注入量
+        """
+        parts = []
+        now = time.time()
+        ONE_DAY = 86400
+
+        # L0: 热点缓存（总是最新的）
         cache_block = self._cache.build_prompt_block(budget_ratio)
         if cache_block:
             parts.append(cache_block)
 
-        # World + Experience 事实
+        # World + Experience 事实（带时间衰减）
         if self._cache.count() < 5:
             world = self._networks.search(NETWORK_WORLD, query=include_search, limit=2)
             exp = self._networks.search(NETWORK_EXPERIENCE, query=include_search, limit=2)
             obs = self._networks.get_observations(limit=2)
 
             fact_lines = []
+            old_count = 0
             for f in world:
+                age = now - f.get("timestamp", 0)
+                if age > ONE_DAY:
+                    old_count += 1
+                    if old_count > 1:
+                        continue  # 超过 1 天的只保留 1 条
                 fact_lines.append(f"  [World] {f['fact'][:200]}")
             for f in exp:
+                age = now - f.get("timestamp", 0)
+                if age > ONE_DAY:
+                    old_count += 1
+                    if old_count > 1:
+                        continue
                 fact_lines.append(f"  [Experience] {f['fact'][:200]}")
             for f in obs:
+                age = now - f.get("timestamp", 0)
+                if age > ONE_DAY:
+                    old_count += 1
+                    if old_count > 1:
+                        continue
                 fact_lines.append(f"  [Observation] {f['fact'][:200]}")
             if fact_lines:
                 parts.append("=== 世界事实 ===\n" + "\n".join(fact_lines))
@@ -346,15 +435,34 @@ class MemoryManager:
                 op_lines.append(f"  [Opinion(c={o['confidence']:.2f}) {bar}] {o['text'][:200]}")
             parts.append("\n".join(op_lines))
 
-        # FTS5 按需检索
+        # FTS5 按需检索（精确匹配）
+        search_results = []
         if include_search:
             search_results = self._longterm.search(include_search, limit=3)
             if search_results:
                 sr_lines = [f"=== 相关记忆（搜索: {include_search}） ==="]
                 for r in search_results:
                     c = r.get("content", "")[:200]
-                    parts.append("  • " + c)
+                    sr_lines.append("  • " + c)
                 parts.append("\n".join(sr_lines))
+
+        # NMM 弱联想（v4，防污染设计）
+        if self._enable_nmm and self._nmm and include_search:
+            try:
+                nmm_assoc = self._nmm.search(include_search, k=3)
+                existing_texts = {r.get("content", "")[:200] for r in search_results}
+                nmm_lines = []
+                for na in nmm_assoc:
+                    text_id = na.get("text_id", "")
+                    if text_id:
+                        text = self._load_by_id(text_id)
+                        if text and text[:200] not in existing_texts:
+                            nmm_lines.append(f"  ~ {text[:200]}")
+                # 仅注入 1 条，且明确标注为弱联想（可能不相关）
+                if nmm_lines:
+                    parts.append("=== 弱联想（NMM，可能不相关）===\n" + nmm_lines[0])
+            except Exception:
+                pass
 
         return "\n\n".join(parts)
 
@@ -374,7 +482,15 @@ class MemoryManager:
         world = self._networks.search(NETWORK_WORLD, query=query, limit=2)
         exp = self._networks.search(NETWORK_EXPERIENCE, query=query, limit=2)
 
-        # 2. 构建推理 prompt
+        # 2. NMM 联想推理（v4）
+        nmm_reflection = {}
+        if self._enable_nmm and self._nmm:
+            try:
+                nmm_reflection = self._nmm.reflect_sync(query)
+            except Exception:
+                pass
+
+        # 3. 构建推理 prompt
         context_parts = []
         if facts:
             context_parts.append("## 相关记忆")
@@ -392,6 +508,13 @@ class MemoryManager:
             context_parts.append("## 已有信念（带置信度）")
             for o in opinions:
                 context_parts.append(f"- [{o['confidence']:.2f}] {o['text'][:200]}")
+        if nmm_reflection and nmm_reflection.get('mode') != 'unavailable':
+            context_parts.append(f"## NMM 联想（潜意识）")
+            context_parts.append(f"- 联想模式: {nmm_reflection['mode']}")
+            context_parts.append(f"- 认知置信度: {nmm_reflection.get('confidence', 0):.2f}")
+            if nmm_reflection.get('knowledge', {}).get('has_knowledge') is not None:
+                has_k = nmm_reflection['knowledge']['has_knowledge']
+                context_parts.append(f"- 相关知识: {'有' if has_k else '无'}")
 
         prompt = (
             "你是一个 AI 记忆推理模块。基于以下记忆回答用户问题。\n\n"
@@ -474,11 +597,18 @@ class MemoryManager:
     def maintenance(self) -> dict:
         expired = self._longterm.delete_expired()
         stats = self._longterm.get_stats()
+        nmm_stats = {}
+        if self._enable_nmm and self._nmm:
+            try:
+                nmm_stats = self._nmm.get_stats()
+            except Exception:
+                pass
         return {
             "expired": expired, "merged": 0,
             "total_valid": stats["valid"],
             "total_stored": self._total_stored,
             "total_dedup": self._total_dedup,
+            "nmm": nmm_stats,
             "cache_count": self._cache.count(),
             "longterm": stats,
         }

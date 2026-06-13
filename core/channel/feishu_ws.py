@@ -429,8 +429,8 @@ class FeishuWebSocketChannel(MessageChannel):
                                         }).encode("utf-8")
                                         import threading as _th
                                         import time as _tm
-                                        def _delayed_patch():
-                                            _tm.sleep(1.5)
+                                        def _update_card(silent=False):
+                                            _tm.sleep(0.5 if not silent else 2.0)
                                             _p_req = _Req(
                                                 f"https://open.feishu.cn/open-apis/im/v1/messages/{msg_id}",
                                                 data=_patch_body,
@@ -441,12 +441,16 @@ class FeishuWebSocketChannel(MessageChannel):
                                                 with _urlopen(_p_req, timeout=10) as _p_resp:
                                                     _p_data = json.loads(_p_resp.read())
                                                     if _p_data.get("code") == 0:
-                                                        print(f"[FeishuWS] 卡片更新成功")
+                                                        if not silent:
+                                                            print(f"[FeishuWS] 卡片更新成功")
                                                     else:
                                                         print(f"[FeishuWS] 卡片更新失败: code={_p_data.get('code')}")
                                             except Exception:
                                                 pass
-                                        _th.Thread(target=_delayed_patch, daemon=True).start()
+                                        # 第一次 PATCH 先刷新服务端缓存（不打印日志，避免"更新成功"混淆）
+                                        _th.Thread(target=lambda: (_update_card(silent=True)), daemon=True).start()
+                                        # 第二次 PATCH 延迟渲染，覆盖客户端回退
+                                        _th.Thread(target=lambda: (_update_card(silent=False)), daemon=True).start()
                                 except Exception as e2:
                                     print(f"[FeishuWS] 卡片更新异常: {e2}")
 

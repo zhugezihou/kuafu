@@ -20,7 +20,7 @@ import json
 import time
 import re
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Callable
 
 # 核心模块
 from core.identity import load_identity_statement, detect_identity_impersonation
@@ -236,26 +236,28 @@ class KuafuAgent:
 
         return "\n".join(parts)
 
-    def run(self, task: str, task_type: str = "generic", mode: str = "standard") -> dict:
+    def run(self, task: str, task_type: str = "generic", mode: str = "standard",
+            on_step: Optional[Callable[[str], None]] = None,
+            on_phase: Optional[Callable[[str], None]] = None,
+            resume_from: Optional[str] = None) -> dict:
         """执行一次任务。
-        
+
         支持两种模式：
         - standard: 标准 AgentLoop（常规对话 + 工具调用）
         - whiteboard: 白板模式（分解 → 逐步执行 → 汇总）
 
         如果用户输入的是问候/寒暄，直接回复，不进入 agent 循环。
-        
-        使用 AgentLoop 驱动完整的 LLM + 工具执行循环。
+
+        Args:
+            task: 用户任务
+            task_type: 任务类型
+            mode: 执行模式
+            on_step: 可选回调，每步进度推送
+            on_phase: 可选回调，阶段性总结推送（每 N 轮或关键节点触发）
+            resume_from: 从历史会话恢复上下文
 
         Returns:
-            {
-                "success": bool,
-                "result": str,
-                "turns": int,
-                "evolution": EvolutionEvent or None,
-                "errors": list[str],
-                "duration": float,
-            }
+            {"success": bool, "result": str, "turns": int, ...}
         """
         start = time.time()
         self._task_count += 1
@@ -295,18 +297,22 @@ class KuafuAgent:
             }
 
         # 创建 AgentLoop 执行
+        _on_step = on_step or (lambda msg: print(f"  {msg}", flush=True))
         loop = AgentLoop(
             llm=self.llm,
             memory=self.memory,
             evolution=self.evolution,
-            on_step=lambda msg: print(f"  {msg}", flush=True),
+            on_step=_on_step,
         )
+        # 注入阶段性总结回调
+        if on_phase:
+            loop.on_phase = on_phase
 
         # 根据 mode 选择执行路径
         if mode == "whiteboard":
             result = loop.run_whiteboard(task)
         else:
-            result = loop.run(task)
+            result = loop.run(task, resume_from=resume_from)
 
         # 补充元信息
         result["task_type"] = task_type
@@ -315,11 +321,15 @@ class KuafuAgent:
         # 回调：通知 evolution 已完成
         evolution_event = result.get("evolution")
         if evolution_event:
-            self.memory.remember(
-                key=f"evolution:L{evolution_event.level}:{self._task_count}",
-                content=f"L{evolution_event.level} 进化: {evolution_event.action}",
-                tags=["evolution", f"L{evolution_event.level}"],
-            )
+            # run_pipeline 返回 dict 或 EvolutionEvent 对象
+            evo_level = evolution_event.get("level", "info") if isinstance(evolution_event, dict) else getattr(evolution_event, "level", "info")
+            evo_action = evolution_event.get("action", "") if isinstance(evolution_event, dict) else getattr(evolution_event, "action", "")
+            if evo_action:
+                self.memory.remember(
+                    key=f"evolution:L{evo_level}:{self._task_count}",
+                    content=f"L{evo_level} 进化: {evo_action}",
+                    tags=["evolution", f"L{evo_level}"],
+                )
 
         return result
 
@@ -452,10 +462,13 @@ class KuafuAgent:
         # 进化回调
         evolution_event = result.get("evolution")
         if evolution_event:
-            self.memory.remember(
-                key=f"evolution:L{evolution_event.level}:conv:{self._task_count}",
-                content=f"L{evolution_event.level} 进化: {evolution_event.action}",
-                tags=["evolution", f"L{evolution_event.level}"],
+            evo_level = evolution_event.get("level", "info") if isinstance(evolution_event, dict) else getattr(evolution_event, "level", "info")
+            evo_action = evolution_event.get("action", "") if isinstance(evolution_event, dict) else getattr(evolution_event, "action", "")
+            if evo_action:
+                self.memory.remember(
+                    key=f"evolution:L{evo_level}:conv:{self._task_count}",
+                    content=f"L{evo_level} 进化: {evo_action}",
+                tags=["evolution", f"L{evo_level}"],
             )
 
         return result
@@ -671,7 +684,10 @@ def main():
         print(result.get("result", "(无结果)"))
         if result.get("evolution"):
             evo = result["evolution"]
-            print(f"\n🧬 进化: L{evo.level} — {evo.action}")
+            evo_level = evo.get("level", "info") if isinstance(evo, dict) else getattr(evo, "level", "info")
+            evo_action = evo.get("action", "") if isinstance(evo, dict) else getattr(evo, "action", "")
+            if evo_action:
+                print(f"\n🧬 进化: L{evo_level} — {evo_action}")
         quality = result.get("quality")
         if quality:
             bar = "🟩" * int(quality["score"]) + "⬜" * (10 - int(quality["score"]))

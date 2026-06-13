@@ -127,6 +127,7 @@ def test_agent_repr():
 
 def test_agent_prompt():
     """测试 Agent 系统 prompt 组装（不依赖 LLM）"""
+    os.environ.setdefault("KUAFU_MEMORY_MODE", "file")
     from core.main import KuafuAgent
 
     agent = KuafuAgent()
@@ -226,8 +227,8 @@ def test_agent_loop_tools():
     loop = AgentLoop()
     tools = loop.tools.get_schemas()
     tool_names = [t["function"]["name"] for t in tools]
-    expected = {"terminal", "finish",
-                "delegate_task", "invoke_expert", "invoke_experts",
+    expected = {"terminal", "finish", "send_file_to_user",
+                "invoke_expert", "invoke_experts",
                 "memory_store",
                 "memory_search", "memory_reflect",
                 "skill_rollback", "tool_search"}

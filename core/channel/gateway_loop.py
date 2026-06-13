@@ -32,6 +32,8 @@ class GatewayLoop:
         self.agent = agent
         self.channels = channel_manager
         self.poll_interval = poll_interval
+        self._session_map: dict[str, str] = {}
+        self._last_context_tokens: dict[str, str] = {}
         self._running = False
         self._thread: Optional[threading.Thread] = None
 
@@ -50,40 +52,55 @@ class GatewayLoop:
             if tool == "terminal":
                 title = "终端: " + args.get("command", "")[:60]
             detail = json.dumps(args, ensure_ascii=False)[:200]
-            args_summary = f"{title}\\n{detail}"
+            args_summary = f"{title}\n{detail}"
 
             # 只推送到触发审批的通道
-            # _last_message_source 记录了最近一条用户消息来自哪个通道
             triggered_platform = getattr(self, '_last_message_source', None) or "feishu"
 
+            # 只推送到触发审批的通道
             for name in [triggered_platform]:
                 channel = self.channels.get(name)
                 if channel:
                     try:
                         chat_id = None
+                        ctx_token = ""
                         if hasattr(self, '_last_chat_ids') and name in self._last_chat_ids:
                             chat_id = self._last_chat_ids[name]
                         elif hasattr(self, '_last_chat_id'):
                             chat_id = self._last_chat_id
+                        # 带上 context_token（微信发送需要）
+                        if hasattr(self, '_last_context_tokens') and name in self._last_context_tokens:
+                            ctx_token = self._last_context_tokens[name]
 
                         # 飞书 → 卡片按钮，用朝堂群 ID 作为默认
                         if name == "feishu":
-                            feishu_chat_id = chat_id or os.environ.get("FEISHU_CHAT_ID", "oc_d860f9f653e3421db6ea419a81414cf6")
+                            # 飞书用独立 chat_id（微信的 chat_id 对飞书无效）
+                            feishu_chat_id = ""
+                            if hasattr(self, '_last_chat_ids') and name in self._last_chat_ids:
+                                feishu_chat_id = self._last_chat_ids[name]
+                            if not feishu_chat_id:
+                                feishu_chat_id = os.environ.get("FEISHU_CHAT_ID", "oc_d860f9f653e3421db6ea419a81414cf6")
                             kwargs = {"chat_id": feishu_chat_id}
                             if hasattr(channel, 'send_approval_card'):
-                                channel.send_approval_card(
+                                result = channel.send_approval_card(
                                     approval_id=req_id,
                                     tool=title,
                                     args_summary=args_summary,
                                     chat_id=feishu_chat_id,
                                 )
+                                if not result.success:
+                                    print(f"[GatewayLoop] ⚠️ 飞书审批卡片推送失败: {result.error}")
                             else:
-                                channel.send("🔐 | " + title + " | " + detail, **kwargs)
+                                result = channel.send("🔐 | " + title + " | " + detail, **kwargs)
+                                if not result.success:
+                                    print(f"[GatewayLoop] ⚠️ 飞书审批文本推送失败: {result.error}")
                         else:
                             # 微信/其他 → 短指令文本，用4位短ID方便输入
                             kwargs = {}
                             if chat_id:
                                 kwargs['chat_id'] = chat_id
+                            if ctx_token:
+                                kwargs['context_token'] = ctx_token
                             import hashlib as _hlib
                             short_id = req_id[-4:] if len(req_id) > 4 else req_id
                             msg = (
@@ -96,7 +113,9 @@ class GatewayLoop:
                                 + f"回复「1 {short_id}」批准\n"
                                 + f"回复「0 {short_id}」拒绝"
                             )
-                            channel.send(msg, **kwargs)
+                            result = channel.send(msg, **kwargs)
+                            if not result.success:
+                                print(f"[GatewayLoop] ⚠️ 微信审批推送失败: {result.error}")
                     except Exception as e:
                         print(f"[GatewayLoop] ⚠️ 审批推送失败 ({name}): {e}")
 
@@ -201,11 +220,23 @@ class GatewayLoop:
         # 记录最近消息的来源通道（用于审批推送通道选择）
         self._last_message_source = msg.platform
 
+        # 设置环境变量，供 send_file_to_user 等工具读取触发通道
+        os.environ["KUAFU_CURRENT_PLATFORM"] = msg.platform
+        if msg.chat_id:
+            os.environ["KUAFU_CURRENT_CHAT_ID"] = msg.chat_id
+
         # 记录最近消息的来源（用于审批推送） — 按通道分别保存
         if not hasattr(self, '_last_chat_ids'):
             self._last_chat_ids = {}
         self._last_chat_ids[msg.platform] = msg.chat_id
         self._last_chat_id = msg.chat_id  # 保留向后兼容
+        # 记录 context_token（微信发送需要）
+        if hasattr(msg, 'raw') and msg.raw and "context_token" in msg.raw:
+            self._last_context_tokens[msg.platform] = msg.raw["context_token"]
+
+        # 跨 session 上下文关联：同一用户/频道的连续消息关联到上一个 session
+        chat_key = f"{msg.platform}:{msg.chat_id}"
+        resume_from = self._session_map.get(chat_key)
 
         # 审批决策检测：批准/拒绝 + req_id
         from core.approval import check_approval_decision as _check_dec, handle_approval_decision as _handle_dec
@@ -217,10 +248,45 @@ class GatewayLoop:
             return
 
         try:
-            result = self.agent.run(text)
+            # 实时进度推送：每步都通过消息通道发送
+            channel = self.channels.get(msg.platform)
+
+            import time as _time
+
+            def _on_step(step_text: str):
+                """每步进度仅打印终端，不推送消息"""
+                pass
+
+            def _on_phase(summary: str):
+                """阶段性总结推送到消息通道（不节流、不过滤）"""
+                try:
+                    if channel:
+                        kwargs = {"chat_id": msg.chat_id}
+                        if msg.raw and "context_token" in msg.raw:
+                            kwargs["context_token"] = msg.raw["context_token"]
+                        result = channel.send(f"\n{summary}\n", **kwargs)
+                        if not result.success:
+                            print(f"[GatewayLoop] ⚠️ 阶段总结推送失败: {result.error}")
+                except Exception as e:
+                    print(f"[GatewayLoop] ⚠️ 阶段总结推送异常: {e}")
+
+            # 注入当前消息的通道信息，供 finish 工具发文件时使用
+            self.agent._current_platform = msg.platform
+            self.agent._current_chat_id = msg.chat_id
+            if msg.raw and "context_token" in msg.raw:
+                self.agent._current_context_token = msg.raw["context_token"]
+            else:
+                self.agent._current_context_token = ""
+
+            result = self.agent.run(text, on_step=_on_step, on_phase=_on_phase, resume_from=resume_from)
             reply = result.get("result", "")
             if not reply:
                 return
+
+            # 保存 session_id 供后续消息关联上下文
+            session_id = result.get("session_id", "")
+            if session_id:
+                self._session_map[chat_key] = session_id
 
             # 回消息到来源通道
             channel = self.channels.get(msg.platform)

@@ -95,9 +95,10 @@ class Observation:
         if self.tool_error_count > 0 and self.tool_calls >= 2:
             return True
 
-        # 连续失败 > 5 次 → 这个方向学不会，不再触发
+        # 连续失败 > 10 次 → 已经学不会了，停止触发
+        # 但如果失败且没有工具错误（如审批拒绝），可能是外部因素，仍然尝试
         if self.is_repeated_failure:
-            if self.task_type_history >= 5 and self.tool_error_count == 0:
+            if self.task_type_history >= 10 and self.tool_error_count == 0 and self.tool_calls < 2:
                 return False
             return True
 

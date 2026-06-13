@@ -25,7 +25,7 @@ logger = logging.getLogger("kuafu.subagent")
 
 MAX_CONCURRENT = 3
 MAX_TURNS = 10  # 子 Agent 最大轮次
-TIMEOUT = 300
+TIMEOUT = 600  # 子 Agent 超时（秒）
 
 # P1-2: 子 Agent Profile 目录
 SUBAGENT_PROFILES_DIR = Path(__file__).resolve().parent.parent / "subagent_profiles"
@@ -329,6 +329,8 @@ def handle_delegate(args: dict) -> dict:
         )
         # 跳过 MCP 加载（子 Agent 不需要外部工具绑定）
         sub_loop.mcp_bridge = None
+        # 子 Agent 跳过 MCP 初始化（不加载 mcp_config.yaml）
+        sub_loop._skip_mcp = True
 
         # ── P2-1: 转录所有子 Agent 的对话到侧链文件 ──
         original_log = sub_loop._log
@@ -704,14 +706,11 @@ def handle_invoke_expert(args: dict) -> dict:
             "output": f"专家 '{expert_name}' 不存在。可用专家: {available}",
         }
 
-    # 把专家身份 + 任务拼成子 Agent 的 prompt
-    prompt_parts = [profile.identity, "", f"[任务]\n{task}"]
-    prompt = "\n".join(prompt_parts)
-
-    # 委派给子 Agent
+    # 把专家身份通过 context 注入（不作为 task 的一部分，避免污染 system prompt 搜索）
+    # task 单独作为 goal 传给子 Agent
     delegate_args = {
-        "goal": prompt,
-        "context": "",
+        "goal": task,
+        "context": profile.identity,
         "tools": profile.tools if profile.tools else None,
     }
     result = handle_delegate(delegate_args)
@@ -758,11 +757,9 @@ def handle_invoke_experts(args: dict) -> dict:
     lock = threading.Lock()
 
     def _run_expert(profile):
-        prompt_parts = [profile.identity, "", f"[任务]\n{task}"]
-        prompt = "\n".join(prompt_parts)
         delegate_args = {
-            "goal": prompt,
-            "context": "",
+            "goal": task,
+            "context": profile.identity,
             "tools": profile.tools if profile.tools else None,
         }
         result = handle_delegate(delegate_args)

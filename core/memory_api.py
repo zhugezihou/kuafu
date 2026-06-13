@@ -696,11 +696,14 @@ class MemoryAPI:
         parts = []
 
         # 搜索最近记忆 + 按需检索
+        # 仅走 NMM（如果 NMM 不工作，报错即可发现）
         try:
-            recent = self._file_backend.search(
-                include_search if include_search else "",
-                limit=max(1, int(5 * budget_ratio)),
-            )
+            recent = None
+            if self._mode == "nmm" and self._nmm_backend:
+                recent = self._nmm_backend.search(
+                    include_search if include_search else "",
+                    limit=max(1, int(5 * budget_ratio)),
+                )
             if recent:
                 lines = ["=== 相关记忆 ==="]
                 for r in recent:

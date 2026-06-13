@@ -53,6 +53,7 @@ class ToolExecutionRequest:
     args: dict
     tool_call_id: str = ""
     source: str = "llm"
+    req_id: str = ""  # 审批请求 ID（ESCALATE 时设置）
     metadata: dict = field(default_factory=dict)
 
 
@@ -133,6 +134,26 @@ class ToolOrchestrator:
         if decision == ApprovalDecision.DENY:
             return self._result(req, success=False,
                                 output="🔒 被审批系统拒绝", decision=ApprovalDecision.DENY)
+        if decision == ApprovalDecision.ESCALATE:
+            # 审批已提交，等待用户决策
+            if req.req_id:
+                from core.approval import ApprovalManager
+                import time as _time
+                deadline = _time.time() + 300  # 5 分钟超时
+                while _time.time() < deadline:
+                    req_info = ApprovalManager._resolve(req.req_id)
+                    if req_info and req_info.status == "approved":
+                        logger.info(f"✅ 审批通过: {req.req_id}")
+                        break
+                    elif req_info and req_info.status == "rejected":
+                        logger.info(f"❌ 审批拒绝: {req.req_id}")
+                        return self._result(req, success=False,
+                                            output="🔒 审批被拒绝", decision=ApprovalDecision.DENY)
+                    _time.sleep(1)
+                else:
+                    logger.info(f"⏰ 审批超时: {req.req_id}")
+                    return self._result(req, success=False,
+                                        output="⏰ 审批超时", decision=ApprovalDecision.DENY)
 
         safety = self._phase_safety(req)
         if safety == SafetyDecision.BLOCK:
@@ -172,14 +193,9 @@ class ToolOrchestrator:
         # ESCALATE → 需要用户审批
         # 触发审批回调（飞书/微信等通道通知）
         if policy_decision.req_id:
-            # 发射审批请求钩子
-            trigger_sync("on_approval_request", {
-                "tool": req.tool_name,
-                "args": json.dumps(req.args, ensure_ascii=False)[:500],
-                "req_id": policy_decision.req_id,
-                "reason": policy_decision.reason,
-            })
-            # 旧回调兼容
+            # 保存 req_id 到请求对象，供 execute 等待时使用
+            req.req_id = policy_decision.req_id
+            # 通过 ToolOrchestrator 的审批回调通知通道推送
             if hasattr(self, '_approval_callback') and self._approval_callback:
                 try:
                     self._approval_callback(req.tool_name, req.args, policy_decision.req_id)

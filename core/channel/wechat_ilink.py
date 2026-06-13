@@ -123,7 +123,10 @@ class WeChatILinkChannel(MessageChannel):
             except Exception:
                 return {"errcode": e.code, "errmsg": str(e)}
         except Exception as e:
-            return {"errcode": -1, "errmsg": str(e)}
+            import traceback
+            tb = traceback.format_exc()
+            err_type = type(e).__name__
+            return {"errcode": -1, "errmsg": f"[{err_type}] {e}", "_traceback": tb[:500]}
 
     def get_qrcode_token(self) -> str:
         """获取登录二维码 token（不是图片 URL）。
@@ -282,12 +285,133 @@ class WeChatILinkChannel(MessageChannel):
             "msg": msg,
             "base_info": {"channel_version": "1.0.2"},
         })
-        ok = result.get("errcode") == 0
+        # iLink sendmessage API 成功时返回 {}（空 JSON），不是 {"errcode": 0}
+        # 所以 {} 或 {"errcode": 0} 都视为成功
+        ok = result.get("errcode") == 0 or result == {}
         return SendResult(
             success=ok,
             platform="wechat",
             error="" if ok else result.get("errmsg", ""),
         )
+
+    def send_file(self, file_path: str, chat_id: str, context_token: str = "") -> SendResult:
+        """发送文件到微信会话。
+
+        注意：iLink bot API 不支持直接发送文件本体（无文件上传 API）。
+        文件需要通过 encrypt_query_param（微信客户端加密生成）引用，
+        bot 无法自行构造。
+        因此只能返回不支持，由调用方降级为发送文本通知或转飞书。
+        """
+        return SendResult(success=False, platform="wechat",
+                          error="iLink 不支持 bot 发送文件（无文件上传 API）")
+
+    def test_file_types(self, file_path: str, chat_id: str, context_token: str = "") -> str:
+        """批量测试各种 item.type 和 message_type 组合，找出文档文件正确的发文件 type。
+
+        枚举 item_list[].type = 1~7 和 message_type = 1~3 的笛卡尔积，
+        每种组合发一个测试消息，用户看微信端哪种能正常显示为文档/文件。
+        """
+        if not self._bot_token:
+            return "微信未登录"
+        
+        path = Path(file_path).expanduser().resolve()
+        if not path.exists():
+            return f"文件不存在: {file_path}"
+        
+        import base64
+        file_bytes = path.read_bytes()
+        file_b64 = base64.b64encode(file_bytes).decode()
+        file_md5 = hashlib.md5(file_bytes).hexdigest()
+        results = []
+
+        # item.type 类型尝试
+        item_type_combos = [
+            # (item_type, payload_field, payload_value)
+            (1, "text_item", {"text": f"[文件测试] {path.name}"}),
+            (2, "image_item", {"file_name": path.name, "file_data": file_b64, "file_size": len(file_bytes), "file_md5": file_md5}),
+            (3, "video_item", {"file_name": path.name, "file_data": file_b64, "file_size": len(file_bytes), "file_md5": file_md5}),
+            (4, "file_item", {"file_name": path.name, "file_data": file_b64, "file_size": len(file_bytes), "file_md5": file_md5}),
+            (5, "file_item", {"file_name": path.name, "file_data": file_b64, "file_size": len(file_bytes), "file_md5": file_md5}),
+            (6, "link_item", {"desc": path.name, "url": "https://example.com/doc"}),
+        ]
+
+        msg_type_options = [1]  # message_type=1（用户消息，所有接收到的消息都是1）
+
+        for idx, (item_type, _, _) in enumerate(item_type_combos[:7]):
+            for msg_type in msg_type_options:
+                # 构建 item
+                payload_field = item_type_combos[idx][1]
+                payload_value = item_type_combos[idx][2]
+                item = {"type": item_type, payload_field: payload_value}
+                
+                msg = {
+                    "to_user_id": chat_id,
+                    "from_user_id": "",
+                    "client_id": str(uuid.uuid4()),
+                    "message_type": msg_type,
+                    "message_state": 2,
+                    "context_token": context_token,
+                    "item_list": [item],
+                }
+                r = self._request("sendmessage", {
+                    "msg": msg,
+                    "base_info": {"channel_version": "1.0.2"},
+                })
+                errcode = r.get("errcode", -1)
+                errmsg = r.get("errmsg", "")
+                ok = errcode == 0
+                status = "✅" if ok else "❌"
+                results.append(f"  [{idx+1}] item_type={item_type} msg_type={msg_type} — {status} errcode={errcode} {errmsg[:80]}")
+
+        # 额外测试：item_list 中同时放 file_item + text_item（混合）
+        mixed_item = [
+            {"type": 1, "text_item": {"text": f"📎 {path.name}"}},
+            {"type": 4, "file_item": {"file_name": path.name, "file_data": file_b64, "file_size": len(file_bytes), "file_md5": file_md5}},
+        ]
+        msg = {
+            "to_user_id": chat_id,
+            "from_user_id": "",
+            "client_id": str(uuid.uuid4()),
+            "message_type": 2,
+            "message_state": 2,
+            "context_token": context_token,
+            "item_list": mixed_item,
+        }
+        r = self._request("sendmessage", {
+            "msg": msg,
+            "base_info": {"channel_version": "1.0.2"},
+        })
+        errcode = r.get("errcode", -1)
+        errmsg = r.get("errmsg", "")
+        ok = errcode == 0
+        status = "✅" if ok else "❌"
+        results.append(f"  [8] item_type=1+5(混合) msg_type=2 — {status} errcode={errcode} {errmsg[:80]}")
+
+        # 额外测试：type=5 + message_type=3（文件消息类型）
+        for msg_type in [1, 3]:
+            item = {"type": 5, "file_item": {"file_name": path.name, "file_data": file_b64, "file_size": len(file_bytes), "file_md5": file_md5}}
+            msg = {
+                "to_user_id": chat_id,
+                "from_user_id": "",
+                "client_id": str(uuid.uuid4()),
+                "message_type": msg_type,
+                "message_state": 2,
+                "context_token": context_token,
+                "item_list": [item],
+            }
+            r = self._request("sendmessage", {
+                "msg": msg,
+                "base_info": {"channel_version": "1.0.2"},
+            })
+            errcode = r.get("errcode", -1)
+            errmsg = r.get("errmsg", "")
+            ok = errcode == 0
+            status = "✅" if ok else "❌"
+            results.append(f"  [9.{msg_type}] item_type=5 msg_type={msg_type} — {status} errcode={errcode} {errmsg[:80]}")
+
+        report = "微信文件发送 type 测试结果：\n" + "\n".join(results)
+        print(f"[WeChat] 测试完成\n{report}")
+        return report
 
     # ── 消息接收 ──────────────────────────────────────────────
 
@@ -390,11 +514,8 @@ class WeChatILinkChannel(MessageChannel):
             ctx_token = msg_data.get("context_token", "")
             msg_id = msg_data.get("client_id", "")
 
-            print(f"[WeChat] 收到消息: type={msg_type} state={msg_state} from={from_user} text={str(msg_data.get('item_list', []))[:120]}")
+            print(f"[WeChat] 收到消息: type={msg_type} state={msg_state} from={from_user} items={str(msg_data.get('item_list', []))[:120]}")
 
-            # 只处理用户发来的文本消息
-            if msg_type != 1:
-                return
             if msg_state != 2:
                 return
             if not from_user:
@@ -403,13 +524,46 @@ class WeChatILinkChannel(MessageChannel):
             # 提取文本内容
             items = msg_data.get("item_list", [])
             text = ""
+
+            # 打印完整 items 结构（所有消息类型），便于排查 file_item 内部字段
+            print(f"[WeChat] 📋 完整 item_list: {json.dumps(items, ensure_ascii=False)[:800]}")
+
             for item in items:
                 if item.get("type") == 1:
                     text_item = item.get("text_item", {})
                     text = text_item.get("text", "")
                     break
-            if not text:
+
+            # 对非文本消息（图片 type=2 / 语音 type=3 / 文档 type=4 / 视频 type=5），
+            # 转为文本描述送入 LLM。判断依据是 item_list[].type 而不是 msg_type
+            # （因为 msg_type 始终=1，只有 item.type 区分消息类型）
+            is_non_text = not text and items and items[0].get("type", 0) in (2, 3, 4, 5, 6, 7, 8)
+            if is_non_text:
+                # 打印完整 item_list 结构（含 file_item 内部字段）
+                full_items = json.dumps(msg_data.get("item_list", []), ensure_ascii=False)[:500]
+                print(f"[WeChat] 📎 非文本消息 type={msg_type} items={full_items}")
+                # 仍然构造文本描述消息，让 LLM 知道收到了什么
+                type_labels = {2: "图片", 3: "视频", 4: "音频", 5: "文件", 6: "位置", 7: "名片", 8: "系统消息"}
+                label = type_labels.get(msg_type, f"未知({msg_type})")
+                text = f"[微信 {label}] " + "、".join(
+                    i.get("file_item", {}).get("file_name", "")
+                    or i.get("image_item", {}).get("file_name", "")
+                    or i.get("video_item", {}).get("file_name", "")
+                    or i.get("audio_item", {}).get("file_name", "")
+                    or "片段"
+                    for i in items if i
+                )
+                if not text.strip():
+                    text = f"[微信 {label}]"
+                print(f"[WeChat] 转为文本: {text}")
+                # 继续走后续处理流程，让 LLM 处理这个描述
+            elif not text:
                 return
+
+            # 保存最近会话信息，供 send_file_to_user 工具使用
+            self._last_chat_id = from_user
+            self._last_context_token = ctx_token
+            self._save_state()
 
             # 检查是否审批决策回复（1 req_id / 批准 req_id）
             try:
@@ -449,8 +603,14 @@ class WeChatILinkChannel(MessageChannel):
                 "uin": self._uin,
                 "bot_open_id": self._bot_open_id,
                 "poll_buf": self._poll_buf,
+                "last_chat_id": getattr(self, '_last_chat_id', ''),
+                "last_context_token": getattr(self, '_last_context_token', ''),
                 "updated_at": datetime.now().isoformat(),
             }
+            # 重要：token 为空时不写文件，防止 token 被空值覆盖（网关重启后 token 在内存中，但 state 文件可能被清空）
+            if not state["bot_token"]:
+                print(f"[WeChat] _save_state 跳过：bot_token 为空，不覆盖 state 文件")
+                return
             self._state_file.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
         except Exception as e:
             logger.warning(f"[WeChat] 状态保存失败: {e}")

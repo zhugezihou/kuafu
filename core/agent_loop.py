@@ -23,6 +23,7 @@ from core.evolution import EvolutionEngine
 from core.observer import Observer
 from core.tool_registry import ToolRegistry
 from core.session_store import SessionStore
+from core.subagent import get_invoke_expert_schema, get_invoke_experts_schema
 from core.context_compress import ContextCompressor, LLMSummarizer, ToolResultStore, ContextCollapse, CollapseResult, budget_reduce_output
 from core.budget_allocator import BudgetAllocator, BudgetSnapshot, BudgetPolicy
 from core.prompt_template import PromptManager, PromptCache, Section, build_reminders
@@ -66,6 +67,7 @@ _TASK_TYPE_KEYWORDS = {
     "troubleshooting": ["报错", "错误", "失败", "异常", "连不上", "超时", "挂掉了", "崩溃", "起不来"],
     "devops": ["部署", "发布", "配置", "安装", "docker", "服务器", "nginx", "数据库", "环境", "docker-compose"],
     "analysis": ["对比", "比较", "评估", "优劣势", "哪个好", "区别", "差异"],
+    "file_delivery": ["发给我", "传文件", "发我", "发给", "发送文件", "文档", "word", "docx", "pdf", "给我"],
 }
 
 def detect_task_type(task: str) -> str:
@@ -142,7 +144,7 @@ class AgentLoop:
     ):
         self.max_turns = max_turns
         self.llm = llm or LLMClient()
-        self.memory = memory or MemoryAPI()
+        self.memory = memory or MemoryAPI(enable_nmm=True)
         self.evolution = evolution or EvolutionEngine(memory=memory, llm=self.llm)
         self.tools = tool_registry or ToolRegistry()
         self.sessions = session_store or SessionStore()
@@ -171,6 +173,7 @@ class AgentLoop:
         self._register_skill_rollback()
 
         # ── Hook 事件系统（只需一次） ──
+        self.hooks_enabled = False
         if self._is_top_level:
             self.hooks_enabled = True
             try:
@@ -190,6 +193,13 @@ class AgentLoop:
 
         # ── 审批通知回调 ──
         self.on_approval_request: Optional[Callable[[str, dict, str], None]] = None
+        # 尝试从全局审批回调同步（GatewayLoop 可能已注入）
+        try:
+            from core.approval import ON_APPROVAL_REQUEST_CB
+            if ON_APPROVAL_REQUEST_CB and not self.on_approval_request:
+                self.on_approval_request = ON_APPROVAL_REQUEST_CB
+        except ImportError:
+            pass
 
         # ── 实时事件回调 ──
         self.on_llm_start: Optional[Callable[[int], None]] = None
@@ -199,6 +209,7 @@ class AgentLoop:
         self.on_turn: Optional[Callable[[int, dict], None]] = None
         self.on_error: Optional[Callable[[str], None]] = None
         self.on_finish: Optional[Callable[[dict], None]] = None
+        self.on_phase: Optional[Callable[[str], None]] = None  # v2: 阶段性总结
 
         # 上下文压缩器 — 使用动态检测的阈值
         self.compressor = ContextCompressor(
@@ -240,20 +251,31 @@ class AgentLoop:
         self.on_tool_end: Optional[Callable[[str, dict, float, str], None]] = None
 
     def _register_delegate_tool(self):
-        """注册子 Agent 相关工具（delegate_task + invoke_expert + invoke_experts）。
+        """注册专家工具（invoke_expert + invoke_experts）。
 
-        注入父 Agent 的 LLM 配置，确保子 Agent 与父 Agent 使用相同的模型后端。
+        主 Agent 将任务委派给领域专家执行。
+        专家直接在父 Agent 的 LLM 上做独立推理，不创建子 Agent。
         """
+        # 子 Agent 不注册委托工具
+        if not self._is_top_level:
+            return
         try:
-            from core.subagent import (
-                get_delegate_schema, handle_delegate,
-                get_invoke_expert_schema, handle_invoke_expert,
-                get_invoke_experts_schema, handle_invoke_experts,
-                PARENT_LLM_CONFIG,
-            )
             from core.expert_registry import get_registry
 
-            # 注入父 Agent 的运行时配置
+            # ── 注册 invoke_expert（单个专家） ──
+            expert_schema = get_invoke_expert_schema()
+            self.tools.register("invoke_expert", expert_schema, self._handle_invoke_expert)
+
+            # 注册 invoke_experts（并行多专家）
+            experts_schema = get_invoke_experts_schema()
+            self.tools.register("invoke_experts", experts_schema, self._handle_invoke_experts)
+
+            registry = get_registry()
+            expert_count = len(registry.list())
+            if expert_count > 0:
+                self._log(f"🧩 专家系统就绪: {expert_count} 个专家可用")  # pragma: no cover
+
+            # 注入父 Agent 的运行时配置（供专家使用）
             import core.subagent as _sa
             _sa.PARENT_LLM_CONFIG = {
                 "base_url": self.llm.base_url,
@@ -261,28 +283,116 @@ class AgentLoop:
                 "max_tokens": self.llm.max_tokens,
                 "temperature": self.llm.temperature,
             }
-
-            # 注册 delegate_task（旧接口，向后兼容）
-            schema = get_delegate_schema()
-            self.tools.register("delegate_task", schema, handle_delegate)
-
-            # 注册 invoke_expert（新接口）
-            expert_schema = get_invoke_expert_schema()
-            self.tools.register("invoke_expert", expert_schema, handle_invoke_expert)
-
-            # 注册 invoke_experts（并行多专家）
-            experts_schema = get_invoke_experts_schema()
-            self.tools.register("invoke_experts", experts_schema, handle_invoke_experts)
-
-            if self._is_top_level:
-                registry = get_registry()
-                expert_count = len(registry.list())
-                self._log(f"🧩 专家系统就绪: {expert_count} 个专家可用")  # pragma: no cover
         except Exception as e:  # pragma: no cover
             self._log(f"⚠️ 专家系统注册失败: {e}")
 
         # ── P1-3: Memory 工具注册（memory_store / memory_search / memory_reflect） ──
         self._register_memory_tools()
+
+    # ── 专家执行（在父 Agent 内完成，不创建子 Agent） ──
+
+    def _handle_invoke_expert(self, args: dict) -> dict:
+        """执行单个专家任务。
+
+        直接在当前 Agent 的 LLM 上做独立推理。
+        专家 identity + task 作为一次 chat 调用，不污染主对话上下文。
+        """
+        from core.expert_registry import get_registry
+
+        expert_name = args.get("expert", "")
+        task = args.get("task", "")
+
+        if not expert_name or not task:
+            return {"success": False, "output": "expert 和 task 参数不能为空"}
+
+        registry = get_registry()
+        profile = registry.get(expert_name)
+        if not profile:
+            available = ", ".join(e.name for e in registry.list())
+            return {
+                "success": False,
+                "output": f"专家 '{expert_name}' 不存在。可用专家: {available}",
+            }
+
+        # 一次独立 LLM 调用：identity 作为 system prompt，task 作为用户输入
+        try:
+            messages = [
+                {"role": "system", "content": profile.identity},
+                {"role": "user", "content": task},
+            ]
+            resp = self.llm.chat(messages)
+            content = ""
+            if isinstance(resp, dict):
+                content = resp.get("content", "")
+            elif isinstance(resp, str):
+                content = resp
+            return {
+                "success": True,
+                "output": content,
+                "expert": expert_name,
+            }
+        except Exception as e:
+            return {"success": False, "output": f"专家执行异常: {e}"}
+
+    def _handle_invoke_experts(self, args: dict) -> dict:
+        """并行执行多个专家任务。"""
+        from core.expert_registry import get_registry
+
+        expert_names = args.get("experts", [])
+        task = args.get("task", "")
+
+        if not expert_names or len(expert_names) < 2:
+            return {"success": False, "output": "experts 至少需要2个专家"}
+        if not task:
+            return {"success": False, "output": "task 参数不能为空"}
+
+        registry = get_registry()
+        import concurrent.futures
+
+        results = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(expert_names)) as executor:
+            future_map = {}
+            for name in expert_names:
+                profile = registry.get(name)
+                if not profile:
+                    results[name] = {"success": False, "output": f"专家 '{name}' 不存在"}
+                    continue
+                fut = executor.submit(self._call_expert_once, profile.identity, task)
+                future_map[fut] = name
+
+            for fut in concurrent.futures.as_completed(future_map):
+                name = future_map[fut]
+                try:
+                    results[name] = fut.result()
+                except Exception as e:
+                    results[name] = {"success": False, "output": str(e)}
+
+        return {
+            "success": True,
+            "output": "\n\n".join(
+                f"【{name}】\n{r.get('output', r.get('result', ''))}"
+                for name, r in results.items()
+                if r.get("success")
+            ),
+            "results": results,
+        }
+
+    def _call_expert_once(self, identity: str, task: str) -> dict:
+        """一次独立 LLM 推理（供 ThreadPoolExecutor 调用）。"""
+        try:
+            messages = [
+                {"role": "system", "content": identity},
+                {"role": "user", "content": task},
+            ]
+            resp = self.llm.chat(messages)
+            content = ""
+            if isinstance(resp, dict):
+                content = resp.get("content", "")
+            elif isinstance(resp, str):
+                content = resp
+            return {"success": True, "output": content}
+        except Exception as e:
+            return {"success": False, "output": str(e)}
 
     def _register_skill_rollback(self):  # pragma: no cover
         """注册 skill_rollback 工具（回滚最后一条 skill 进化）。"""
@@ -360,6 +470,8 @@ class AgentLoop:
 
     def _init_mcp(self):  # pragma: no cover
         """初始化 MCP 桥接，加载配置并注册工具。"""
+        if getattr(self, '_skip_mcp', False):
+            return
         mcp_config_path = ROOT_DIR / "core" / "mcp_config.yaml"
         if not mcp_config_path.exists():
             return
@@ -983,6 +1095,8 @@ class AgentLoop:
 
         # 执行循环
         last_tool_results: list[str] = []
+        _phase_tools_run = []  # 工具执行记录
+        _phase_contexts: list[str] = []  # 本阶段的 LLM 回复/关键发现
         for turn in range(self.max_turns):
             turn_count = turn + 1
 
@@ -1126,6 +1240,11 @@ class AgentLoop:
                     break
 
             # 添加 assistant 消息
+            # 记录 LLM 回复内容到阶段上下文
+            llm_content = response.get("content", "") or ""
+            if llm_content.strip() and "finish" not in str(response.get("tool_calls", [])):
+                _phase_contexts.append(f"第 {turn_count} 轮: {llm_content[:200]}")
+
             assistant_msg = {"role": "assistant", "content": response["content"]}
             if response.get("tool_calls"):
                 assistant_msg["tool_calls"] = [
@@ -1170,6 +1289,37 @@ class AgentLoop:
                         else:
                             final_result = args.get("result", "")
                             final_summary = args.get("summary", "")
+                        # finish 中带 send_files 参数 → 自动发送文件
+                        send_files = args.get("send_files", [])
+                        if send_files:
+                            self._log(f"📎 finish 中带文件发送请求: {send_files}")
+                            # 根据触发通道选择发送方式
+                            platform = getattr(self, '_current_platform', '') or os.environ.get('KUAFU_CURRENT_PLATFORM', '')
+                            for fp in send_files:
+                                p = Path(fp).expanduser().resolve()
+                                if not p.exists() or not p.is_file():
+                                    self._log(f"⚠️ 文件不存在: {fp}")
+                                    continue
+                                if platform == "wechat":
+                                    from core.tool_registry import ToolRegistry
+                                    r = ToolRegistry._send_via_wechat(str(p))
+                                    if r["success"]:
+                                        self._log(f"✅ 文件已通过微信发送: {p.name}")
+                                    else:
+                                        self._log(f"⚠️ 微信发送失败: {r['output']}")
+                                elif platform == "feishu":
+                                    chat_id = getattr(self, '_current_chat_id', '')
+                                    if not chat_id:
+                                        self._log(f"⚠️ 飞书 chat_id 未知，无法发送")
+                                        continue
+                                    from core.tool_registry import ToolRegistry
+                                    r = ToolRegistry._send_via_feishu(str(p), chat_id=chat_id)
+                                    if r["success"]:
+                                        self._log(f"✅ 文件已通过飞书发送: {p.name}")
+                                    else:
+                                        self._log(f"⚠️ 飞书发送失败: {r['output']}")
+                                else:
+                                    self._log(f"⚠️ 当前通道({platform})不支持文件发送")
                         finish_called = True
                         break
                 if finish_called:
@@ -1194,7 +1344,7 @@ class AgentLoop:
                         self.on_tool_start(fn_name, tc.get("function", {}).get("arguments", {}), tool_start_ts)
 
                     # ── PreToolUse: 权限检查（Deny 规则 → 自动模式 → 人工审批） ──
-                    if self.permission_enabled and fn_name not in ("finish", "delegate_task", "skill_rollback"):
+                    if self.permission_enabled and fn_name not in ("finish", "delegate_task", "skill_rollback", "send_file_to_user"):
                         raw_args = tc.get("function", {}).get("arguments", {})
                         # 解析 arguments：可能是 JSON 字符串或 dict
                         if isinstance(raw_args, str):  # pragma: no cover
@@ -1441,6 +1591,8 @@ class AgentLoop:
                         errors.append(err)
                         # 记录失败的工具结果供下一轮 System Reminders 使用
                         last_tool_results.append(f"{fn_name}:fail:{safe_output[:80]}")
+                        _phase_tools_run.append(f"❌ {fn_name}")
+                        self._log(f"❌ 工具 {fn_name} 执行失败")
                         # 触发 on_tool_error 钩子（异步）
                         if self.hooks_enabled:
                             trigger_async("on_tool_error", {
@@ -1450,6 +1602,28 @@ class AgentLoop:
                                 "task": task[:100],
                             })
                     else:
+                        _phase_tools_run.append(f"✅ {fn_name}")
+                        self._log(f"✅ 工具 {fn_name} 执行成功")
+                        # 有实质产出的工具 → 立即推送阶段性简报
+                        _phase_push_tools = {"write_file", "patch", "terminal", "execute_code",
+                                              "web_search", "web_extract", "browser_navigate",
+                                              "vision_analyze", "text_to_speech"}
+                        if self.on_phase and fn_name in _phase_push_tools and safe_output.strip():
+                            _phase_lines = []
+                            if _phase_contexts:
+                                _recent = _phase_contexts[-1].split(":", 1)[-1].strip()
+                                if _recent:
+                                    _phase_lines.append(f">{_recent}")
+                            # 提取工具结果摘要
+                            _out = safe_output.strip()[:200]
+                            _phase_lines.append(f"📌 {fn_name} → {_out}")
+                            if errors:
+                                _phase_lines.append(f"⚠️ {errors[-1][:120]}")
+                            _phase_summary = "\n".join(_phase_lines)
+                            try:
+                                self.on_phase(_phase_summary)
+                            except Exception:
+                                pass
                         # 触发 on_tool_after 钩子（异步）
                         if self.hooks_enabled:
                             trigger_async("on_tool_after", {
@@ -1459,7 +1633,7 @@ class AgentLoop:
                                 "task": task[:100],
                                 "turn": turn_count,
                             })
-            else:
+            if not response.get("tool_calls"):
                 # 没有 tool_calls — LLM 直接回复了文本
                 final_result = response["content"]
                 final_summary = response["content"][:200]
@@ -1482,6 +1656,7 @@ class AgentLoop:
             "tool_calls": turn_count,
             "task_type": detect_task_type(task),
             "duration": round(time.time() - start, 3),
+            "session_id": self.current_session_id or "",
         }
 
         # 归档会话（如果有较多消息）

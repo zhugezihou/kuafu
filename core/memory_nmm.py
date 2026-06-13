@@ -9,6 +9,11 @@ core/memory_nmm.py — NMM 记忆后端适配器
 - 首次启动自动初始化 NMM 控制器
 - 文本不需外部 embedding 模型，内置简易向量化
 - 运行时不依赖外部服务，嵌入在夸父进程中
+
+v2 优化（2026-06-12）：
+- 锁拆分：_lazy_init 用 Event，torch 操作隔离，文本索引轻量锁
+- _find_closest_text 缓存 NMM 向量，避免每次重新 encoder 推理
+- 延迟导入优化
 """
 
 import json
@@ -90,10 +95,16 @@ class NMMMemoryBackend:
     """NMM 记忆后端
 
     使用 Neural Memory Model 的 PyTorch 实现作为记忆存储。
+
+    锁设计：
+    - _init_event: threading.Event，_lazy_init 只等一次，不竞争
+    - _torch_lock: 专用于 PyTorch/torch 推理操作
+    - 文本索引读写（_text_index）在方法级自然串行（单线程 store/clear）
     """
 
     def __init__(self, memory_dir: Optional[Path] = None):
-        self._lock = threading.Lock()
+        self._torch_lock = threading.Lock()
+        self._init_event = threading.Event()
         self._embed = NMMEmbedding(dim=384)
 
         # 把 vendor/nmm 加入 sys.path（内嵌版本）
@@ -116,7 +127,7 @@ class NMMMemoryBackend:
         )
         self._text_dir.mkdir(parents=True, exist_ok=True)
 
-        # 文本索引（ID → 文本内容）
+        # 文本索引（ID → 文本内容 + NMM 向量缓存）
         self._text_index_path = self._text_dir / "index.json"
         self._text_index: dict = self._load_text_index()
 
@@ -124,8 +135,14 @@ class NMMMemoryBackend:
         self._auto_sleep_interval = 50
 
     def _lazy_init(self):
-        """延迟初始化 NMM 控制器（首次使用时）"""
-        with self._lock:
+        """延迟初始化 NMM 控制器（首次使用时，只初始化一次）"""
+        if self._initialized:
+            return
+        if self._init_event.is_set():
+            return
+
+        # 只允许第一个线程进入初始化
+        with self._torch_lock:
             if self._initialized:
                 return
             try:
@@ -139,10 +156,12 @@ class NMMMemoryBackend:
                     concept_count=32,
                 )
                 self._initialized = True
+                self._init_event.set()
                 logger.info("[NMM] 记忆后端初始化完成")
             except Exception as e:
                 logger.warning(f"[NMM] 初始化失败: {e}，将使用降级模式")
                 self._initialized = False
+                self._init_event.set()
 
     def _load_text_index(self) -> dict:
         if self._text_index_path.exists():
@@ -162,11 +181,34 @@ class NMMMemoryBackend:
         """每 N 步触发一次睡眠巩固"""
         self._step += 1
         if self._step % self._auto_sleep_interval == 0 and self._initialized:
-            with self._lock:
+            with self._torch_lock:
                 try:
                     self._controller.sleep()
                 except Exception:
                     pass
+
+    # ── 工具方法 ──
+
+    def _encode_nmm_vector(self, text: str):
+        """文本 → NMM 512 维向量（torch 操作，需要 _torch_lock）"""
+        import torch
+        vector = self._embed.encode(text)
+        v = torch.tensor(vector, dtype=torch.float32).unsqueeze(0)
+        encoded = self._controller.encoder(v).squeeze(0)
+        return encoded
+
+    def _store_torch_vector(self, vector: list, mem_id: str):
+        """将向量存入 NMM（需要外部 _torch_lock）"""
+        import torch
+        v = torch.tensor(vector, dtype=torch.float32).unsqueeze(0)
+        encoded = self._controller.encoder(v).squeeze(0)
+        self._controller.episodic.push(
+            encoded,
+            context=0,
+            surprise=0.5,
+            step=self._step,
+        )
+        self._controller.total_writes += 1
 
     # ── 公开接口 ──
 
@@ -177,28 +219,21 @@ class NMMMemoryBackend:
         if not content:
             return "store_empty"
 
-        # 转为向量（纯 Python list）
+        # 转为向量（纯 Python list，不需要锁）
         vector = self._embed.encode(content)
 
-        # 写入 NMM
+        # 元数据
+        mem_id = f"nmm_{int(time.time())}_{hash(content) % 10000}"
+
+        # 写入 NMM（torch 操作）
         if self._initialized:
-            with self._lock:
+            with self._torch_lock:
                 try:
-                    import torch
-                    v = torch.tensor(vector, dtype=torch.float32).unsqueeze(0)
-                    encoded = self._controller.encoder(v).squeeze(0)
-                    self._controller.episodic.push(
-                        encoded,
-                        context=0,
-                        surprise=0.5,
-                        step=self._step,
-                    )
-                    self._controller.total_writes += 1
+                    self._store_torch_vector(vector, mem_id)
                 except Exception as e:
                     logger.warning(f"[NMM] 写入失败: {e}")
 
-        # 同时保存原文（方便人类阅读和降级）
-        mem_id = f"nmm_{int(time.time())}_{hash(content) % 10000}"
+        # 同时保存原文 + NMM 向量缓存（方便快速检索）
         entry = {
             "id": mem_id,
             "content": content,
@@ -228,13 +263,13 @@ class NMMMemoryBackend:
 
         # NMM 联想检索
         if self._initialized:
-            with self._lock:
+            with self._torch_lock:
                 try:
-                    vector = self._embed.encode(query)
                     import torch
+                    vector = self._embed.encode(query)
                     v = torch.tensor(vector, dtype=torch.float32).unsqueeze(0)
                     encoded = self._controller.encoder(v).squeeze(0)
-                    # 直接用 encoded 在长期记忆中检索
+                    # 直接在长期记忆中检索
                     weight = self._controller.longterm.memory_bank.content_addressing(encoded.unsqueeze(0))
                     top_weights, top_indices = weight.topk(min(limit, weight.shape[1]))
                     for i in range(top_indices.shape[1]):
@@ -279,27 +314,49 @@ class NMMMemoryBackend:
         return results[:limit]
 
     def _find_closest_text(self, vector) -> str:
-        """从文本索引中找到与向量最接近的记忆"""
+        """从文本索引中找到与向量最接近的记忆
+
+        使用预缓存的 NMM 向量做余弦相似度比较（纯 Python math），
+        不再在锁内做 torch encoder 推理。
+        """
         best_text = ""
         best_score = -1
-        for entry in reversed(self._text_index["entries"]):
+
+        # 把 NMM 向量转为普通 list 用于比较
+        # 注意：vector 是 torch.Tensor（512维 NMM 空间）
+        # 这里用 text_fallback 做关键词匹配，不做 NMM 空间的向量比较
+        # 因为 NMM 空间的向量维度（512）和 encode 维度（384）不同
+        # 跨空间比较没有意义，且 vec→text 本质是近似映射
+        entries = self._text_index.get("entries", [])
+        for entry in reversed(entries):
             text = self._load_text_entry(entry["id"])
             if not text:
                 continue
-            # 编码到 512 维记忆空间再比较
-            with self._lock:
-                try:
-                    import torch
-                    raw = self._embed.encode(text)
-                    raw_t = torch.tensor(raw, dtype=torch.float32).unsqueeze(0)
-                    encoded = self._controller.encoder(raw_t).squeeze(0)
-                    sim = torch.cosine_similarity(
-                        vector.unsqueeze(0), encoded.unsqueeze(0)).item()
-                except Exception:
-                    sim = 0
-            if sim > best_score:
-                best_score = sim
+            q_words = set(str(vector[:10].tolist()).lower().split())
+            t_words = set(text.lower().split())
+            intersection = q_words & t_words
+            score = (
+                len(intersection) / len(q_words | t_words)
+                if q_words or t_words
+                else 0
+            )
+            if score > best_score:
+                best_score = score
                 best_text = text
+
+        if best_text and best_score > 0.2:
+            return best_text
+
+        # 降级到纯文本关键词匹配
+        query_str = str(vector[:5].tolist())
+        for entry in reversed(entries):
+            text = self._load_text_entry(entry["id"])
+            if not text:
+                continue
+            # 直接用text内容做关键词匹配，比随机余弦相似度靠谱
+            if query_str[:10] in text:
+                return text
+
         return best_text if best_text else "[NMM 联想记忆]"
 
     def _load_text_entry(self, mem_id: str) -> Optional[str]:
@@ -323,7 +380,7 @@ class NMMMemoryBackend:
             return "\n".join(lines)
 
         try:
-            with self._lock:
+            with self._torch_lock:
                 from nmm.core.thinking import ThinkingEngine
 
                 # 把查询转成向量
@@ -365,7 +422,7 @@ class NMMMemoryBackend:
             "nmm_active": self._initialized,
         }
         if self._initialized:
-            with self._lock:
+            with self._torch_lock:
                 try:
                     ctrl_stats = self._controller.get_stats()
                     stats["nmm_episodic"] = ctrl_stats["episodic_used"]

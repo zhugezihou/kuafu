@@ -334,6 +334,7 @@ class ToolRegistry:
         # ── L0 核心工具（始终全量 schema 对 LLM 可见）──
         self.register("terminal", self._term_schema(), self._handle_terminal)
         self.register("finish", self._finish_schema(), self._handle_finish)
+        self.register("send_file_to_user", self._send_file_schema(), self._handle_send_file)
 
         # ── L1 紧凑工具（仅名称+描述在提示词中，首次调用后自动提升）──
         self.register_compact("read_file", self._read_schema(), self._handle_read_file)
@@ -584,9 +585,38 @@ class ToolRegistry:
         }
 
     @staticmethod
+    def _send_file_schema() -> dict:
+        return {
+            "description": "发送一个已存在的文件给用户（自动选择用户当前使用的通道发送文件本体）。用户要求发给我、传文件时用此工具。文件必须已存在于磁盘上。系统会自动识别当前触发通道，也可通过 platform 参数显式指定。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "文件的绝对路径（如 /home/asus/kuafu/xxx.docx）",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "对文件的文字说明（可选）",
+                    },
+                    "platform": {
+                        "type": "string",
+                        "enum": ["wechat", "feishu"],
+                        "description": "指定发送通道（可选。不填则自动识别用户当前使用的通道）",
+                    },
+                    "chat_id": {
+                        "type": "string",
+                        "description": "飞书目标群聊 ID（可选。仅飞书通道需要时指定，不填则用当前聊天）",
+                    },
+                },
+                "required": ["file_path"],
+            },
+        }
+
+    @staticmethod
     def _finish_schema() -> dict:
         return {
-            "description": "完成任务并返回最终结果",
+            "description": "完成任务并返回最终结果。如果生成了需要发给用户的文件，用 send_files 参数列出文件路径，系统会自动发送。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -597,6 +627,11 @@ class ToolRegistry:
                     "summary": {
                         "type": "string",
                         "description": "详细摘要",
+                    },
+                    "send_files": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "需要发送给用户的文件路径列表（可选）。系统会自动通过微信/飞书发送文件本体。",
                     },
                 },
                 "required": ["result"],
@@ -1054,12 +1089,174 @@ class ToolRegistry:
 
     @staticmethod
     def _handle_finish(args: dict) -> dict:
+        result = args.get("result", "")
+        summary = args.get("summary", "")
+        send_files = args.get("send_files", [])
+        output_parts = [json.dumps({"result": result, "summary": summary}, ensure_ascii=False)]
+        
+        if send_files:
+            sent = []
+            for fp in send_files:
+                path = Path(fp).expanduser().resolve()
+                if path.exists() and path.is_file():
+                    sent.append(str(path))
+                else:
+                    output_parts.append(f"文件不存在: {fp}")
+            if sent:
+                output_parts.append(f"待发送文件: {'、'.join(sent)}（gateway 层发送）")
+        
         return {
             "success": True,
-            "output": json.dumps(args, ensure_ascii=False),
-            "result": args.get("result", ""),
-            "summary": args.get("summary", ""),
+            "output": "\n".join(output_parts),
+            "result": result,
+            "summary": summary,
+            "_send_files": send_files,  # 供 AgentLoop 检测后发送
         }
+
+    # ---- send_file_to_user ----
+
+    @staticmethod
+    def _send_via_wechat(file_path: str) -> dict:
+        """通过微信 iLink 发送文件。"""
+        try:
+            from core.channel.wechat_ilink import WeChatILinkChannel
+            wc = WeChatILinkChannel()
+            if not wc._bot_token:
+                return {"success": False, "output": "微信未登录"}
+            state_file = wc._state_file
+            last_chat_id = ""
+            last_ctx_token = ""
+            if state_file and state_file.exists():
+                state = json.loads(state_file.read_text(encoding="utf-8"))
+                last_chat_id = state.get("last_chat_id", "")
+                last_ctx_token = state.get("last_context_token", "")
+            if not last_chat_id:
+                last_chat_id = wc._bot_open_id
+            if not last_chat_id:
+                return {"success": False, "output": "微信无可用会话"}
+
+            p = Path(file_path).expanduser().resolve()
+            if not p.exists() or not p.is_file():
+                return {"success": False, "output": f"文件不存在: {file_path}"}
+            result = wc.send_file(str(p), last_chat_id, last_ctx_token)
+            if result.success:
+                return {"success": True, "output": f"文件已通过微信发送: {p.name}"}
+            return {"success": False, "output": result.error or "微信发送失败"}
+        except Exception as e:
+            return {"success": False, "output": f"微信发送异常: {e}"}
+
+    @staticmethod
+    def _send_via_feishu(file_path: str, chat_id: str = "", description: str = "") -> dict:
+        """通过飞书 API 上传并发送文件到指定会话。"""
+        app_id = os.environ.get("FEISHU_APP_ID", "")
+        app_secret = os.environ.get("FEISHU_APP_SECRET", "")
+        target_chat_id = chat_id or os.environ.get("FEISHU_CHAT_ID", "oc_d860f9f653e3421db6ea419a81414cf6")
+        if not app_id or not app_secret:
+            return {"success": False, "output": "飞书未配置"}
+
+        import urllib.request
+        token_body = json.dumps({"app_id": app_id, "app_secret": app_secret}).encode()
+        token_req = urllib.request.Request(
+            "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+            data=token_body, headers={"Content-Type": "application/json; charset=utf-8"}, method="POST",
+        )
+        try:
+            with urllib.request.urlopen(token_req, timeout=10) as r:
+                td = json.loads(r.read().decode())
+                token = td.get("tenant_access_token", "")
+                if not token:
+                    return {"success": False, "output": f"飞书token获取失败: {td.get('msg','')}"}
+        except Exception as e:
+            return {"success": False, "output": f"飞书token请求失败: {e}"}
+
+        p = Path(file_path).expanduser().resolve()
+        if not p.exists() or not p.is_file():
+            return {"success": False, "output": f"文件不存在: {file_path}"}
+        file_bytes = p.read_bytes()
+        import uuid
+        boundary = f"----WebKitFormBoundary{uuid.uuid4().hex[:16]}"
+        
+        # 构造 multipart body（飞书要求：file_type + file_name 文本 + file 二进制）
+        body_parts = []
+        body_parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"file_type\"\r\n\r\nstream\r\n".encode("utf-8"))
+        body_parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"file_name\"\r\n\r\n{p.name}\r\n".encode("utf-8"))
+        body_parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{p.name}\"\r\nContent-Type: application/octet-stream\r\n\r\n".encode("utf-8"))
+        body_parts.append(file_bytes)
+        body_parts.append(f"\r\n--{boundary}--\r\n".encode("utf-8"))
+        body = b"".join(body_parts)
+        upload_req = urllib.request.Request(
+            "https://open.feishu.cn/open-apis/im/v1/files", data=body,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": f"multipart/form-data; boundary={boundary}"}, method="POST",
+        )
+        try:
+            with urllib.request.urlopen(upload_req, timeout=30) as r:
+                ur_data = json.loads(r.read().decode())
+                if ur_data.get("code") != 0:
+                    return {"success": False, "output": f"飞书上传失败: {ur_data.get('msg','')}"}
+                file_key = ur_data.get("data", {}).get("file_key", "")
+        except Exception as e:
+            return {"success": False, "output": f"飞书上传请求失败: {e}"}
+
+        msg_body = json.dumps({"receive_id": target_chat_id, "msg_type": "file",
+            "content": json.dumps({"file_key": file_key, "file_name": p.name}, ensure_ascii=False)}, ensure_ascii=False).encode("utf-8")
+        send_req = urllib.request.Request(
+            "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id", data=msg_body,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"}, method="POST",
+        )
+        try:
+            with urllib.request.urlopen(send_req, timeout=15) as r:
+                sd = json.loads(r.read().decode())
+                if sd.get("code") != 0:
+                    return {"success": False, "output": f"飞书发送失败: {sd.get('msg','')}"}
+                msg_id = sd.get("data", {}).get("message_id", "")
+        except Exception as e:
+            return {"success": False, "output": f"飞书发送请求失败: {e}"}
+
+        return {"success": True, "output": f"文件已通过飞书发送: {p.name} (msg_id={msg_id})"}
+
+    def _handle_send_file(self, args: dict) -> dict:
+        """上传并发送文件到用户的当前触发通道。
+
+        根据 KUAFU_CURRENT_PLATFORM 环境变量或 args.platform 确定发送通道。
+        不再微信优先飞书 fallback —— 只发送到触发通道。
+        """
+        file_path = args.get("file_path", "").strip()
+        if not file_path:
+            return {"success": False, "output": "请指定文件路径"}
+        p = Path(file_path).expanduser().resolve()
+        if not p.exists():
+            return {"success": False, "output": f"文件不存在: {file_path}"}
+        if not p.is_file():
+            return {"success": False, "output": f"路径不是文件: {file_path}"}
+
+        # 确定目标通道：优先 args 中显式指定的 platform，其次环境变量
+        platform = args.get("platform", "").strip() or os.environ.get("KUAFU_CURRENT_PLATFORM", "")
+        if not platform:
+            return {"success": False, "output": "无法确定发送通道：未设置 KUAFU_CURRENT_PLATFORM"}
+        description = args.get("description", "")
+
+        if platform == "wechat":
+            result = ToolRegistry._send_via_wechat(file_path)
+            if result["success"]:
+                return result
+            # 微信不支持 bot 发送文件本体，直接返回明确提示
+            return {"success": False, "output": "微信通道不支持 bot 发送文件，请通过飞书访问或直接在服务器上处理"}
+        elif platform == "feishu":
+            chat_id = args.get("chat_id", "").strip() or os.environ.get("KUAFU_CURRENT_CHAT_ID", "")
+            result = ToolRegistry._send_via_feishu(file_path, chat_id=chat_id, description=description)
+            if result["success"]:
+                return result
+            return {"success": False, "output": f"飞书发送失败: {result.get('output','')}"}
+        else:
+            # 未知通道，依次尝试
+            wechat_result = ToolRegistry._send_via_wechat(file_path)
+            if wechat_result["success"]:
+                return wechat_result
+            feishu_result = ToolRegistry._send_via_feishu(file_path, description=description)
+            if feishu_result["success"]:
+                return feishu_result
+            return {"success": False,
+                    "output": f"无法发送文件: 微信({wechat_result.get('output','')}) 飞书({feishu_result.get('output','')})"}
 
     # ---- finish_step ----
 
