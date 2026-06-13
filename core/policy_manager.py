@@ -95,15 +95,11 @@ class PolicyDecision:
 
 # =========================================================================
 # 安全命令快检（原 agent_loop 中的 _safe 白名单）
-# =========================================================================
+# 安全命令快检（原 agent_loop 中的 _safe 白名单）
+# 委托到 Platform 获取跨平台列表
 
-_SAFE_COMMANDS = (
-    "ls ", "cat ", "curl ", "echo ", "pwd", "whoami", "date",
-    "head ", "tail ", "wc ", "sort ", "grep ", "find ", "which ",
-    "pip list", "pip show", "python3 --version", "git status",
-    "git log", "git diff", "git branch", "free ", "df ", "du ",
-    "ps ", "top ", "env", "printenv", "uname", "id",
-)
+from core.platform import Platform
+_SAFE_COMMANDS = Platform.safe_commands()
 
 
 def _is_safe_terminal(cmd: str) -> bool:

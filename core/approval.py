@@ -788,16 +788,16 @@ ON_APPROVAL_REQUEST_CB: Optional[callable] = None
 
 
 def _is_safe_terminal(cmd: str) -> bool:
-    """判断 terminal 命令是否安全（只读/查询类），不经过审批系统。"""
+    """判断 terminal 命令是否安全（只读/查询类），不经过审批系统。
+
+    跨平台：同时支持 Linux 和 Windows 命令。
+    """
     if not isinstance(cmd, str):
         return False
     lower_cmd = cmd.strip().lower()
-    # 安全命令前缀（只读/查询操作）
-    safe_prefixes = ("ls ", "cat ", "curl ", "echo ", "pwd", "whoami", "date",
-                     "head ", "tail ", "wc ", "sort ", "grep ", "find ", "which ",
-                     "pip list", "pip show", "python3 --version", "git status",
-                     "git log", "git diff", "git branch", "free ", "df ", "du ",
-                     "ps ", "top ", "env", "printenv", "uname", "id")
+    # 安全命令前缀（只读/查询操作）— 从 Platform 获取平台相关列表
+    from core.platform import Platform
+    safe_prefixes = Platform.safe_commands()
     return any(lower_cmd.startswith(p) for p in safe_prefixes)
 
 
