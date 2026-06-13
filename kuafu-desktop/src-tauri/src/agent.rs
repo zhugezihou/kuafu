@@ -309,7 +309,7 @@ impl AgentManager {
         // Debug: 打印启动命令
         eprintln!("[Hermes] starting: {} -c ...", python_str);
         eprintln!("[Hermes] sys.path: {}", kuafu_str);
-        eprintln!("[Hermes] KUAFFU_PROVIDERS=deepseek, KUAFFU_DESKTOP=1, KUAFFU_LLM_BACKEND=cloud");
+        eprintln!("[Hermes] KUAFU_PROVIDERS=deepseek, KUAFU_DESKTOP=1, KUAFU_LLM_BACKEND=cloud");
 
         cmd.args(["-c", &bootstrap])
         .stdout(Stdio::piped())
@@ -326,29 +326,30 @@ impl AgentManager {
         let log_path_str = log_file_path.to_string_lossy().to_string();
         eprintln!("[Hermes] gateway log: {}", log_path_str);
 
-        cmd.env("KUAFFU_GATEWAY_PORT", GATEWAY_PORT.to_string());
-        cmd.env("KUAFFU_DESKTOP", "1"); // Desktop 模式：禁用微信/飞书等交互通道
-        cmd.env("KUAFFU_LLM_BACKEND", "cloud");
+        // ⚠️ 注意：环境变量名必须是 KUAFU_（一个F），不是 KUAFFU_
+        // Python 端统一读的是 KUAFU_ 前缀
+        cmd.env("KUAFU_DESKTOP", "1"); // Desktop 模式：禁用微信/飞书等交互通道
+        cmd.env("KUAFU_LLM_BACKEND", "cloud");
         // Windows 上强制 UTF-8，避免 GBK 编码错误（emoji 等字符）
         cmd.env("PYTHONIOENCODING", "utf-8");
         cmd.env("PYTHONUTF8", "1");
         // 根据 provider 设置环境变量
         match cfg.cloud_provider.as_str() {
             "openai" => {
-                cmd.env("KUAFFU_PROVIDERS", "openai");
+                cmd.env("KUAFU_PROVIDERS", "openai");
                 cmd.env("OPENAI_API_KEY", cfg.cloud_api_key.clone());
                 cmd.env("OPENAI_BASE_URL", cfg.cloud_base_url.clone());
                 cmd.env("OPENAI_MODEL", cfg.cloud_model.clone());
             }
             "custom" => {
-                cmd.env("KUAFFU_PROVIDERS", "custom");
+                cmd.env("KUAFU_PROVIDERS", "custom");
                 cmd.env("CUSTOM_API_KEY", cfg.cloud_api_key.clone());
                 cmd.env("CUSTOM_BASE_URL", cfg.cloud_base_url.clone());
                 cmd.env("CUSTOM_MODEL", cfg.cloud_model.clone());
             }
             _ => {
                 // deepseek (default)
-                cmd.env("KUAFFU_PROVIDERS", "deepseek");
+                cmd.env("KUAFU_PROVIDERS", "deepseek");
                 cmd.env("DEEPSEEK_API_KEY", cfg.cloud_api_key.clone());
                 cmd.env("DEEPSEEK_BASE_URL", cfg.cloud_base_url.clone());
                 cmd.env("DEEPSEEK_MODEL", cfg.cloud_model.clone());
