@@ -361,6 +361,13 @@ DANGEROUS_COMMANDS = [
     (re.compile(r'\bpip\s+install\b'), "安装 Python 包"),
     (re.compile(r'\bnpm\s+install\b'), "安装 npm 包"),
     (re.compile(r'\bshutdown\b|\breboot\b|\bpoweroff\b'), "关机/重启"),
+    # Windows 特有危险命令
+    (re.compile(r'\bformat\s+[a-zA-Z]:'), "格式化磁盘"),
+    (re.compile(r'\bdiskpart\b'), "磁盘分区"),
+    (re.compile(r'\bdel\s+/[fFsS]'), "强制删除文件"),
+    (re.compile(r'\brd\s+/[sS]\s*/[qQ]'), "递归删除目录"),
+    (re.compile(r'\btaskkill\s+/[fF]'), "强制终止进程"),
+    (re.compile(r'\bshutdown\s+/[sSrR]'), "关机/重启"),
 ]
 
 
