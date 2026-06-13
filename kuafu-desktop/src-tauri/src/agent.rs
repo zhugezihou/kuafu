@@ -84,11 +84,32 @@ impl AgentManager {
         self.python_dir.join("kuafu")
     }
 
-    /// Windows: py.exe (Python Launcher) 优先，再 python3, 再 python
+    /// Windows: py.exe (Python Launcher) 优先，再查 python, 最后查 python3
     fn find_system_python() -> Option<PathBuf> {
-        for name in &["py", "python3", "python"] {
+        // 先查 py.exe（Windows Python Launcher，可自动选最新版）
+        let ok = Command::new("py")
+            .args(["--version"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            if let Ok(out) = Command::new("py")
+                .args(["-c", "import sys; print(sys.executable)"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .output()
+            {
+                let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !path.is_empty() {
+                    return Some(PathBuf::from(path));
+                }
+            }
+        }
+        // 再查 python
+        for name in &["python", "python3"] {
             let p = PathBuf::from(name);
-            // 先查 PATH 版本号
             let ok = Command::new(&p)
                 .args(["--version"])
                 .stdout(Stdio::null())
@@ -97,21 +118,6 @@ impl AgentManager {
                 .map(|s| s.success())
                 .unwrap_or(false);
             if ok {
-                // py 是 launcher，换成真实路径
-                if name == &"py" {
-                    // py -c "import sys; print(sys.executable)" 出完整路径
-                    if let Ok(out) = Command::new("py")
-                        .args(["-c", "import sys; print(sys.executable)"])
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::null())
-                        .output()
-                    {
-                        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                        if !path.is_empty() {
-                            return Some(PathBuf::from(path));
-                        }
-                    }
-                }
                 return Some(p);
             }
         }
@@ -204,7 +210,7 @@ impl AgentManager {
         let py = PathBuf::from(&status.python_path);
 
         if !status.pyyaml_installed {
-            // 先试试系统 Python 的 pip（可能比嵌入式 Python 更可靠）
+            // 先试试系统 Python 的 pip
             let sys_py = Self::find_system_python();
             let pip_py = sys_py.as_ref().unwrap_or(&py);
 
@@ -278,17 +284,12 @@ impl AgentManager {
             return Err(err);
         }
 
-        // 独立确定 Python 路径：先找嵌入式，再找系统 Python
+        // 独立确定 Python 路径
         let python = self.find_python();
         let kuafu = self.kuafu_dir();
         let kuafu_str = kuafu.to_string_lossy().to_string();
         let python_str = python.to_string_lossy().to_string();
 
-        // 验证 python 可执行文件存在
-        if !python.exists() && !python.is_absolute() {
-            // 可能是 PATH 中的名称（如 "python"），尝试 which/where
-            // 在 Windows 上直接用
-        }
         if !python.exists() && python.is_absolute() {
             return Err(format!("Python 可执行文件不存在: {}", python_str));
         }
@@ -306,7 +307,6 @@ impl AgentManager {
             kuafu_str, GATEWAY_PORT
         );
 
-        // Debug: 打印启动命令
         eprintln!("[Hermes] starting: {} -c ...", python_str);
         eprintln!("[Hermes] sys.path: {}", kuafu_str);
         eprintln!("[Hermes] KUAFU_PROVIDERS=deepseek, KUAFU_DESKTOP=1, KUAFU_LLM_BACKEND=cloud");
@@ -315,7 +315,7 @@ impl AgentManager {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-        // Desktop 模式下：stdout+stderr 通过 pipe 读取，同时写入日志文件
+        // Desktop 模式下 stdout+stderr 写入日志文件
         let log_dir = self.python_dir.join("logs");
         let _ = std::fs::create_dir_all(&log_dir);
         let ts = std::time::SystemTime::now()
@@ -326,14 +326,11 @@ impl AgentManager {
         let log_path_str = log_file_path.to_string_lossy().to_string();
         eprintln!("[Hermes] gateway log: {}", log_path_str);
 
-        // ⚠️ 注意：环境变量名必须是 KUAFU_（一个F），不是 KUAFFU_
-        // Python 端统一读的是 KUAFU_ 前缀
-        cmd.env("KUAFU_DESKTOP", "1"); // Desktop 模式：禁用微信/飞书等交互通道
+        cmd.env("KUAFU_DESKTOP", "1");
         cmd.env("KUAFU_LLM_BACKEND", "cloud");
-        // Windows 上强制 UTF-8，避免 GBK 编码错误（emoji 等字符）
         cmd.env("PYTHONIOENCODING", "utf-8");
         cmd.env("PYTHONUTF8", "1");
-        // 根据 provider 设置环境变量
+
         match cfg.cloud_provider.as_str() {
             "openai" => {
                 cmd.env("KUAFU_PROVIDERS", "openai");
@@ -360,15 +357,15 @@ impl AgentManager {
         let pid = child.id();
         eprintln!("[Hermes] child spawned: pid={}", pid);
 
-        // 轮询 15 秒: 每 750ms 检查进程退出 + Gateway HTTP 就绪
+        // 轮询 20 秒: 每 750ms 检查进程退出 + Gateway HTTP 就绪
         let mut gateway_ready = false;
-        for i in 0..20 {
+        for i in 0..26 {
             std::thread::sleep(Duration::from_millis(750));
-            eprintln!("[Hermes] poll #{}/20: checking...", i + 1);
+            eprintln!("[Hermes] poll #{}/{}: checking...", i + 1, 26);
 
             // 进程是否已退出？
             if let Some(exit) = child.try_wait().ok().flatten() {
-                // 等 500ms 让 pipe 缓冲刷出（Windows 上可能延迟）
+                // 等 500ms 让 pipe 缓冲刷出
                 std::thread::sleep(Duration::from_millis(500));
                 let mut stderr = String::new();
                 if let Some(ref mut pipe) = child.stderr {
@@ -378,7 +375,6 @@ impl AgentManager {
                 if let Some(ref mut pipe) = child.stdout {
                     let _ = pipe.read_to_string(&mut stdout);
                 }
-                // 把输出写入日志文件
                 let combined = format!("[stderr]\n{}\n[stdout]\n{}", stderr, stdout);
                 let _ = std::fs::write(&log_file_path, &combined);
                 eprintln!("[Hermes] process exited, wrote log to {}", log_path_str);
@@ -392,7 +388,6 @@ impl AgentManager {
                 let msg = if output.is_empty() {
                     format!("夸父启动失败 (exit code: {})", exit.code().unwrap_or(-1))
                 } else {
-                    // 截断过长输出（最多 2000 字符）
                     let truncated = if output.len() > 2000 {
                         format!("{}...", &output[..2000])
                     } else {
@@ -424,7 +419,6 @@ impl AgentManager {
         }
 
         if !gateway_ready {
-            // 进程还在但 Gateway 没起来，等启动日志
             let err: String = "网关启动超时（夸父进程可能初始化较慢，请稍后重试）".into();
             if let Ok(mut last) = self.last_error.lock() {
                 *last = err.clone();
@@ -437,19 +431,14 @@ impl AgentManager {
             pid: Some(pid),
             gateway_port: GATEWAY_PORT,
             python_path: python_str,
-            error: if gateway_ready {
-                None
-            } else {
-                Some("网关启动较慢，健康检查将继续等待".into())
-            },
+            error: None,
         })
     }
 
-    /// Graceful stop: SIGTERM → 等 2s → SIGKILL
+    /// Graceful stop: taskkill → 等 3s → 强制
     pub fn stop(&self) -> Result<(), String> {
         let mut proc = self.process.lock().map_err(|e| e.to_string())?;
         if let Some(mut child) = proc.take() {
-            // Windows 上 kill 相当于 TerminateProcess
             #[cfg(windows)]
             {
                 // Windows: 先 taskkill（不加 /F = 发 WM_CLOSE，相当于 SIGTERM）
@@ -459,34 +448,43 @@ impl AgentManager {
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
                     .status();
-                // 等 2 秒让进程处理收尾
-                for _ in 0..4 {
+                // 等 4 秒（2s + 2s 缓冲）让进程处理收尾
+                for _ in 0..8 {
                     if child.try_wait().ok().flatten().is_some() {
                         break;
                     }
                     std::thread::sleep(Duration::from_millis(500));
                 }
-                let _ = child.wait();
-            }
-            #[cfg(not(windows))]
-            {
-                // 跨平台 SIGTERM: 用 libc 或 std::process::Command
-                #[cfg(target_family = "unix")]
-                {
-                    
-                    // 用 kill 命令更可靠
-                    let _ = std::process::Command::new("kill")
-                        .args(["-TERM", &child.id().to_string()])
+                // 如果还没退出，强制 kill（/F）
+                if child.try_wait().ok().flatten().is_none() {
+                    let pid = child.id();
+                    let _ = std::process::Command::new("taskkill")
+                        .args(["/F", "/PID", &pid.to_string()])
                         .stdout(std::process::Stdio::null())
                         .stderr(std::process::Stdio::null())
                         .status();
+                    let _ = child.wait();
                 }
-                #[cfg(not(target_family = "unix"))]
-                {
-                    let _ = child.kill();
-                }
+            }
+            #[cfg(not(windows))]
+            {
+                // Unix: kill -TERM → 等 2s → kill -KILL
+                let pid = child.id();
+                let _ = std::process::Command::new("kill")
+                    .args(["-TERM", &pid.to_string()])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
                 std::thread::sleep(Duration::from_secs(2));
-                let _ = child.wait();
+                // 如果还没退出，强制 kill
+                if child.try_wait().ok().flatten().is_none() {
+                    let _ = std::process::Command::new("kill")
+                        .args(["-KILL", &pid.to_string()])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status();
+                    let _ = child.wait();
+                }
             }
         }
         Ok(())

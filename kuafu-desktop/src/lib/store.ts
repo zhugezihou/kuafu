@@ -1,4 +1,4 @@
-import { writable } from "svelte/store";
+import { writable, get } from "svelte/store";
 import type { Message, Session } from "./gateway";
 
 export interface AgentStatus {
@@ -43,7 +43,6 @@ function loadArchives(): ArchivedSession[] {
 
 function saveArchives(archives: ArchivedSession[]) {
   try {
-    // 只保留最近 20 个会话，避免 localStorage 溢出
     const trimmed = archives.slice(0, 20);
     localStorage.setItem(ARCHIVE_KEY, JSON.stringify(trimmed));
   } catch {}
@@ -77,35 +76,28 @@ export function loadSession() {
     }
   } catch {}
 
-  // 加载存档列表（用于 Sidebar 显示）
   archivedSessions.set(loadArchives());
 }
 
 // 保存当前会话到 localStorage
 export function saveSession() {
-  let msgs: Message[] = [];
-  const unsub = messages.subscribe((m) => (msgs = m));
-  unsub();
+  const msgs = get(messages);
   try {
     localStorage.setItem(CURRENT_SESSION_KEY, JSON.stringify(msgs));
-  } catch {}  // localStorage 满或不可用时静默失败
+  } catch {}
 }
 
 // 存档当前会话（切换到新会话时调用）
 export function archiveCurrentSession() {
-  let msgs: Message[] = [];
-  const unsub1 = messages.subscribe((m) => (msgs = m));
-  unsub1();
-
+  const msgs = get(messages);
   if (msgs.length === 0) return;
 
   const archives = loadArchives();
   const title = extractTitle(msgs);
 
-  // 检查是否有同 ID 的存档
   let sid: string = genId();
-  const unsub2 = currentSessionId.subscribe((id) => { if (id) sid = id; });
-  unsub2();
+  const existingId = get(currentSessionId);
+  if (existingId) sid = existingId;
   const idx = archives.findIndex((a) => a.id === sid);
 
   const entry: ArchivedSession = {
@@ -159,7 +151,6 @@ export function renameArchivedSession(id: string, newTitle: string) {
 // 追加消息
 export function addMessage(msg: Message) {
   messages.update((msgs) => [...msgs, { ...msg, timestamp: msg.timestamp || Date.now() }]);
-  // 每次添加消息自动保存
   saveMessages();
 }
 
@@ -172,7 +163,6 @@ export function appendToLastAssistant(chunk: string) {
     }
     return [...msgs, { role: "assistant", content: chunk }];
   });
-  // 流式追加也自动保存
   saveMessages();
 }
 
@@ -194,18 +184,16 @@ export function deleteMessage(index: number) {
   saveMessages();
 }
 
-// 保存当前消息到 localStorage（每次变更自动触发）
+// 保存当前消息到 localStorage（防抖）
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 function saveMessages() {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    let msgs: Message[] = [];
-    const unsub = messages.subscribe((m) => (msgs = m));
-    unsub();
+    const msgs = get(messages);
     try {
       localStorage.setItem(CURRENT_SESSION_KEY, JSON.stringify(msgs));
     } catch {}
-  }, 300); // 300ms 防抖
+  }, 300);
 }
 
 // 清空当前会话（存档后再清）
@@ -214,7 +202,6 @@ export function clearMessages() {
   messages.set([]);
   const newId = genId();
   currentSessionId.set(newId);
-  // 清空当前会话时也保存空的会话状态
   try {
     localStorage.setItem(CURRENT_SESSION_KEY, JSON.stringify([]));
   } catch {}
