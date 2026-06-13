@@ -64,7 +64,10 @@
 
     return () => {
       if (healthCheckInterval) clearInterval(healthCheckInterval);
-      if (invokeFn) invokeFn("stop_agent").catch(() => {});
+      // 使用预存的 invokeFn，避免动态 import 异步问题
+      if (invokeFn) {
+        invokeFn("stop_agent").catch(() => {});
+      }
     };
   });
  
@@ -246,7 +249,6 @@
           </button>
           <button class="btn-secondary" onclick={() => {
             showCloudGuide = false;
-            // 用户跳过后也设为已完成，避免每次启动都弹
             const cfg = loadConfig();
             saveConfig({ ...cfg, setupComplete: true });
           }}>
@@ -279,6 +281,7 @@
           <button class="retry-btn" onclick={handleRetry} disabled={checking}>
             {checking ? "⋯" : "⟳ 重试"}
           </button>
+          <button class="dismiss-btn" onclick={() => agentError.set(null)}>✕</button>
         </div>
       {/if}
       <MessageList />
@@ -308,6 +311,7 @@
   }
   .menu-btn { background: none; font-size: 18px; padding: 4px 8px; }
   .header-title { flex: 1; font-weight: 600; font-size: 15px; }
+  .sidepanel-btn { background: none; font-size: 16px; padding: 4px 8px; }
   .settings-btn { background: none; font-size: 16px; padding: 4px 8px; }
   .new-btn { font-size: 13px; }
   .chat-area { flex: 1; overflow-y: auto; padding: 12px 0; }
@@ -323,6 +327,11 @@
     cursor: pointer; white-space: nowrap;
   }
   .retry-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .dismiss-btn {
+    background: none; border: none; color: #ef4444; cursor: pointer;
+    font-size: 14px; opacity: 0.6;
+  }
+  .dismiss-btn:hover { opacity: 1; }
   .setup-overlay {
     display: flex; align-items: center; justify-content: center;
     width: 100%; height: 100dvh;

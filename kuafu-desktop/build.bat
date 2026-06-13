@@ -74,7 +74,7 @@ if not exist "%OUT%\python.exe" (
 
 REM ---- 6. Tauri build ----
 echo [6/6] Building Tauri desktop app (this takes 5-10 minutes)...
-call npm run tauri build
+call npm run tauri build -- --bundles nsis
 if %errorlevel% neq 0 (
     echo [FAIL] Tauri build failed!
     pause
