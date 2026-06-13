@@ -318,6 +318,7 @@ class EpisodicBuffer(nn.Module):
     - 作为长期记忆的输入源（睡眠期整合）
 
     对应：海马体的快速情景编码
+    v2: 新增 text_id 支持，使向量可回溯到原始文本
     """
 
     def __init__(self, max_size: int, slot_dim: int):
@@ -337,9 +338,12 @@ class EpisodicBuffer(nn.Module):
         self.register_buffer('write_head', torch.zeros(1, dtype=torch.long))
         # 当前已使用的槽数
         self.register_buffer('used_slots', torch.zeros(1, dtype=torch.long))
+        # v2: 文本 ID 映射（Python list，存 str/id）
+        self.text_ids: list[str] = [''] * max_size
 
     def push(self, vector: torch.Tensor, context: int = 0,
-             surprise: float = 0.5, step: int = 0):
+             surprise: float = 0.5, step: int = 0,
+             text_id: str = ''):
         """写入一条情景记忆（循环队列模式）
 
         Args:
@@ -347,12 +351,14 @@ class EpisodicBuffer(nn.Module):
             context: 上下文标签
             surprise: 惊喜度
             step: 当前步数
+            text_id: v2 原始文本 ID，用于向量→原文回溯
         """
         idx = self.write_head.item()
         self.buffer[idx] = vector.detach()
         self.timestamps[idx] = step
         self.context_labels[idx] = context
         self.surprise_scores[idx] = surprise
+        self.text_ids[idx] = text_id  # v2
 
         # 更新写指针
         used = self.used_slots.item()
@@ -373,6 +379,7 @@ class EpisodicBuffer(nn.Module):
                 'timestamp': self.timestamps[idx].item(),
                 'context': self.context_labels[idx].item(),
                 'surprise': self.surprise_scores[idx].item(),
+                'text_id': self.text_ids[idx],
             })
             self.used_slots -= 1
             self.write_head.data = torch.tensor([idx])
@@ -407,6 +414,7 @@ class EpisodicBuffer(nn.Module):
         self.surprise_scores.zero_()
         self.write_head.zero_()
         self.used_slots.zero_()
+        self.text_ids = [''] * self.max_size
 
     @property
     def is_full(self) -> bool:
@@ -733,12 +741,13 @@ class MemoryController(nn.Module):
         self.register_buffer('total_writes', torch.zeros(1, dtype=torch.long))
         self.register_buffer('total_reads', torch.zeros(1, dtype=torch.long))
 
-    def forward(self, x: torch.Tensor, state=None):
+    def forward(self, x: torch.Tensor, state=None, text_id: str = ''):
         """单步处理
 
         Args:
             x: [batch, input_dim] 输入
             state: (h, c) LSTM 状态
+            text_id: v2 关联的文本 ID
 
         Returns:
             output: [batch, hidden_dim]
@@ -773,6 +782,7 @@ class MemoryController(nn.Module):
                 context=0,
                 surprise=gate,
                 step=self.step,
+                text_id=text_id,
             )
             self.total_writes += 1
 
@@ -793,6 +803,61 @@ class MemoryController(nn.Module):
         }
 
         return output, (h_new, c_new), aux
+
+    def _find_text_id_by_slot(self, slot_idx: int) -> str:
+        """从情景记忆中查找指定槽最后对应的 text_id
+
+        长期记忆的槽可能被覆盖，回溯到情景记忆查找最后关联的 text_id。
+        """
+        used = self.episodic.size
+        for i in range(used):
+            idx = (self.episodic.write_head.item() - 1 - i) % self.episodic.max_size
+            if idx < len(self.episodic.text_ids) and self.episodic.text_ids[idx]:
+                return self.episodic.text_ids[idx]
+        return ''
+
+    def store_text(self, text_vector: torch.Tensor, text_id: str = '',
+                   force_write: bool = False) -> dict:
+        """纯文本存储接口（不需要 LSTM 状态）
+
+        将文本向量存入 NMM，由惊喜度判断是否写入情景记忆。
+        v2: 供上层 MemoryManager 直接调用。
+
+        Args:
+            text_vector: [hidden_dim] 文本向量（已编码到记忆空间）
+            text_id: 原始文本 ID
+            force_write: 是否强制写入（跳过惊喜度过滤）
+
+        Returns:
+            {'stored': bool, 'surprise': float, 'episodic_size': int}
+        """
+        with torch.no_grad():
+            encoded = text_vector.unsqueeze(0)  # [1, hidden_dim]
+            read_key = self.read_key_proj(encoded)
+            longterm_read = self.longterm.read(read_key)
+            surprise = self.surprise(encoded, longterm_read)
+            gate = surprise.mean(dim=0).item()
+
+            stored = False
+            if force_write or gate > 0.3:
+                self.episodic.push(
+                    encoded.squeeze(0),
+                    context=0,
+                    surprise=gate,
+                    step=self.step,
+                    text_id=text_id,
+                )
+                self.total_writes += 1
+                stored = True
+
+            self.step += 1
+            self.total_reads += 1
+
+        return {
+            'stored': stored,
+            'surprise': gate,
+            'episodic_size': self.episodic.size,
+        }
 
     def sleep(self):
         """睡眠期记忆巩固
@@ -815,7 +880,8 @@ class MemoryController(nn.Module):
             k: 返回 top-k 结果
 
         Returns:
-            [{'vector': Tensor, 'score': float, 'source': str}, ...]
+            [{'vector': Tensor, 'score': float, 'source': str,
+              'slot': int, 'text_id': str}, ...]
         """
         results = []
 
@@ -826,7 +892,15 @@ class MemoryController(nn.Module):
             idx = topk.indices[0, i].item()
             vec = self.longterm.memory_bank.memory[0, idx]
             score = topk.values[0, i].item()
-            results.append({'vector': vec, 'score': score, 'source': 'longterm', 'slot': idx})
+            # 尝试从情景记忆中找对应 text_id（长期记忆槽被覆盖后无法回溯）
+            text_id = ''
+            epi_text_id = self._find_text_id_by_slot(idx)
+            if epi_text_id:
+                text_id = epi_text_id
+            results.append({
+                'vector': vec, 'score': score, 'source': 'longterm',
+                'slot': idx, 'text_id': text_id,
+            })
 
         # 搜索情景记忆
         epi = self.episodic.get_all()
@@ -836,11 +910,13 @@ class MemoryController(nn.Module):
             sims = (q_norm @ epi_norm.transpose(-2, -1)).squeeze(0)
             vals, idxs = sims.topk(min(k, sims.shape[0]))
             for i in range(vals.shape[0]):
+                epi_idx = idxs[i].item()
                 results.append({
-                    'vector': epi[idxs[i]],
+                    'vector': epi[epi_idx],
                     'score': vals[i].item(),
                     'source': 'episodic',
-                    'slot': idxs[i].item(),
+                    'slot': epi_idx,
+                    'text_id': self.episodic.text_ids[epi_idx] if epi_idx < len(self.episodic.text_ids) else '',
                 })
 
         # 按分数排序去重
