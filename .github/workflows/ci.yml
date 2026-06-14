@@ -301,3 +301,38 @@ jobs:
             --title "Kuafu Desktop v$VER" \
             --notes-file /tmp/release-notes.md \
             src-tauri/target/release/bundle/nsis/*.exe
+
+  mobile-build:
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 设置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "npm"
+          cache-dependency-path: kuafu-app/package-lock.json
+
+      - name: 安装前端依赖
+        working-directory: kuafu-app
+        run: npm ci --legacy-peer-deps
+
+      - name: TypeScript 编译检查
+        working-directory: kuafu-app
+        run: npx tsc --noEmit
+
+      - name: 安装 Expo CLI 和 EAS
+        working-directory: kuafu-app
+        run: |
+          npm install --legacy-peer-deps -g expo-cli@latest
+          npm install --legacy-peer-deps eas-cli
+
+      - name: EAS 构建 (Android APK)
+        working-directory: kuafu-app
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          npx eas build --platform android --profile preview --non-interactive 2>&1
