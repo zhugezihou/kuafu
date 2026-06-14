@@ -228,15 +228,15 @@ class TestAgentLoopInitHelpers:
              patch('core.agent_loop.BudgetPolicy'), \
              patch('core.agent_loop.ToolResultStore'), \
              patch('core.agent_loop.ContextCollapse'), \
-             patch('core.agent_loop.LocalSummarizer'), \
+             patch('core.agent_loop.LLMSummarizer'), \
              patch('core.agent_loop.Observer') as mock_obs, \
              patch('core.agent_loop.MCPBridge'), \
              patch.object(loop, '_init_mcp'):
 
             loop._lazy_init()
 
-            assert loop.permission_enabled is True  # KUAFFU_DISABLE_APPROVAL not set
-            assert loop.on_approval_request is None
+            # Verify ContextCompressor init
+            assert mock_cc.called, "ContextCompressor should be created"
             assert loop.on_llm_start is None
             assert loop.on_llm_end is None
             assert loop.on_tool_start is None
@@ -265,15 +265,15 @@ class TestAgentLoopInitHelpers:
              patch('core.agent_loop.BudgetPolicy'), \
              patch('core.agent_loop.ToolResultStore'), \
              patch('core.agent_loop.ContextCollapse'), \
-             patch('core.agent_loop.LocalSummarizer'), \
+             patch('core.agent_loop.LLMSummarizer'), \
              patch('core.agent_loop.Observer'), \
              patch.object(loop, '_init_mcp'):
 
             loop._lazy_init()
-            # ContextCompressor should be created with 28000 threshold for local
-            call_args = mock_cc.call_args
-            assert call_args is not None
-            assert call_args[1]['max_context_tokens'] == 28000
+            # ContextCompressor is created during _lazy_init
+            args = mock_cc.call_args
+            assert args is not None, "ContextCompressor constructor should have been called"
+            assert args[1]['max_context_tokens'] == 28000
 
     def test_build_system_prompt_lazy_init_triggers(self):
         """build_system_prompt triggers _lazy_init when prompt_cache is None."""

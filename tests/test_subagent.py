@@ -483,9 +483,9 @@ class TestGetSummarizer:
     def test_init_success(self):
         """首次初始化成功。"""
         with patch("core.subagent._SUMMARIZER_CACHE", None):
-            with patch("core.context_compress.LocalSummarizer") as mock_cls:
+            with patch("core.context_compress.LLMSummarizer") as mock_cls:
                 mock_s = MagicMock()
-                mock_s.is_available.return_value = True
+                mock_s._llm_chat = lambda x: "summary"
                 mock_cls.return_value = mock_s
                 from core.subagent import _get_summarizer
                 s = _get_summarizer()
@@ -495,9 +495,9 @@ class TestGetSummarizer:
     def test_init_not_available(self):
         """不可用时返回 None 并缓存 False。"""
         with patch("core.subagent._SUMMARIZER_CACHE", None):
-            with patch("core.context_compress.LocalSummarizer") as mock_cls:
+            with patch("core.context_compress.LLMSummarizer") as mock_cls:
                 mock_s = MagicMock()
-                mock_s.is_available.return_value = False
+                mock_s._llm_chat = None
                 mock_cls.return_value = mock_s
                 from core.subagent import _get_summarizer
                 assert _get_summarizer() is None
@@ -505,7 +505,7 @@ class TestGetSummarizer:
     def test_init_exception(self):
         """初始化异常返回 None。"""
         with patch("core.subagent._SUMMARIZER_CACHE", None):
-            with patch("core.context_compress.LocalSummarizer", side_effect=ImportError("no module")):
+            with patch("core.context_compress.LLMSummarizer", side_effect=ImportError("no module")):
                 from core.subagent import _get_summarizer
                 assert _get_summarizer() is None
 

@@ -214,12 +214,14 @@ class TestWhiteboard:
             assert "done" in summary
 
     def test_checkpoint(self):
+        import tempfile
         wb = self._make_wb()
         with patch.object(wb, '_read_partition', return_value=[{"_id": "1"}]):
-            with patch("json.dump"):
-                ck = wb.checkpoint()
-                assert "checkpoint_id" in ck
-                assert len(ck["partitions"]) == len(wb._partitions)
+            with patch.object(wb, '_write_partition'):
+                with patch("json.dump"):
+                    ck = wb.checkpoint()
+                    assert "checkpoint_id" in ck
+                    assert len(ck["partitions"]) == len(wb._partitions)
 
     def test_restore_not_found(self):
         wb = self._make_wb()

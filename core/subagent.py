@@ -473,7 +473,7 @@ def _get_summarizer() -> Optional[object]:
     try:
         from core.context_compress import LLMSummarizer
         s = LLMSummarizer()
-        if s.is_available():
+        if s._llm_chat is not None:
             _SUMMARIZER_CACHE = s
             return s
     except Exception as e:

@@ -1,3 +1,4 @@
+class TestFeishuWebSocketChannel:
     """Complete coverage for FeishuWebSocketChannel."""
 
     def _make_channel(self, app_id="test_id", app_secret="test_secret"):

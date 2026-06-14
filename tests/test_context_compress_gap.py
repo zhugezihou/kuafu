@@ -3,7 +3,7 @@
 import json
 import pytest
 from core.context_compress import (
-    ContextCompressor, ContextCollapse, LocalSummarizer,
+    ContextCompressor, ContextCollapse,
     PinnedContentManager, budget_reduce_output,
 )
 
