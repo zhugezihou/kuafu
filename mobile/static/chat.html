@@ -38,11 +38,30 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sy
 .message.assistant .msg-avatar{background:var(--accent);color:#fff;font-weight:600}
 .message.user .msg-avatar{background:var(--surface2);color:var(--text2);border:1px solid var(--border)}
 .msg-body{flex:1;min-width:0}
-.msg-content{font-size:14px;line-height:1.65;word-break:break-word;white-space:pre-wrap;color:var(--text)}
+.msg-content{font-size:14px;line-height:1.65;word-break:break-word;color:var(--text)}
 .message.user .msg-content{background:var(--surface2);padding:8px 14px;border-radius:16px;border-bottom-right-radius:4px;color:var(--text);font-size:13px}
+
+/* Markdown 样式 */
+.msg-content p{margin:4px 0}
+.msg-content p:first-child{margin-top:0}
+.msg-content p:last-child{margin-bottom:0}
 .msg-content code{background:var(--surface2);padding:1px 5px;border-radius:4px;font-size:12px;font-family:'SF Mono','Fira Code','Consolas',monospace}
 .msg-content pre{background:var(--surface);padding:10px;border-radius:var(--radius-sm);overflow-x:auto;font-size:12px;margin:6px 0;border:1px solid var(--border)}
 .msg-content pre code{background:none;padding:0}
+.msg-content ul,.msg-content ol{padding-left:20px;margin:4px 0}
+.msg-content li{margin:2px 0}
+.msg-content h1,.msg-content h2,.msg-content h3,.msg-content h4{font-weight:600;margin:8px 0 4px}
+.msg-content h1{font-size:17px}
+.msg-content h2{font-size:16px}
+.msg-content h3{font-size:15px}
+.msg-content blockquote{border-left:3px solid var(--accent);padding-left:10px;margin:4px 0;color:var(--text2)}
+.msg-content table{border-collapse:collapse;margin:6px 0;font-size:12px;width:100%;display:block;overflow-x:auto}
+.msg-content th,.msg-content td{border:1px solid var(--border);padding:4px 8px;text-align:left}
+.msg-content th{background:var(--surface2);font-weight:600}
+.msg-content a{color:var(--info);text-decoration:none}
+.msg-content a:active{opacity:.7}
+.msg-content hr{border:none;border-top:1px solid var(--border);margin:8px 0}
+
 .cursor-blink{display:inline-block;width:2px;height:16px;background:var(--accent);margin-left:2px;animation:blink .8s infinite;vertical-align:middle}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
 
@@ -98,7 +117,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sy
 .approval-card{border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px;margin-bottom:8px;background:var(--surface2)}
 .approval-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
 .approval-tool{font-size:12px;font-weight:500}
-.approval-risk{font-size:10px;padding:1px 6px;border-radius:3px;background:rgba(252,196,25,.15);color:var(--warning)}
+.approval-risk{font-size:10px;padding:1px 6px;border-radius:3px;background:rgba(252,196,25,.15);color:var(--warning, #fcc419)}
 .approval-risk.high{background:rgba(250,82,82,.15);color:var(--error)}
 .approval-detail{font-size:11px;color:var(--text2);margin-bottom:6px;white-space:pre-wrap;max-height:40px;overflow-y:auto}
 .approval-actions{display:flex;gap:6px}
@@ -116,14 +135,14 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sy
 .tl-dot.error{background:var(--error)}
 .tl-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tl-time{font-size:10px;color:var(--text2);font-variant-numeric:tabular-nums;flex-shrink:0}
-.task-timer{font-size:11px;color:var(--warning);font-variant-numeric:tabular-nums}
+.task-timer{font-size:11px;color:var(--warning, #fcc419);font-variant-numeric:tabular-nums}
 
 /* ── 滚动条 ── */
 ::-webkit-scrollbar{width:3px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
 
-/* ── 模态框 ── */
+/* ── 设置模态框 ── */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:100}
 .modal{background:var(--surface);border:1px solid var(--border);border-radius:12px;width:90%;max-width:400px;max-height:80vh;overflow-y:auto;padding:20px;margin:20px}
 .modal h2{font-size:16px;font-weight:600;margin-bottom:12px}
@@ -155,7 +174,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sy
   <div class="input-area">
     <div class="file-list" id="fileList"></div>
     <div class="input-row">
-      <textarea id="inputBox" rows="1" placeholder="给夸父发消息…"></textarea>
+      <textarea id="inputBox" rows="1" placeholder="给夸父发消息…" autocomplete="off"></textarea>
       <button class="send-btn" id="sendBtn">→</button>
     </div>
   </div>
@@ -171,7 +190,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sy
     <button class="tab-btn" onclick="showDrawer('tasks')"><span class="tab-icon">⏱</span>任务</button>
     <button class="tab-btn" onclick="showDrawer('approvals')"><span class="tab-icon">🔐</span>审批</button>
     <button class="tab-btn" onclick="showDrawer('timeline')"><span class="tab-icon">📋</span>时间线</button>
-    <button class="tab-btn" onclick="toggleModel()"><span class="tab-icon">⚙</span>设置</button>
+    <button class="tab-btn" onclick="showSettings()"><span class="tab-icon">⚙</span>设置</button>
   </div>
 </div>
 
@@ -193,7 +212,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sy
   <div class="modal">
     <button class="modal-close" onclick="closeSettings()">✕</button>
     <h2>⚙ 设置</h2>
-    <div class="form-group"><label>模型后端</label><select id="settingModel"><option value="cloud">云端 DeepSeek</option><option value="local">本地 Qwen3.5-9B</option></select></div>
+    <div class="form-group"><label>模型后端</label><select id="settingModel"><option value="cloud">云端 DeepSeek</option></select></div>
     <div class="form-group"><label>系统提示词（可选）</label><input type="text" id="settingSysPrompt" placeholder="例如: 请用英文回答"></div>
     <button class="btn-approve" onclick="saveSettings()" style="padding:8px;width:100%">保存</button>
   </div>
@@ -213,6 +232,94 @@ const drawerTitle = $('drawerTitle'), drawerOverlay = $('drawerOverlay');
 let isLoading = false, uploadedFiles = [], sysPromptExtra = '';
 let approvals = {}, timeline = [], activeTools = {};
 let abortController = null;
+
+// ─── 轻量 Markdown 渲染 ─────────────────────────────────────────
+function renderMarkdown(text) {
+  // 转义 HTML
+  let html = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  // 代码块 (```) — 必须在行内代码之前处理
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+    return `<pre><code>${escHtml(code)}</code></pre>`;
+  });
+
+  // 行内代码 (`)
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // 粗体 **text** 和 *text*
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+
+  // 行级图片 ![](url)
+  html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" style="max-width:100%;border-radius:6px;margin:4px 0">');
+
+  // 链接 [text](url)
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+
+  // 标题 (### 到 #)
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+
+  // 分割线
+  html = html.replace(/^---+$/gm, '<hr>');
+
+  // 引用 >
+  html = html.replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>');
+
+  // 表格
+  html = html.replace(/^\|(.+)\|$/gm, function(m) {
+    // 检测分隔行 (|---|)
+    if (/^\|[\s:-]+\|$/.test(m)) return '';
+    const cells = m.slice(1,-1).split('|').map(c => c.trim());
+    return '<tr><td>' + cells.join('</td><td>') + '</td></tr>';
+  });
+  // 表格包裹
+  html = html.replace(/(<tr>.*?<\/tr>(\n?))/g, function(m) {
+    if (!window._tableOpen) {
+      window._tableOpen = true;
+      return '<table><thead>' + m.replace(/<td>/g,'<th>').replace(/<\/td>/g,'</th>') + '</thead><tbody>';
+    }
+    return m;
+  });
+  html = html.replace(/<\/tbody><\/table>/g, ''); // 清除可能的重复
+  html = html.replace(/<\/tr><\/table><table><tbody>/g, '</tr>');
+  // 如果有表格但没有关闭，补全
+  if (window._tableOpen) {
+    html += '</tbody></table>';
+    window._tableOpen = false;
+  }
+
+  // 无序列表
+  html = html.replace(/^[-*] (.+)$/gm, '<li>$1</li>');
+  html = html.replace(/(<li>.*<\/li>(\n?))+/g, '<ul>$&</ul>');
+
+  // 有序列表
+  html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+  html = html.replace(/(?:^<li>.*<\/li>(\n?))+/gm, function(m) {
+    if (!m.includes('<ul>')) return '<ol>' + m + '</ol>';
+    return m;
+  });
+
+  // 段落 — 把连续文本包进 <p>
+  html = html.replace(/\n\n/g, '</p><p>');
+  html = '<p>' + html + '</p>';
+
+  // 清理空的 <p> 和嵌套
+  html = html.replace(/<p><\/p>/g, '');
+  html = html.replace(/<\/p><p><\/p>/g, '</p><p>');
+
+  return html;
+}
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
 
 // 输入事件
 inputBox.addEventListener('input', () => { inputBox.style.height='auto'; inputBox.style.height=Math.min(inputBox.scrollHeight,100)+'px'; });
@@ -234,16 +341,19 @@ function handleEvent(msg) {
     case'llm_end': setStatus('ok','就绪'); break;
     case'tool_start':
       activeTools[msg.tool] = { ts: msg.ts, tool: msg.tool };
+      timeline.push({type:'tool', label:`工具: ${msg.tool}`, time: new Date().toLocaleTimeString()});
       break;
     case'tool_end':
       delete activeTools[msg.tool];
       break;
     case'approval_request':
       approvals[msg.req_id] = { tool: msg.tool, args: msg.args, risk: msg.risk || 'medium' };
+      timeline.push({type:'tool', label:`审批: ${msg.tool}`, time: new Date().toLocaleTimeString()});
       if(drawerTitle.textContent === '🔐 审批') renderDrawer();
       break;
     case'approval_result':
       delete approvals[msg.req_id];
+      timeline.push({type:'finish', label: msg.approved ? '已批准' : '已拒绝', time: new Date().toLocaleTimeString()});
       if(drawerTitle.textContent === '🔐 审批') renderDrawer();
       break;
   }
@@ -334,11 +444,12 @@ async function sendMessage() {
   addMessage('user', text);
   inputBox.value = ''; inputBox.style.height = 'auto';
 
-  // AI 消息容器
-  const msgDiv = addMessage('assistant', '');
+  // AI 消息容器 — 先空容器，流式填入 HTML
+  const msgDiv = addMessage('assistant', '', true);
   const contentDiv = msgDiv.querySelector('.msg-content');
   const cursor = document.createElement('span');
   cursor.className = 'cursor-blink';
+  contentDiv.innerHTML = '';
   contentDiv.appendChild(cursor);
 
   const reqStart = Date.now();
@@ -352,14 +463,15 @@ async function sendMessage() {
     const data = await res.json();
     const elapsed = ((Date.now()-reqStart)/1000).toFixed(1);
 
-    // 打字机效果
     const fullText = data.message || data.summary || (data.success ? '完成' : '出错');
     cursor.remove();
-    typewriter(contentDiv, fullText, () => {
+
+    // 渲染 Markdown + 打字机效果
+    typewriterMarkdown(contentDiv, fullText, () => {
       // 完成后添加操作按钮
       const actions = document.createElement('div');
       actions.className = 'msg-actions';
-      actions.innerHTML = `<button class="msg-action-btn" onclick="navigator.clipboard.writeText(this.parentElement.previousElementSibling.textContent)">📋 复制</button>`;
+      actions.innerHTML = `<button class="msg-action-btn" onclick="copyMsg(this)">📋 复制</button>`;
       msgDiv.querySelector('.msg-body').appendChild(actions);
     });
 
@@ -372,30 +484,56 @@ async function sendMessage() {
 
   isLoading = false;
   sendBtn.textContent = '→'; sendBtn.classList.remove('stop');
-  chatInner.scrollTop = chatInner.scrollHeight;
+  chatArea.scrollTop = chatArea.scrollHeight;
 }
 
-function addMessage(role, text) {
+function copyMsg(btn) {
+  // 获取纯文本内容（去掉 Markdown HTML）
+  const content = btn.closest('.msg-body').querySelector('.msg-content');
+  const text = content.textContent || content.innerText;
+  navigator.clipboard.writeText(text).then(() => {
+    btn.textContent = '✅ 已复制';
+    setTimeout(() => { btn.textContent = '📋 复制'; }, 2000);
+  });
+}
+
+function addMessage(role, text, isMarkdown) {
   const div = document.createElement('div');
   div.className = `message ${role}`;
   const avatar = role === 'assistant' ? '夸' : '我';
-  div.innerHTML = `<div class="msg-avatar">${avatar}</div><div class="msg-body"><div class="msg-content">${escHtml(text)}</div></div>`;
+  const content = isMarkdown ? '' : escHtml(text);
+  div.innerHTML = `<div class="msg-avatar">${avatar}</div><div class="msg-body"><div class="msg-content">${content}</div></div>`;
   chatInner.appendChild(div);
-  chatInner.scrollTop = chatInner.scrollHeight;
+  chatArea.scrollTop = chatArea.scrollHeight;
   return div;
 }
 
-function typewriter(el, text, cb) {
+// Markdown 打字机效果（逐字追加，实时渲染）
+function typewriterMarkdown(el, text, cb) {
   let i = 0;
-  el.textContent = '';
+  el.innerHTML = '';
+  let rendered = '';
+
   function tick() {
     if(i < text.length) {
-      el.textContent += text[i];
+      rendered += text[i];
       i++;
-      chatInner.scrollTop = chatInner.scrollHeight;
-      const delay = text[i-1] === '\n' ? 20 : text[i-1] === ' ' ? 8 : 20;
+
+      // 每 3 个字符更新一次渲染（避免频繁 DOM 操作）
+      if(i % 3 === 0 || i >= text.length) {
+        el.innerHTML = renderMarkdown(rendered);
+      }
+
+      chatArea.scrollTop = chatArea.scrollHeight;
+      const delay = text[i-1] === '\n' ? 20 : text[i-1] === ' ' ? 8 : 15;
       setTimeout(tick, delay);
-    } else if(cb) cb();
+    } else {
+      // 最终渲染
+      el.innerHTML = renderMarkdown(rendered);
+      // 清理 _tableOpen 标记
+      window._tableOpen = false;
+      if(cb) cb();
+    }
   }
   tick();
 }
@@ -409,19 +547,7 @@ function closeSettings() {
 }
 function saveSettings() {
   sysPromptExtra = $('settingSysPrompt').value.trim();
-  const target = $('settingModel').value;
   closeSettings();
-  if(target) toggleModel(target);
-}
-function toggleModel(target) {
-  const t = target || prompt('切换后端: cloud / local');
-  if(!t) return;
-  setStatus('loading','切换…');
-  fetch('/api/model',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target:t.trim()})})
-    .then(r=>r.json()).then(d=>{
-      setStatus(d.success?'ok':'error', d.message||(d.success?'已切换':'失败'));
-      if(d.success) fetchStatus();
-    }).catch(()=>setStatus('error','网络错误'));
 }
 
 // ═══ 状态 ═══

@@ -5,13 +5,14 @@
 纯 Python http.server 实现，零外部依赖。
 提供 REST API + SSE 实时推送。
 
+云原生模式：仅云端 DeepSeek，无本地模型路径。
+
 用法:
     python mobile/web_server.py [--port 8080]
 
 环境变量:
-    KUAFFU_BACKEND   — 模型后端 (local/cloud)
-    KUAFFU_HOST      — 监听地址 (默认 0.0.0.0)
-    KUAFFU_PORT      — 监听端口 (默认 8080)
+    KUAFU_HOST      — 监听地址 (默认 0.0.0.0)
+    KUAFU_PORT      — 监听端口 (默认 8080)
 
 API:
     GET  /               → SPA HTML
@@ -212,7 +213,6 @@ class KuafuHandler(http.server.BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
 
-        # CORS preflight
         if path == "/api/chat":
             self._handle_chat()
         elif path == "/api/reset":
@@ -412,8 +412,8 @@ def main():
     parser.add_argument("--host", type=str, default=None, help="监听地址 (默认 0.0.0.0)")
     args, _ = parser.parse_known_args()
 
-    host = args.host or os.environ.get("KUAFFU_HOST", "0.0.0.0")
-    port = args.port or int(os.environ.get("KUAFFU_PORT", "8080"))
+    host = args.host or os.environ.get("KUAFU_HOST", "0.0.0.0")
+    port = args.port or int(os.environ.get("KUAFU_PORT", "8080"))
 
     # 注入全局审批回调（确保子 Agent 的审批也能推送）
     import core.approval as kuafu_approval_module
