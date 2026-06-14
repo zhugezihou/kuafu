@@ -9,9 +9,10 @@ import {
   StyleSheet,
   KeyboardAvoidingView,
   Platform,
-  AppState,
   Animated,
   ActivityIndicator,
+  Modal,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
@@ -19,24 +20,25 @@ import { theme } from '../src/theme';
 import {
   sendMessage,
   getStatus,
-  connectSSE,
-  startSSEPolling,
-  SSEEvent,
+  resetConversation,
+  approveRequest,
+  rejectRequest,
+  getPendingApprovals,
+  setBaseUrl,
   StatusResponse,
+  PendingApproval,
 } from '../src/api/gateway';
+import {
+  loadMessages,
+  saveMessages,
+  appendMessage,
+  updateMessage,
+  clearMessages,
+  StoredMessage,
+} from '../src/store/storage';
 
-// ── 消息类型 ──
-interface Message {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  timestamp: number;
-  isStreaming?: boolean;
-}
-
-// ── 简易 Markdown 渲染 ──
-function renderMarkdown(text: string): { plain: string; segments: { text: string; bold?: boolean; code?: boolean; link?: string }[] } {
-  // 简易版：提取纯文本（在 RN 中用 Text 组件渲染带样式的片段）
+// ── Markdown 渲染 ──
+function parseMarkdown(text: string): { plain: string; segments: { text: string; bold?: boolean; code?: boolean; link?: string }[] } {
   const segments: { text: string; bold?: boolean; code?: boolean; link?: string }[] = [];
   const regex = /(\*\*(.+?)\*\*|`([^`]+)`|\[([^\]]+)\]\(([^)]+)\))/g;
   let lastIndex = 0;
@@ -62,7 +64,7 @@ function renderMarkdown(text: string): { plain: string; segments: { text: string
 }
 
 function MarkdownText({ content }: { content: string }) {
-  const { segments } = renderMarkdown(content);
+  const { segments } = parseMarkdown(content);
   return (
     <Text style={styles.msgText}>
       {segments.map((seg, i) => {
@@ -82,11 +84,13 @@ function MarkdownText({ content }: { content: string }) {
 }
 
 export default function ChatScreen() {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<StoredMessage[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [connecting, setConnecting] = useState(true);
+  const [approvals, setApprovals] = useState<PendingApproval[]>([]);
+  const [approvalModal, setApprovalModal] = useState(false);
   const flatListRef = useRef<FlatList>(null);
   const inputRef = useRef<TextInput>(null);
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -98,37 +102,89 @@ export default function ChatScreen() {
 
   async function initApp() {
     setConnecting(true);
+
+    // 加载历史消息
+    const saved = await loadMessages();
+    if (saved.length > 0) {
+      setMessages(saved);
+    }
+
     // 尝试连接 Gateway
     for (let i = 0; i < 5; i++) {
       try {
         const st = await getStatus();
         setStatus(st);
         setConnecting(false);
-        // 添加欢迎消息
-        setMessages([{
-          id: 'welcome',
-          role: 'assistant',
-          content: `你好！我是夸父 v${st.version || '?'}，有什么可以帮你的？`,
-          timestamp: Date.now(),
-        }]);
+
+        // 加载待审批
+        loadApprovals();
+
+        // 如果没有历史消息，加欢迎语
+        if (saved.length === 0) {
+          const welcome: StoredMessage = {
+            id: 'welcome',
+            role: 'assistant',
+            content: `你好！我是夸父 v${st.version || '?'}，有什么可以帮你的？`,
+            timestamp: Date.now(),
+          };
+          setMessages([welcome]);
+          appendMessage(welcome);
+        }
+
         Animated.timing(fadeAnim, {
           toValue: 1,
           duration: 300,
           useNativeDriver: true,
         }).start();
+
+        // 定时刷新审批状态
+        startApprovalPolling();
         return;
       } catch {
         await new Promise(r => setTimeout(r, 2000));
       }
     }
     setConnecting(false);
-    // 离线模式
-    setMessages([{
-      id: 'offline',
-      role: 'assistant',
-      content: '⚠️ 无法连接到夸父 Gateway。请确保已在 Termux 中启动夸父。',
-      timestamp: Date.now(),
-    }]);
+    if (saved.length === 0) {
+      setMessages([{
+        id: 'offline',
+        role: 'assistant',
+        content: '⚠️ 无法连接到夸父 Gateway。\n\n请确保已在 Termux 中启动夸父:\n`bash mobile/start-mobile.sh`\n\n设置页可修改 Gateway 地址。',
+        timestamp: Date.now(),
+      }]);
+    }
+  }
+
+  // ── 审批轮询 ──
+  function startApprovalPolling() {
+    const timer = setInterval(loadApprovals, 5000);
+    return () => clearInterval(timer);
+  }
+
+  async function loadApprovals() {
+    try {
+      const result = await getPendingApprovals();
+      if (result.success) {
+        setApprovals(result.approvals);
+        if (result.approvals.length > 0) {
+          setApprovalModal(true);
+        }
+      }
+    } catch {}
+  }
+
+  async function handleApprove(reqId: string) {
+    try {
+      await approveRequest(reqId);
+      loadApprovals();
+    } catch {}
+  }
+
+  async function handleReject(reqId: string) {
+    try {
+      await rejectRequest(reqId);
+      loadApprovals();
+    } catch {}
   }
 
   // ── 发送消息 ──
@@ -137,22 +193,22 @@ export default function ChatScreen() {
     if (!text || loading) return;
 
     setInput('');
-    const userMsg: Message = {
+    const userMsg: StoredMessage = {
       id: `user-${Date.now()}`,
       role: 'user',
       content: text,
       timestamp: Date.now(),
     };
-
-    const assistantMsg: Message = {
+    const assistantMsg: StoredMessage = {
       id: `assistant-${Date.now()}`,
       role: 'assistant',
       content: '',
-      isStreaming: true,
       timestamp: Date.now(),
     };
 
     setMessages(prev => [...prev, userMsg, assistantMsg]);
+    appendMessage(userMsg);
+    appendMessage(assistantMsg);
     setLoading(true);
 
     try {
@@ -160,30 +216,39 @@ export default function ChatScreen() {
       const reply = result.message || result.summary || (result.success ? '完成' : '出错');
 
       setMessages(prev =>
-        prev.map(m =>
-          m.id === assistantMsg.id
-            ? { ...m, content: reply, isStreaming: false }
-            : m
-        )
+        prev.map(m => (m.id === assistantMsg.id ? { ...m, content: reply } : m))
       );
+      updateMessage(assistantMsg.id, { content: reply });
     } catch (e: any) {
+      const errMsg = `❌ 错误: ${e.message}`;
       setMessages(prev =>
-        prev.map(m =>
-          m.id === assistantMsg.id
-            ? { ...m, content: `❌ 错误: ${e.message}`, isStreaming: false }
-            : m
-        )
+        prev.map(m => (m.id === assistantMsg.id ? { ...m, content: errMsg } : m))
       );
+      updateMessage(assistantMsg.id, { content: errMsg });
     }
 
     setLoading(false);
-    // 滚动到最新消息
     setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
   }, [input, loading]);
 
+  // ── 重置对话 ──
+  async function handleNewChat() {
+    await clearMessages();
+    setMessages([{
+      id: 'welcome-' + Date.now(),
+      role: 'assistant',
+      content: '对话已重置。有什么可以帮你的？',
+      timestamp: Date.now(),
+    }]);
+    try {
+      await resetConversation();
+    } catch {}
+  }
+
   // ── 渲染消息 ──
-  const renderMessage = useCallback(({ item }: { item: Message }) => {
+  const renderMessage = useCallback(({ item }: { item: StoredMessage }) => {
     const isUser = item.role === 'user';
+    const isStreaming = !item.content;
     return (
       <View style={[styles.msgRow, isUser && styles.msgRowUser]}>
         {!isUser && (
@@ -191,8 +256,8 @@ export default function ChatScreen() {
             <Text style={styles.avatarText}>夸</Text>
           </View>
         )}
-        <View style={[styles.msgBubble, isUser ? styles.msgBubbleUser : styles.msgBubbleAssistant]}>
-          {item.isStreaming && !item.content ? (
+        <View style={[styles.msgBubble, isUser && styles.msgBubbleUser]}>
+          {isStreaming ? (
             <ActivityIndicator color={theme.accent} size="small" />
           ) : (
             <MarkdownText content={item.content} />
@@ -225,17 +290,31 @@ export default function ChatScreen() {
       {/* 顶栏 */}
       <View style={styles.header}>
         <View style={styles.headerLeft}>
+          <TouchableOpacity onPress={handleNewChat} style={styles.newChatBtn}>
+            <Text style={styles.newChatIcon}>✕</Text>
+          </TouchableOpacity>
           <View style={styles.logo}>
             <Text style={styles.logoText}>夸</Text>
           </View>
           <Text style={styles.headerTitle}>夸父</Text>
         </View>
-        <TouchableOpacity
-          style={styles.settingsBtn}
-          onPress={() => router.push('/settings')}
-        >
-          <Text style={styles.settingsIcon}>⚙</Text>
-        </TouchableOpacity>
+        <View style={styles.headerRight}>
+          {/* 审批按钮 */}
+          {approvals.length > 0 && (
+            <TouchableOpacity
+              style={styles.approvalBadge}
+              onPress={() => setApprovalModal(true)}
+            >
+              <Text style={styles.approvalBadgeText}>🔐 {approvals.length}</Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity
+            style={styles.settingsBtn}
+            onPress={() => router.push('/settings')}
+          >
+            <Text style={styles.settingsIcon}>⚙</Text>
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* 消息列表 */}
@@ -296,6 +375,56 @@ export default function ChatScreen() {
           {loading ? '思考中…' : status?.model ? status.model.slice(0, 20) : '就绪'}
         </Text>
       </View>
+
+      {/* 审批模态框 */}
+      <Modal
+        visible={approvalModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setApprovalModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>🔐 待审批</Text>
+              <TouchableOpacity onPress={() => setApprovalModal(false)}>
+                <Text style={styles.modalClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            {approvals.length === 0 ? (
+              <Text style={styles.noApprovals}>无待审批</Text>
+            ) : (
+              approvals.map(a => (
+                <View key={a.id} style={styles.approvalCard}>
+                  <View style={styles.approvalHeader}>
+                    <Text style={styles.approvalTool}>{a.tool}</Text>
+                    <Text style={[styles.approvalRisk, a.risk === 'high' && styles.approvalRiskHigh]}>
+                      {(a.risk || 'medium').toUpperCase()}
+                    </Text>
+                  </View>
+                  <Text style={styles.approvalDetail} numberOfLines={3}>
+                    {a.detail || JSON.stringify(a)}
+                  </Text>
+                  <View style={styles.approvalActions}>
+                    <TouchableOpacity
+                      style={styles.btnApprove}
+                      onPress={() => handleApprove(a.id)}
+                    >
+                      <Text style={styles.btnText}>批准</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.btnReject}
+                      onPress={() => handleReject(a.id)}
+                    >
+                      <Text style={styles.btnText}>拒绝</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              ))
+            )}
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -337,6 +466,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  newChatBtn: {
+    padding: 4,
+  },
+  newChatIcon: {
+    color: theme.text2,
+    fontSize: 14,
+  },
   logo: {
     width: 28,
     height: 28,
@@ -360,6 +501,17 @@ const styles = StyleSheet.create({
   },
   settingsIcon: {
     fontSize: 18,
+  },
+  approvalBadge: {
+    backgroundColor: 'rgba(250,82,82,0.15)',
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  approvalBadgeText: {
+    color: theme.error,
+    fontSize: 11,
+    fontWeight: '600',
   },
   // ── 消息 ──
   chatArea: {
@@ -410,9 +562,6 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     borderBottomRightRadius: 4,
     maxWidth: '80%',
-  },
-  msgBubbleAssistant: {
-    // 无背景色，与消息列表统一
   },
   msgText: {
     color: theme.text,
@@ -516,5 +665,106 @@ const styles = StyleSheet.create({
     color: theme.text2,
     fontSize: 11,
     flex: 1,
+  },
+  // ── 审批模态框 ──
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: theme.surface,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    padding: 16,
+    maxHeight: '70%',
+    borderTopWidth: 1,
+    borderTopColor: theme.border,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.border,
+  },
+  modalTitle: {
+    color: theme.text,
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  modalClose: {
+    color: theme.text2,
+    fontSize: 18,
+    padding: 4,
+  },
+  noApprovals: {
+    color: theme.text2,
+    fontSize: 13,
+    textAlign: 'center',
+    paddingVertical: 20,
+  },
+  approvalCard: {
+    borderWidth: 1,
+    borderColor: theme.border,
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 8,
+    backgroundColor: theme.surface2,
+  },
+  approvalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  approvalTool: {
+    color: theme.text,
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  approvalRisk: {
+    fontSize: 10,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 3,
+    backgroundColor: 'rgba(252,196,25,0.15)',
+    color: '#fcc419',
+    overflow: 'hidden',
+  },
+  approvalRiskHigh: {
+    backgroundColor: 'rgba(250,82,82,0.15)',
+    color: theme.error,
+  },
+  approvalDetail: {
+    color: theme.text2,
+    fontSize: 11,
+    marginBottom: 8,
+    lineHeight: 16,
+  },
+  approvalActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  btnApprove: {
+    flex: 1,
+    backgroundColor: theme.success,
+    borderRadius: 6,
+    paddingVertical: 8,
+    alignItems: 'center',
+  },
+  btnReject: {
+    flex: 1,
+    backgroundColor: theme.error,
+    borderRadius: 6,
+    paddingVertical: 8,
+    alignItems: 'center',
+  },
+  btnText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '600',
   },
 });
