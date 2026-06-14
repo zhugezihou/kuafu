@@ -46,15 +46,16 @@ if [ ! -f "$KUAFFU_DIR/mobile/web_server.py" ]; then
 fi
 
 # 3. 强制云端模式（手机版不跑本地模型）
-export KUAFFU_BACKEND=cloud
+export KUAFU_LLM_BACKEND=cloud
+export KUAFU_PROVIDERS=deepseek
 warn "云端模式（DeepSeek）"
 
 # 手机版禁止审批拦截（终端操作太多，审批刷屏）
-export KUAFFU_DISABLE_APPROVAL=1
+export KUAFU_DISABLE_APPROVAL=1
 
 # 4. 获取 IP
 DEVICE_IP="$(ip route get 1 2>/dev/null | grep -o 'src [0-9.]*' | cut -d' ' -f2 || echo '127.0.0.1')"
-PORT="${KUAFFU_PORT:-8080}"
+PORT="${KUAFU_PORT:-8080}"
 
 # 5. 启动
 echo ""
