@@ -1,6 +1,6 @@
 {
   "name": "kuafu-app",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "main": "expo-router/entry",
   "dependencies": {
     "@jamsch/expo-speech-recognition": "^0.2.15",
