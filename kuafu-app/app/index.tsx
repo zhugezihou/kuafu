@@ -17,6 +17,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { theme } from '../src/theme';
+import { usePhoneTools } from '../src/hooks/usePhoneTools';
 import {
   sendMessage,
   getStatus,
@@ -91,9 +92,12 @@ export default function ChatScreen() {
   const [connecting, setConnecting] = useState(true);
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [approvalModal, setApprovalModal] = useState(false);
+  const [showToolbar, setShowToolbar] = useState(false);
   const flatListRef = useRef<FlatList>(null);
   const inputRef = useRef<TextInput>(null);
   const fadeAnim = useRef(new Animated.Value(0)).current;
+  const phoneTools = usePhoneTools();
+  const { getLocation, getClipboard, sendNotification, readDirectory } = phoneTools;
 
   // ── 初始化 ──
   useEffect(() => {
@@ -333,6 +337,142 @@ export default function ChatScreen() {
           </View>
         }
       />
+
+      {/* 工具栏按钮 + 快捷工具条 */}
+      <View style={styles.toolbarArea}>
+        <TouchableOpacity
+          style={styles.toolbarToggle}
+          onPress={() => setShowToolbar(!showToolbar)}
+        >
+          <Text style={[styles.toolbarToggleText, showToolbar && { color: theme.accent }]}>
+            + 工具
+          </Text>
+        </TouchableOpacity>
+
+        {showToolbar && (
+          <View style={styles.toolbarRow}>
+            <TouchableOpacity
+              style={styles.toolBtn}
+              onPress={() => {
+                setShowToolbar(false);
+                const toolMsg: StoredMessage = {
+                  id: `tool-${Date.now()}`,
+                  role: 'user',
+                  content: '[手机工具] 正在获取位置信息...',
+                  timestamp: Date.now(),
+                };
+                setMessages(prev => [...prev, toolMsg]);
+                appendMessage(toolMsg);
+                getLocation().then(loc => {
+                  const reply = loc.success
+                    ? `📍 当前位置：\n纬度: ${loc.data.latitude}\n经度: ${loc.data.longitude}\n地址: ${loc.data.address || '未知'}`
+                    : `❌ 定位失败: ${loc.error}`;
+                  const resultMsg: StoredMessage = {
+                    id: `loc-${Date.now()}`,
+                    role: 'assistant',
+                    content: reply,
+                    timestamp: Date.now(),
+                  };
+                  setMessages(prev => [...prev, resultMsg]);
+                  appendMessage(resultMsg);
+                });
+              }}
+            >
+              <Text style={styles.toolIcon}>📍</Text>
+              <Text style={styles.toolLabel}>定位</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.toolBtn}
+              onPress={() => {
+                setShowToolbar(false);
+                getClipboard().then(clip => {
+                  const reply = clip.success
+                    ? `📋 剪贴板内容：\n\`${clip.data.text.slice(0, 200)}\``
+                    : `❌ 读取剪贴板失败: ${clip.error}`;
+                  const msg: StoredMessage = {
+                    id: `clip-${Date.now()}`,
+                    role: 'assistant',
+                    content: reply,
+                    timestamp: Date.now(),
+                  };
+                  setMessages(prev => [...prev, msg]);
+                  appendMessage(msg);
+                });
+              }}
+            >
+              <Text style={styles.toolIcon}>📋</Text>
+              <Text style={styles.toolLabel}>剪贴板</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.toolBtn}
+              onPress={() => {
+                setShowToolbar(false);
+                sendNotification('夸父通知', '通知功能已就绪')
+                  .then(() => {
+                    const msg: StoredMessage = {
+                      id: `notif-${Date.now()}`,
+                      role: 'assistant',
+                      content: '✅ 通知功能已就绪',
+                      timestamp: Date.now(),
+                    };
+                    setMessages(prev => [...prev, msg]);
+                    appendMessage(msg);
+                  })
+                  .catch((e: any) => {
+                    const msg: StoredMessage = {
+                      id: `notif-${Date.now()}`,
+                      role: 'assistant',
+                      content: `❌ 通知失败: ${e.message}`,
+                      timestamp: Date.now(),
+                    };
+                    setMessages(prev => [...prev, msg]);
+                    appendMessage(msg);
+                  });
+              }}
+            >
+              <Text style={styles.toolIcon}>🔔</Text>
+              <Text style={styles.toolLabel}>通知</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.toolBtn}
+              onPress={() => {
+                setShowToolbar(false);
+                // 扫码由 CameraView 组件处理，跳转到扫码页面
+                router.push('/scanner');
+              }}
+            >
+              <Text style={styles.toolIcon}>📷</Text>
+              <Text style={styles.toolLabel}>扫码</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.toolBtn}
+              onPress={() => {
+                setShowToolbar(false);
+                readDirectory('').then(files => {
+                  const reply = files.success
+                    ? `📁 手机文件 (${files.data.directory}):\n${files.data.files.slice(0, 30).join('\n')}`
+                    : `❌ 读取失败: ${files.error}`;
+                  const msg: StoredMessage = {
+                    id: `file-${Date.now()}`,
+                    role: 'assistant',
+                    content: reply,
+                    timestamp: Date.now(),
+                  };
+                  setMessages(prev => [...prev, msg]);
+                  appendMessage(msg);
+                }).catch(() => {});
+              }}
+            >
+              <Text style={styles.toolIcon}>📁</Text>
+              <Text style={styles.toolLabel}>文件</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+      </View>
 
       {/* 输入区 */}
       <KeyboardAvoidingView
@@ -665,6 +805,42 @@ const styles = StyleSheet.create({
     color: theme.text2,
     fontSize: 11,
     flex: 1,
+  },
+  // ── 手机工具条 ──
+  toolbarArea: {
+    backgroundColor: theme.surface,
+    borderTopWidth: 1,
+    borderTopColor: theme.border,
+    paddingHorizontal: 10,
+    paddingBottom: 4,
+  },
+  toolbarToggle: {
+    paddingVertical: 4,
+  },
+  toolbarToggleText: {
+    color: theme.text2,
+    fontSize: 12,
+    fontWeight: '500',
+  },
+  toolbarRow: {
+    flexDirection: 'row',
+    gap: 4,
+    paddingVertical: 6,
+  },
+  toolBtn: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 8,
+    backgroundColor: theme.surface2,
+    borderRadius: 8,
+    gap: 2,
+  },
+  toolIcon: {
+    fontSize: 18,
+  },
+  toolLabel: {
+    color: theme.text2,
+    fontSize: 10,
   },
   // ── 审批模态框 ──
   modalOverlay: {
