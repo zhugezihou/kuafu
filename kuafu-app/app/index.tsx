@@ -99,7 +99,8 @@ export default function ChatScreen() {
   const phoneTools = usePhoneTools();
   const {
     getLocation, getClipboard, sendNotification, readDirectory,
-    startVoiceInput, takePhoto, sendToolToGateway,
+    startVoiceInput, stopVoiceInput, takePhoto, sendToolToGateway,
+    isRecording,
   } = phoneTools;
 
   // ── 初始化 ──
@@ -386,27 +387,61 @@ export default function ChatScreen() {
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={styles.toolBtn}
-              onPress={() => {
+              style={[styles.toolBtn, isRecording && styles.toolBtnActive]}
+              onPress={async () => {
                 setShowToolbar(false);
-                startVoiceInput().then(result => {
-                  if (result.success) {
-                    // 语音输入需要原生语音识别模块
-                    // 目前先提醒用户
-                    const msg: StoredMessage = {
+                if (isRecording) {
+                  // 正在录音中，停止并提交
+                  const result = await stopVoiceInput();
+                  if (result.success && result.data?.text) {
+                    // 先把语音文本显示出来
+                    const voiceMsg: StoredMessage = {
                       id: `voice-${Date.now()}`,
+                      role: 'user',
+                      content: result.data.text,
+                      timestamp: Date.now(),
+                    };
+                    setMessages(prev => [...prev, voiceMsg]);
+                    appendMessage(voiceMsg);
+                    // 同时提交到 Gateway，下次对话自动带上语音上下文
+                    await sendToolToGateway('voice', { text: result.data.text });
+                  } else if (!result.success) {
+                    const errMsg: StoredMessage = {
+                      id: `voice-err-${Date.now()}`,
                       role: 'assistant',
-                      content: '🎤 语音输入已开启，请说话...\n（需要安装语音识别模块）',
+                      content: `🎤 语音识别失败: ${result.error}`,
+                      timestamp: Date.now(),
+                    };
+                    setMessages(prev => [...prev, errMsg]);
+                    appendMessage(errMsg);
+                  }
+                } else {
+                  // 开始录音
+                  const started = await startVoiceInput();
+                  if (started.success) {
+                    const msg: StoredMessage = {
+                      id: `voice-start-${Date.now()}`,
+                      role: 'assistant',
+                      content: '🎤 录音中... 再次点击语音按钮停止并提交',
                       timestamp: Date.now(),
                     };
                     setMessages(prev => [...prev, msg]);
                     appendMessage(msg);
+                  } else {
+                    const errMsg: StoredMessage = {
+                      id: `voice-err-${Date.now()}`,
+                      role: 'assistant',
+                      content: `🎤 启动语音失败: ${started.error}`,
+                      timestamp: Date.now(),
+                    };
+                    setMessages(prev => [...prev, errMsg]);
+                    appendMessage(errMsg);
                   }
-                });
+                }
               }}
             >
-              <Text style={styles.toolIcon}>🎤</Text>
-              <Text style={styles.toolLabel}>语音</Text>
+              <Text style={styles.toolIcon}>{isRecording ? '🔴' : '🎤'}</Text>
+              <Text style={styles.toolLabel}>{isRecording ? '停止' : '语音'}</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -888,6 +923,9 @@ const styles = StyleSheet.create({
     backgroundColor: theme.surface2,
     borderRadius: 8,
     gap: 2,
+  },
+  toolBtnActive: {
+    backgroundColor: '#e74c3c33', // 红色半透明，表示录音中
   },
   toolIcon: {
     fontSize: 18,
