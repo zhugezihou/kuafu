@@ -18,11 +18,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
-          cache-dependency-path: kuafu-app/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install --legacy-peer-deps
 
       # Patch: expo-clipboard/expo-file-system missing app.plugin.js (Expo 56 + Node 22 compat)
       - name: Patch missing config plugins
