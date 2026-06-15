@@ -97,7 +97,10 @@ export default function ChatScreen() {
   const inputRef = useRef<TextInput>(null);
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const phoneTools = usePhoneTools();
-  const { getLocation, getClipboard, sendNotification, readDirectory } = phoneTools;
+  const {
+    getLocation, getClipboard, sendNotification, readDirectory,
+    startVoiceInput, takePhoto, sendToolToGateway,
+  } = phoneTools;
 
   // ── 初始化 ──
   useEffect(() => {
@@ -380,6 +383,57 @@ export default function ChatScreen() {
             >
               <Text style={styles.toolIcon}>📍</Text>
               <Text style={styles.toolLabel}>定位</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.toolBtn}
+              onPress={() => {
+                setShowToolbar(false);
+                startVoiceInput().then(result => {
+                  if (result.success) {
+                    // 语音输入需要原生语音识别模块
+                    // 目前先提醒用户
+                    const msg: StoredMessage = {
+                      id: `voice-${Date.now()}`,
+                      role: 'assistant',
+                      content: '🎤 语音输入已开启，请说话...\n（需要安装语音识别模块）',
+                      timestamp: Date.now(),
+                    };
+                    setMessages(prev => [...prev, msg]);
+                    appendMessage(msg);
+                  }
+                });
+              }}
+            >
+              <Text style={styles.toolIcon}>🎤</Text>
+              <Text style={styles.toolLabel}>语音</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.toolBtn}
+              onPress={async () => {
+                setShowToolbar(false);
+                try {
+                  const photo = await takePhoto();
+                  if (photo.success && photo.data?.uri) {
+                    // 拍照结果通过 Gateway 注入
+                    const sent = await sendToolToGateway('photo', { uri: photo.data.uri });
+                    const msg: StoredMessage = {
+                      id: `photo-${Date.now()}`,
+                      role: 'assistant',
+                      content: sent
+                        ? '📸 照片已提交，请发送消息让夸父处理'
+                        : '📸 照片已拍摄（Gateway 未连接）',
+                      timestamp: Date.now(),
+                    };
+                    setMessages(prev => [...prev, msg]);
+                    appendMessage(msg);
+                  }
+                } catch {}
+              }}
+            >
+              <Text style={styles.toolIcon}>📸</Text>
+              <Text style={styles.toolLabel}>拍照</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
