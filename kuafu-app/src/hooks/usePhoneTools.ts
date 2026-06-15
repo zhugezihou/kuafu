@@ -8,6 +8,10 @@ import * as Clipboard from 'expo-clipboard';
 import * as FileSystem from 'expo-file-system';
 import * as Notifications from 'expo-notifications';
 import { CameraView } from 'expo-camera';
+import {
+  ExpoSpeechRecognitionModule,
+  useSpeechRecognitionEvent,
+} from '@jamsch/expo-speech-recognition';
 import { getBaseUrl } from '../api/gateway';
 
 // ── 类型 ──
@@ -190,18 +194,71 @@ export function usePhoneTools() {
 
   // ── 6. 语音输入 ──
 
+  // 语音识别事件：中间结果
+  useSpeechRecognitionEvent('result', (event) => {
+    const transcript = event.results?.[0]?.transcript || '';
+    if (event.isFinal) {
+      setVoiceText(transcript);
+      setIsRecording(false);
+    } else {
+      // 中间结果实时更新 UI
+      setVoiceText(transcript);
+    }
+  });
+
+  // 语音识别事件：错误
+  useSpeechRecognitionEvent('error', (event) => {
+    console.warn('语音识别错误:', event.error, event.message);
+    setIsRecording(false);
+    setVoiceText('');
+  });
+
+  // 语音识别事件：结束
+  useSpeechRecognitionEvent('end', () => {
+    setIsRecording(false);
+  });
+
   const startVoiceInput = useCallback(async (): Promise<PhoneToolResult> => {
     try {
+      const perm = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+      if (!perm.granted) {
+        return { success: false, type: 'voice', error: '语音权限被拒绝' };
+      }
+
       setIsRecording(true);
-      // 实际语音识别需要 expo-speech-recognition 模块
-      // 目前返回空文本，由原生模块接管
-      setIsRecording(false);
+      setVoiceText('');
+
+      ExpoSpeechRecognitionModule.start({
+        lang: 'zh-CN',
+        interimResults: true,
+        continuous: false,
+        addsPunctuation: true,
+        maxAlternatives: 1,
+      });
+
+      // 等待最终结果
+      // 事件监听会更新 voiceText 状态，调用方通过 voiceText 获取最终结果
+      // 这里先返回一个中间状态
       return { success: true, type: 'voice', data: { text: '' } };
     } catch (e: any) {
       setIsRecording(false);
       return { success: false, type: 'voice', error: e.message };
     }
   }, []);
+
+  // 停止语音识别
+  const stopVoiceInput = useCallback(async (): Promise<PhoneToolResult> => {
+    try {
+      ExpoSpeechRecognitionModule.stop();
+      // 等待一小段让 final result 事件触发
+      await new Promise((r) => setTimeout(r, 500));
+      const text = voiceText;
+      setIsRecording(false);
+      return { success: true, type: 'voice', data: { text: text || '' } };
+    } catch (e: any) {
+      return { success: false, type: 'voice', error: e.message };
+    }
+  }, [voiceText]);
 
   // ── 7. 拍照 ──
 
@@ -294,6 +351,7 @@ export function usePhoneTools() {
     sendNotification,
     // 语音
     startVoiceInput,
+    stopVoiceInput,
     // 拍照
     takePhoto,
     // Gateway
