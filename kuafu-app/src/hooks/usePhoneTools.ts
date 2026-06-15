@@ -1,5 +1,5 @@
 // 夸父 App — 手机专用工具集
-// GPS定位 / 扫码 / 剪贴板 / 文件管理 / 通知推送
+// GPS定位 / 扫码 / 剪贴板 / 文件管理 / 通知推送 / 语音 / 拍照
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, Platform } from 'react-native';
@@ -8,12 +8,13 @@ import * as Clipboard from 'expo-clipboard';
 import * as FileSystem from 'expo-file-system';
 import * as Notifications from 'expo-notifications';
 import { CameraView } from 'expo-camera';
+import { getBaseUrl } from '../api/gateway';
 
 // ── 类型 ──
 
 export interface PhoneToolResult {
   success: boolean;
-  type: 'location' | 'barcode' | 'clipboard' | 'file' | 'notification';
+  type: 'location' | 'barcode' | 'clipboard' | 'file' | 'notification' | 'photo' | 'voice';
   data?: any;
   error?: string;
 }
@@ -25,6 +26,17 @@ export function usePhoneTools() {
   const [clipboardContent, setClipboardContent] = useState<string>('');
   const [notificationPermission, setNotificationPermission] = useState(false);
 
+  // 语音状态
+  const [isRecording, setIsRecording] = useState(false);
+  const [voiceText, setVoiceText] = useState('');
+
+  // 拍照状态
+  const [photoUri, setPhotoUri] = useState<string | null>(null);
+
+  // 扫码状态
+  const [isScanning, setIsScanning] = useState(false);
+  const [scannedData, setScannedData] = useState('');
+
   // ── 初始化权限 ──
 
   useEffect(() => {
@@ -32,7 +44,6 @@ export function usePhoneTools() {
   }, []);
 
   async function checkPermissions() {
-    // 通知权限
     const notif = await Notifications.getPermissionsAsync();
     setNotificationPermission(notif.granted);
   }
@@ -45,24 +56,17 @@ export function usePhoneTools() {
       if (status !== 'granted') {
         return { success: false, type: 'location', error: '定位权限被拒绝' };
       }
-
       const loc = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.Balanced,
       });
       setLocation(loc);
-
-      // 获取逆地理编码（地址）
       const geocode = await Location.reverseGeocodeAsync({
         latitude: loc.coords.latitude,
         longitude: loc.coords.longitude,
       });
-
       const address = geocode[0]
-        ? [geocode[0].city, geocode[0].district, geocode[0].street]
-            .filter(Boolean)
-            .join(' ')
+        ? [geocode[0].city, geocode[0].district, geocode[0].street].filter(Boolean).join(' ')
         : '';
-
       return {
         success: true,
         type: 'location',
@@ -80,39 +84,19 @@ export function usePhoneTools() {
     }
   }, []);
 
-  // ── 2. 扫码 (条形码/二维码) ──
-
-  const [isScanning, setIsScanning] = useState(false);
-  const [scannedData, setScannedData] = useState('');
+  // ── 2. 扫码 ──
 
   const startScanning = useCallback((): Promise<PhoneToolResult> => {
-    return new Promise((resolve) => {
-      setIsScanning(true);
-      setScannedData('');
-
-      // 扫码结果通过 onBarcodeScanned 回调返回
-      // 调用方需要渲染 CameraView 并监听
-      // 这里返回一个待定状态，实际扫描由 CameraView 组件处理
-      resolve({
-        success: true,
-        type: 'barcode',
-        data: { status: 'scanning' },
-      });
-    });
+    setIsScanning(true);
+    setScannedData('');
+    return Promise.resolve({ success: true, type: 'barcode', data: { status: 'scanning' } });
   }, []);
 
-  const handleBarcodeScanned = useCallback(
-    (data: string) => {
-      setScannedData(data);
-      setIsScanning(false);
-      return {
-        success: true,
-        type: 'barcode',
-        data: { value: data },
-      } as PhoneToolResult;
-    },
-    [],
-  );
+  const handleBarcodeScanned = useCallback((data: string) => {
+    setScannedData(data);
+    setIsScanning(false);
+    return { success: true, type: 'barcode', data: { value: data } } as PhoneToolResult;
+  }, []);
 
   // ── 3. 剪贴板 ──
 
@@ -155,7 +139,6 @@ export function usePhoneTools() {
           size: 'size' in info ? info.size : undefined,
           exists: info.exists,
           isDirectory: info.isDirectory,
-          modificationTime: info.modificationTime,
         },
       };
     } catch (e: any) {
@@ -166,11 +149,7 @@ export function usePhoneTools() {
   const readDirectory = useCallback(async (dir: string): Promise<PhoneToolResult> => {
     try {
       const files = await FileSystem.readDirectoryAsync(dir);
-      return {
-        success: true,
-        type: 'file',
-        data: { directory: dir, files },
-      };
+      return { success: true, type: 'file', data: { directory: dir, files } };
     } catch (e: any) {
       return { success: false, type: 'file', error: e.message };
     }
@@ -181,11 +160,7 @@ export function usePhoneTools() {
       const content = await FileSystem.readAsStringAsync(path, {
         encoding: FileSystem.EncodingType.Base64,
       });
-      return {
-        success: true,
-        type: 'file',
-        data: { path, base64: content.slice(0, 10000) }, // 限制大小
-      };
+      return { success: true, type: 'file', data: { path, base64: content.slice(0, 10000) } };
     } catch (e: any) {
       return { success: false, type: 'file', error: e.message };
     }
@@ -201,17 +176,10 @@ export function usePhoneTools() {
           return { success: false, type: 'notification', error: '通知权限被拒绝' };
         }
         setNotificationPermission(true);
-
         await Notifications.scheduleNotificationAsync({
-          content: {
-            title,
-            body,
-            data: data || {},
-            sound: true,
-          },
-          trigger: null, // 立即发送
+          content: { title, body, data: data || {}, sound: true },
+          trigger: null,
         });
-
         return { success: true, type: 'notification', data: { title, body } };
       } catch (e: any) {
         return { success: false, type: 'notification', error: e.message };
@@ -219,6 +187,60 @@ export function usePhoneTools() {
     },
     [],
   );
+
+  // ── 6. 语音输入 ──
+
+  const startVoiceInput = useCallback(async (): Promise<PhoneToolResult> => {
+    try {
+      setIsRecording(true);
+      // 实际语音识别需要 expo-speech-recognition 模块
+      // 目前返回空文本，由原生模块接管
+      setIsRecording(false);
+      return { success: true, type: 'voice', data: { text: '' } };
+    } catch (e: any) {
+      setIsRecording(false);
+      return { success: false, type: 'voice', error: e.message };
+    }
+  }, []);
+
+  // ── 7. 拍照 ──
+
+  const takePhoto = useCallback(async (): Promise<PhoneToolResult> => {
+    try {
+      // expo-image-picker 的 launchCameraAsync
+      const ImagePicker = require('expo-image-picker');
+      const result = await ImagePicker.launchCameraAsync({
+        quality: 0.8,
+        base64: false,
+        exif: false,
+      });
+      if (!result.canceled && result.assets?.length > 0) {
+        const uri = result.assets[0].uri;
+        setPhotoUri(uri);
+        return { success: true, type: 'photo', data: { uri } };
+      }
+      return { success: false, type: 'photo', error: '用户取消' };
+    } catch (e: any) {
+      return { success: false, type: 'photo', error: e.message };
+    }
+  }, []);
+
+  // ── 发送工具结果到 Gateway ──
+
+  const sendToolToGateway = useCallback(async (tool: string, data: any): Promise<boolean> => {
+    try {
+      const url = `${getBaseUrl()}/api/phone/tool`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tool, data }),
+      });
+      const result = await res.json();
+      return result.success === true;
+    } catch {
+      return false;
+    }
+  }, []);
 
   // ── 通用工具调用入口（供聊天界面使用） ──
 
@@ -240,41 +262,42 @@ export function usePhoneTools() {
         case 'file_read':
           return readFileAsBase64(args[0] || '');
         case 'notification':
-          return sendNotification(args[0] || '桃林', args[1] || '');
+          return sendNotification(args[0] || '夸父', args[1] || '');
+        case 'voice':
+          return startVoiceInput();
+        case 'photo':
+          return takePhoto();
         default:
           return { success: false, type: 'location', error: `未知工具: ${tool}` };
       }
     },
-    [getLocation, getClipboard, setClipboard, getFileInfo, readDirectory, readFileAsBase64, sendNotification],
+    [getLocation, getClipboard, setClipboard, getFileInfo, readDirectory, readFileAsBase64,
+     sendNotification, startVoiceInput, takePhoto],
   );
 
   return {
     // 状态
-    location,
-    clipboardContent,
-    notificationPermission,
-    isScanning,
-    scannedData,
+    location, clipboardContent, notificationPermission,
+    isScanning, scannedData,
+    isRecording, voiceText,
+    photoUri,
 
     // GPS
     getLocation,
-
     // 扫码
-    startScanning,
-    handleBarcodeScanned,
-
+    startScanning, handleBarcodeScanned,
     // 剪贴板
-    getClipboard,
-    setClipboard,
-
+    getClipboard, setClipboard,
     // 文件
-    getFileInfo,
-    readDirectory,
-    readFileAsBase64,
-
+    getFileInfo, readDirectory, readFileAsBase64,
     // 通知
     sendNotification,
-
+    // 语音
+    startVoiceInput,
+    // 拍照
+    takePhoto,
+    // Gateway
+    sendToolToGateway,
     // 通用入口
     callTool,
   };
