@@ -1,0 +1,40 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [feat/desktop-windows-port]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: kuafu-app
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: kuafu-app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Patch: expo-clipboard/expo-file-system missing app.plugin.js (Expo 56 + Node 22 compat)
+      - name: Patch missing config plugins
+        run: |
+          echo 'module.exports = (config) => config;' > node_modules/expo-clipboard/app.plugin.js
+          echo 'module.exports = (config) => config;' > node_modules/expo-file-system/app.plugin.js
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Build APK (preview)
+        run: eas build --platform android --profile preview --non-interactive --no-wait
