@@ -28,13 +28,25 @@ jobs:
           echo 'module.exports = (config) => config;' > node_modules/expo-clipboard/app.plugin.js
           echo 'module.exports = (config) => config;' > node_modules/expo-file-system/app.plugin.js
 
-      - name: Setup EAS
-        uses: expo/expo-github-action@v8
-        with:
-          eas-version: latest
-          token: ${{ secrets.EXPO_TOKEN }}
+      - name: Prebuild Android native project
+        run: npx expo prebuild --platform android
 
-      - name: Build APK (preview)
-        run: eas build --platform android --profile preview --non-interactive --no-wait
-        env:
-          EXPO_TOKEN: ${{ secrets.KUAFUAPP }}
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Build APK
+        run: |
+          cd android
+          ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: kuafu-app-debug
+          path: kuafu-app/android/app/build/outputs/apk/debug/app-debug.apk
