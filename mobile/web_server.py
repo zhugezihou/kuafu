@@ -5,13 +5,14 @@
 纯 Python http.server 实现，零外部依赖。
 提供 REST API + SSE 实时推送。
 
+云原生模式：仅云端 DeepSeek，无本地模型路径。
+
 用法:
     python mobile/web_server.py [--port 8080]
 
 环境变量:
-    KUAFFU_BACKEND   — 模型后端 (local/cloud)
-    KUAFFU_HOST      — 监听地址 (默认 0.0.0.0)
-    KUAFFU_PORT      — 监听端口 (默认 8080)
+    KUAFU_HOST      — 监听地址 (默认 0.0.0.0)
+    KUAFU_PORT      — 监听端口 (默认 8080)
 
 API:
     GET  /               → SPA HTML
@@ -212,7 +213,6 @@ class KuafuHandler(http.server.BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
 
-        # CORS preflight
         if path == "/api/chat":
             self._handle_chat()
         elif path == "/api/reset":
@@ -223,6 +223,8 @@ class KuafuHandler(http.server.BaseHTTPRequestHandler):
             self._handle_reject()
         elif path == "/api/model":
             self._handle_model()
+        elif path == "/api/phone/tool":
+            self._handle_phone_tool()
         else:
             self._send_json({"error": "Not Found"}, 404)
 
@@ -399,6 +401,64 @@ class KuafuHandler(http.server.BaseHTTPRequestHandler):
         except Exception as e:
             self._send_json({"success": False, "error": str(e)}, 500)
 
+    # ── 手机专用工具 API ─────────────────────────────────────
+
+    def _handle_phone_tool(self):
+        """处理手机端工具调用。
+
+        手机 App 通过此端点将手机传感器/功能的结果
+        注入到 Agent 的对话上下文中。
+
+        请求体:
+        {
+            "tool": "location|barcode|clipboard|photo|audio|file_list",
+            "data": { ... }   # 工具返回的数据
+        }
+
+        返回:
+        {
+            "success": true,
+            "message": "已注入对话"
+        }
+        """
+        try:
+            body = self._read_body()
+            tool = body.get("tool", "").strip()
+            data = body.get("data", {})
+
+            if not tool:
+                self._send_json({"success": False, "error": "缺少 tool 参数"}, 400)
+                return
+
+            agent = get_agent()
+
+            # 构建注入消息
+            tool_prompts = {
+                "location": f"📍 用户当前位置：纬度 {data.get('latitude')}，经度 {data.get('longitude')}" +
+                            (f"，地址：{data.get('address')}" if data.get('address') else ""),
+                "barcode": f"📷 扫码结果：{data.get('value', '')}",
+                "clipboard": f"📋 剪贴板内容：{data.get('text', '')}",
+                "photo": "📸 用户拍摄了一张照片，已保存在手机相册。如需分析图片内容，请引导用户上传。",
+                "audio": f"🎤 语音输入：{data.get('text', '')}",
+                "file_list": f"📁 手机文件列表：\n" + "\n".join(data.get("files", [])),
+                "file_read": f"📄 文件内容：{data.get('content', '')[:1000]}",
+            }
+
+            prompt = tool_prompts.get(tool, f"[手机工具] {tool}: {json.dumps(data, ensure_ascii=False)}")
+
+            # 存储手机工具上下文供下次 converse 使用
+            import core.main as kuafu_main
+            if not hasattr(kuafu_main.KuafuAgent, '_phone_tool_queue'):
+                kuafu_main.KuafuAgent._phone_tool_queue = []
+
+            kuafu_main.KuafuAgent._phone_tool_queue.append(prompt)
+            log.info(f"📱 手机工具 '{tool}' 已排队（共 {len(kuafu_main.KuafuAgent._phone_tool_queue)} 条）")
+            self._send_json({"success": True, "message": f"已排队: {tool}"})
+
+        except Exception as e:
+            log.error(f"❌ 手机工具失败: {e}")
+            self._send_json({"success": False, "error": str(e)}, 500)
+
 
 class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     """多线程 HTTP 服务器。"""
@@ -412,8 +472,8 @@ def main():
     parser.add_argument("--host", type=str, default=None, help="监听地址 (默认 0.0.0.0)")
     args, _ = parser.parse_known_args()
 
-    host = args.host or os.environ.get("KUAFFU_HOST", "0.0.0.0")
-    port = args.port or int(os.environ.get("KUAFFU_PORT", "8080"))
+    host = args.host or os.environ.get("KUAFU_HOST", "0.0.0.0")
+    port = args.port or int(os.environ.get("KUAFU_PORT", "8080"))
 
     # 注入全局审批回调（确保子 Agent 的审批也能推送）
     import core.approval as kuafu_approval_module

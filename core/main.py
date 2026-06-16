@@ -371,6 +371,14 @@ class KuafuAgent:
         start = time.time()
         self._task_count += 1
 
+        # 消费手机工具队列
+        phone_context = ""
+        if hasattr(KuafuAgent, '_phone_tool_queue') and KuafuAgent._phone_tool_queue:
+            phone_context = "\n".join(KuafuAgent._phone_tool_queue)
+            KuafuAgent._phone_tool_queue.clear()
+            if phone_context:
+                input_text = f"{phone_context}\n\n[用户输入]\n{input_text}"
+
         # 清理输入中的退格符等控制字符
         input_text = self._clean_input(input_text)
 
