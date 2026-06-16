@@ -262,7 +262,7 @@ jobs:
       - name: Tauri 构建
         shell: powershell
         run: |
-          npm run tauri build
+          npm run tauri build -- --bundles nsis
 
       - name: 创建 Release
         shell: bash
@@ -278,12 +278,16 @@ jobs:
             exit 1
           fi
 
-          # 更新代码仓库中的版本并提交
-          git config user.name "kuafu-ci"
-          git config user.email "ci@kuafu.dev"
-          git add src-tauri/Cargo.toml src-tauri/tauri.conf.json
-          git commit -m "desktop v$VER: auto bump for CI release" || true
-          git push || true
+          # 更新代码仓库中的版本并提交（仅主干分支，避免 PR/feat 分支触发循环）
+          if [[ "${{ github.ref_name }}" == "main" || "${{ github.ref_name }}" == "master" ]]; then
+            git config user.name "kuafu-ci"
+            git config user.email "ci@kuafu.dev"
+            git add src-tauri/Cargo.toml src-tauri/tauri.conf.json
+            git commit -m "desktop v$VER: auto bump for CI release" || true
+            git push || true
+          else
+            echo "非主干分支，跳过版本推送"
+          fi
 
           # 获取上个发布 tag 用于 changelog
           git fetch --tags origin 2>/dev/null || true

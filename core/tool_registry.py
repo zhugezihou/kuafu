@@ -681,6 +681,14 @@ class ToolRegistry:
         if not command.strip():
             return {"success": False, "output": "命令不能为空"}
 
+        # ── 跨平台命令翻译（Desktop/Windows 模式） ──
+        from core.platform import Platform
+        if Platform.is_windows() or Platform.is_desktop():
+            translated = Platform.translate_command(command)
+            if translated != command:
+                print(f"[Terminal] 命令已翻译: {command[:80]} → {translated[:80]}")
+                command = translated
+
         # ── 集成 SafetyLayer 安全分级 + 拒绝跟踪 ──
         level, risk_name, reason = SafetyLayer.classify_command(command)
 

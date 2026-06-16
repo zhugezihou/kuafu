@@ -567,6 +567,9 @@ class GatewayServer:
         import datetime
         if os.environ.get("KUAFU_DESKTOP") != "1":
             return
+        # 通知 Platform 层进入 Desktop 模式
+        from core.platform import Platform
+        Platform.set_desktop_mode(True)
         # Windows 上强制 UTF-8 编码，避免 emoji 等字符导致 GBK 编码错误
         os.environ.setdefault("PYTHONIOENCODING", "utf-8")
         os.environ["PYTHONUTF8"] = "1"
