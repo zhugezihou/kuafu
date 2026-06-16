@@ -638,6 +638,37 @@ class GatewayServer:
         except Exception as e:
             print(f"[Gateway] 通道初始化异常: {e}")
 
+    def _auto_start_cron(self):
+        """自动加载 cron/schedule.yaml 并启动调度器。"""
+        try:
+            from core.cron_scheduler import CronScheduler
+            scheduler = getattr(self.agent, '_cron_scheduler', None)
+            if scheduler:
+                # 已有调度器，确保它在运行
+                if not scheduler._running:
+                    scheduler.start()
+                return
+
+            schedule_path = ROOT_DIR / "cron" / "schedule.yaml"
+            if not schedule_path.exists():
+                print("[Gateway] cron/schedule.yaml 不存在，跳过调度器启动")
+                return
+
+            # 创建调度器，加载 schedule.yaml 中的任务
+            scheduler = CronScheduler(
+                on_task_run=lambda task: self.agent.run(task.task_text)["result"],
+            )
+            self.agent._cron_scheduler = scheduler
+            if scheduler.get_tasks():
+                scheduler.start()
+                print(f"[Gateway] Cron 调度器已启动，{len(scheduler.get_tasks())} 个任务")
+            else:
+                print("[Gateway] schedule.yaml 中无有效任务")
+        except Exception as e:
+            print(f"[Gateway] Cron 调度器启动失败: {e}")
+
+    # ── 通道管理 API ──
+
     def start(self) -> bool:
         """启动 Gateway。"""
         if self._running:
@@ -651,6 +682,9 @@ class GatewayServer:
                 print(f"[Gateway] 通道: {', '.join(self.channels.list())}")
             if self._gateway_loop:
                 self._gateway_loop.start()
+
+            # 自动加载 cron/schedule.yaml 并启动调度器
+            self._auto_start_cron()
 
             # 设置 Handler 的类变量
             GatewayHandler.agent = self.agent
