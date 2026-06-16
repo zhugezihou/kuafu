@@ -238,8 +238,8 @@ def handle_delegate(args: dict) -> dict:
     memory_context = ""
     if memory_modes:
         try:
-            from core.memory_api import MemoryAPI
-            mem_api = MemoryAPI()
+            from core.memory import MemoryManager
+            mem_api = MemoryManager(enable_nmm=True)
             sections = []
 
             for mode in memory_modes:
@@ -588,13 +588,13 @@ def _persist_subagent_knowledge(task_id: str, goal: str, result: str):
     提取 key-value 形式的知识点并存入 memory_api。
     """
     try:
-        from core.memory_api import MemoryAPI
+        from core.memory import MemoryManager
 
         result_sample = (result or "")[:3000]
         if len(result_sample) < 50:
             return
 
-        mem_api = MemoryAPI()
+        mem_api = MemoryManager(enable_nmm=True)
 
         # 提取任务的 insights（用简短的关键点）
         insights = []

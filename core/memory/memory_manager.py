@@ -28,6 +28,7 @@ from core.memory.hindsight_lite import (
     NETWORK_WORLD, NETWORK_EXPERIENCE, NETWORK_OBSERVATION, NETWORK_OPINION,
     detect_fact_type,
 )
+from core.memory.encoding_gate import EncodingGate
 
 logger = logging.getLogger("kuafu.memory")
 
@@ -121,7 +122,11 @@ class MemoryManager:
                 logger.info("[MemoryManager] NMM 引擎就绪")
             except Exception as e:
                 logger.warning(f"[MemoryManager] NMM 引擎加载失败: {e}")
-                self._enable_nmm = False
+
+        # 编码门控（三信号过滤）
+        self._gate = EncodingGate(sqlite_backend=self._longterm)
+        # 初始阈值设低一些，让门控在实践中学习调整
+        self._gate.set_threshold(0.45)
 
         # 冷却期
         self._cooldown: dict[str, float] = {}
@@ -215,10 +220,22 @@ class MemoryManager:
             if time.time() - last < 30:
                 return "gated_cooldown"
 
-        # 写入 SQLite（基础存储）
+        # 编码门控：三信号评估是否值得写入
+        if not bypass_gate:
+            gate_result = self._gate.evaluate(
+                content, context=context, source=source, tags=tags,
+            )
+            if not gate_result["should_store"]:
+                logger.debug(f"[MemoryManager] 门控拒绝: {gate_result['reason']}")
+                return "gated_encoding"
+
+        # 写入 SQLite（基础存储，含 category + entity）
+        entity = tags[0] if tags and len(tags) > 0 else ""
+        fact_type = self._detect_or_classify(content, context, source)
         mem_id = self._longterm.store(
             content, context=context, source=source,
             tags=tags, importance=importance,
+            category=fact_type, entity=entity,
         )
         if mem_id.endswith("_dedup"):
             self._total_dedup += 1
@@ -229,8 +246,6 @@ class MemoryManager:
             self._cooldown[source] = time.time()
 
         # ── Hindsight：事实类型检测 + 分网络存储 ──
-        fact_type = self._detect_or_classify(content, context, source)
-
         if fact_type == NETWORK_OPINION or importance >= 0.8:
             # 高重要性 → 形成或强化 Opinion
             topic = source or content[:50]
@@ -239,7 +254,6 @@ class MemoryManager:
                             network=NETWORK_OPINION, confidence=result.get("confidence", 0.7))
         else:
             # 客观事实 → World / Experience
-            entity = tags[0] if tags and len(tags) > 0 else ""
             self._networks.store(content, network=fact_type, entity=entity, importance=importance)
             self._cache.add(content, source=source, tags=tags, network=fact_type)
 
@@ -378,51 +392,81 @@ class MemoryManager:
 
     def build_memory_block(self, budget_ratio: float = 1.0,
                            include_search: str = "") -> str:
-        """构建注入到 system prompt 的记忆块（Hindsight 四网络标签 + NMM 弱联想）。
+        """构建注入到 system prompt 的记忆块。
+
+        分两层检索后合并：
+        1. facts_fts（四网络：World/Experience/Observation）
+        2. memories_fts（旧记忆 + 通用存储）
+        辅以 CacheRing（热点）、OpinionEngine（信念）、NMM（语义联想）。
 
         防上下文污染设计：
-        - 所有记忆块标注来源标签，LLM 可区分事实与联想
-        - NMM 联想仅注入 1 条，标注为"弱联想"，提示可能不相关
-        - 超过 1 天的旧 Facts/Observations 减少注入量
+        - NMM 联想注入标注为"弱联想"，提示可能不相关
+        - 超过 1 天的旧事实减少注入量
         """
         parts = []
         now = time.time()
         ONE_DAY = 86400
+        seen = set()
 
         # L0: 热点缓存（总是最新的）
         cache_block = self._cache.build_prompt_block(budget_ratio)
         if cache_block:
             parts.append(cache_block)
 
-        # World + Experience 事实（带时间衰减）
+        # 事实检索：四网络（facts_fts）+ 旧记忆（memories_fts）合并去重
         if self._cache.count() < 5:
-            world = self._networks.search(NETWORK_WORLD, query=include_search, limit=2)
-            exp = self._networks.search(NETWORK_EXPERIENCE, query=include_search, limit=2)
-            obs = self._networks.get_observations(limit=2)
-
             fact_lines = []
+            seen = set()
             old_count = 0
-            for f in world:
-                age = now - f.get("timestamp", 0)
-                if age > ONE_DAY:
-                    old_count += 1
-                    if old_count > 1:
-                        continue  # 超过 1 天的只保留 1 条
-                fact_lines.append(f"  [World] {f['fact'][:200]}")
-            for f in exp:
-                age = now - f.get("timestamp", 0)
-                if age > ONE_DAY:
-                    old_count += 1
-                    if old_count > 1:
-                        continue
-                fact_lines.append(f"  [Experience] {f['fact'][:200]}")
-            for f in obs:
-                age = now - f.get("timestamp", 0)
-                if age > ONE_DAY:
-                    old_count += 1
-                    if old_count > 1:
-                        continue
-                fact_lines.append(f"  [Observation] {f['fact'][:200]}")
+
+            if include_search:
+                try:
+                    conn = self._longterm._conn
+                    if conn:
+                        # 统一检索 memories_fts（含 category 字段）
+                        fts_query = self._longterm._build_fts_query(include_search) or include_search
+                        rows = []
+                        try:
+                            rows = conn.execute(
+                                """SELECT m.content, m.category, m.entity, m.timestamp, m.importance
+                                   FROM memories_fts fts JOIN memories m ON m.rowid = fts.rowid
+                                   WHERE memories_fts MATCH ?
+                                   ORDER BY m.importance DESC, m.timestamp DESC LIMIT 8""",
+                                (fts_query,)
+                            ).fetchall()
+                        except Exception:
+                            pass
+
+                        # FTS5 fallback：如果没有结果，用 LIKE 匹配
+                        if not rows:
+                            like_q = f"%{include_search}%"
+                            rows = conn.execute(
+                                """SELECT content, category, entity, timestamp, importance
+                                   FROM memories
+                                   WHERE content LIKE ? AND category != ''
+                                   ORDER BY importance DESC, timestamp DESC LIMIT 8""",
+                                (like_q,)
+                            ).fetchall()
+                        for r in rows:
+                            content = r[0]
+                            cat = r[1] or ""
+                            entity = r[2] or ""
+                            ts = r[3]
+                            age = now - (ts or 0)
+                            if age > ONE_DAY:
+                                old_count += 1
+                                if old_count > 1:
+                                    continue
+                            if content[:200] not in seen:
+                                seen.add(content[:200])
+                                if cat:
+                                    prefix = "🌍" if "world" in cat else "🧪" if "experience" in cat else "👁️" if "observation" in cat else "💭"
+                                    fact_lines.append(f"  {prefix} {content[:200]}")
+                                else:
+                                    fact_lines.append(f"  📝 {content[:200]}")
+                except Exception:
+                    pass
+
             if fact_lines:
                 parts.append("=== 世界事实 ===\n" + "\n".join(fact_lines))
 
@@ -435,30 +479,32 @@ class MemoryManager:
                 op_lines.append(f"  [Opinion(c={o['confidence']:.2f}) {bar}] {o['text'][:200]}")
             parts.append("\n".join(op_lines))
 
-        # FTS5 按需检索（精确匹配）
-        search_results = []
-        if include_search:
-            search_results = self._longterm.search(include_search, limit=3)
-            if search_results:
-                sr_lines = [f"=== 相关记忆（搜索: {include_search}） ==="]
-                for r in search_results:
-                    c = r.get("content", "")[:200]
-                    sr_lines.append("  • " + c)
-                parts.append("\n".join(sr_lines))
+        # 短期事件（Session 内）
+        epi_block = self._episodic.build_prompt_block(budget_ratio)
+        if epi_block:
+            parts.append(epi_block)
 
-        # NMM 弱联想（v4，防污染设计）
+        # NMM 弱联想——从 NMM 语义检索补充 FTS5 的不足
         if self._enable_nmm and self._nmm and include_search:
             try:
                 nmm_assoc = self._nmm.search(include_search, k=3)
-                existing_texts = {r.get("content", "")[:200] for r in search_results}
                 nmm_lines = []
                 for na in nmm_assoc:
                     text_id = na.get("text_id", "")
+                    content = ""
+
+                    # 优先从 text_id 回查 SQLite（memories 表）
                     if text_id:
-                        text = self._load_by_id(text_id)
-                        if text and text[:200] not in existing_texts:
-                            nmm_lines.append(f"  ~ {text[:200]}")
-                # 仅注入 1 条，且明确标注为弱联想（可能不相关）
+                        content = self._load_by_id(text_id) or ""
+
+                    # NMM 如果存了原文 content 字段，直接使用
+                    if not content:
+                        content = na.get("content", "") or ""
+
+                    if content and content[:200] not in seen:
+                        seen.add(content[:200])
+                        nmm_lines.append(f"  ~ {content[:200]}")
+
                 if nmm_lines:
                     parts.append("=== 弱联想（NMM，可能不相关）===\n" + nmm_lines[0])
             except Exception:
@@ -710,3 +756,26 @@ class MemoryManager:
             return json.dumps({"result": answer})
 
         return json.dumps({"error": f"未知记忆工具: {tool_name}"})
+
+    def get_stats(self) -> dict:
+        """返回记忆系统统计信息。"""
+        try:
+            stats = self._longterm.get_stats() if hasattr(self, '_longterm') else {}
+            return {
+                "mode": "hindsight_nmm" if self._enable_nmm else "hindsight",
+                "total": stats.get("valid", 0),
+                "networks": {
+                    "world": "ok",
+                    "experience": "ok",
+                    "observation": "ok",
+                    "opinion": len(self._opinions.get_opinions(min_confidence=0)) if hasattr(self, '_opinions') else 0,
+                },
+                "stats": stats,
+                "nmm_enabled": self._enable_nmm,
+            }
+        except Exception:
+            return {"mode": "hindsight", "total": 0}
+
+    def get_status(self) -> dict:
+        """兼容旧接口：get_status() → get_stats()"""
+        return self.get_stats()

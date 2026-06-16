@@ -19,11 +19,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 from collections import deque
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Pattern
 
 from core.channel.base import MessageChannel, Message, SendResult
 
@@ -62,13 +63,158 @@ class FeishuWebSocketChannel(MessageChannel):
     # ── 消息发送 ──────────────────────────────────────────────
 
     def send(self, text: str, **kwargs) -> SendResult:
-        """通过飞书 API 发送文本消息。"""
+        """通过飞书 API 发送文本消息。自动检测 Markdown 表格 → 转为卡片。"""
         chat_id = kwargs.get("chat_id", "")
+        # 检测是否含 Markdown 表格，自动转为卡片
+        if self._contains_table(text):
+            card = self._markdown_to_card(text)
+            if card:
+                return self.send_card(card, chat_id=chat_id)
         return self._send_api(chat_id, "text", {"text": text})
 
     def send_card(self, card: dict, chat_id: str = "") -> SendResult:
         """发送飞书消息卡片（interactive）。"""
         return self._send_api(chat_id, "interactive", card)
+
+    # ── 智能表格检测与转换 ──────────────────────────────
+
+    _TABLE_RE = re.compile(r"\|[\s\-]+\|[\s\-]+\|")
+    """检测 Markdown 表格模式：包含 |---| 分隔行即视为表格。"""
+
+    def _contains_table(self, text: str) -> bool:
+        """检查文本是否包含 Markdown 表格。"""
+        return bool(self._TABLE_RE.search(text))
+
+    def _markdown_to_card(self, text: str) -> Optional[dict]:
+        """将含 Markdown 表格的文本转为飞书卡片（schema 1.0 原生 table 组件）。
+        
+        飞书卡片 schema 1.0 支持 tag=table 原生表格组件，
+        有对齐的列、表头、颜色标签，效果远好于 Markdown 表格。
+        
+        如果解析失败，兜底为列表格式。
+        """
+        try:
+            lines = text.split("\n")
+            # 识别表格区域
+            in_table = False
+            table_lines = []
+            before_parts = []
+            after_parts = []
+            state = "before"
+
+            for line in lines:
+                stripped = line.strip()
+                is_table_line = stripped.startswith("|") and "|" in stripped[1:-1]
+                
+                if is_table_line and not in_table:
+                    in_table = True
+                    state = "table"
+                    table_lines.append(stripped)
+                elif is_table_line and in_table:
+                    table_lines.append(stripped)
+                elif not is_table_line and in_table:
+                    in_table = False
+                    state = "after"
+                    if stripped:
+                        after_parts.append(line)
+                elif state == "before":
+                    if stripped:
+                        before_parts.append(line)
+                elif state == "after":
+                    if stripped:
+                        after_parts.append(line)
+
+            # 解析表格行，跳过 --- 分隔行
+            data_rows = []
+            header_row = None
+            for row in table_lines:
+                if row.replace(" ", "").startswith("|") and "-" in row:
+                    continue  # 跳过分隔行
+                cols = [c.strip() for c in row.strip("|").split("|")]
+                if header_row is None:
+                    header_row = cols
+                else:
+                    data_rows.append(cols)
+
+            if not header_row or not data_rows:
+                return None  # 无法解析
+
+            # 构建 columns
+            columns = []
+            col_names = []
+            col_width = "auto"
+            for i, h in enumerate(header_row):
+                cname = f"col{i}"
+                col_names.append(cname)
+                columns.append({
+                    "name": cname,
+                    "display_name": h,
+                    "data_type": "text",
+                    "width": "auto",
+                    "horizontal_align": "left",
+                    "vertical_align": "center"
+                })
+
+            # 构建 rows
+            rows = []
+            for dr in data_rows:
+                row_obj = {}
+                for i, val in enumerate(dr):
+                    if i < len(col_names):
+                        row_obj[col_names[i]] = val
+                rows.append(row_obj)
+
+            # 构建 card elements
+            elements = []
+
+            # 表格前文本
+            before_text = "\n".join(before_parts)
+            if before_text:
+                elements.append({"tag": "div", "text": {"tag": "lark_md", "content": before_text[:1800]}})
+
+            # 表格组件
+            elements.append({
+                "tag": "table",
+                "page_size": min(10, max(1, len(rows))),  # 简单全显示
+                "row_height": "low",
+                "header_style": {
+                    "text_align": "left",
+                    "text_size": "normal",
+                    "background_style": "grey",
+                    "text_color": "grey",
+                    "bold": True,
+                    "lines": 1
+                },
+                "columns": columns,
+                "rows": rows
+            })
+
+            # 表格后文本
+            after_text = "\n".join(after_parts)
+            if after_text:
+                elements.append({"tag": "hr"})
+                elements.append({"tag": "div", "text": {"tag": "lark_md", "content": after_text[:1800]}})
+
+            # 取第一行作为卡片标题
+            title = "📊 查询结果"
+            if before_text:
+                first_line = before_text.strip().split("\n")[0]
+                if len(first_line) < 30:
+                    title = first_line
+
+            # schema 1.0 卡片（无 schema 字段，elements 在根级）
+            card = {
+                "header": {
+                    "template": "blue",
+                    "title": {"tag": "plain_text", "content": title[:40]}
+                },
+                "elements": elements
+            }
+            return card
+
+        except Exception as e:
+            print(f"[Feishu] 表格转卡片失败: {e}")
+            return None
 
     def _send_api(self, chat_id: str, msg_type: str, content: dict | str) -> SendResult:
         """飞书 API 消息发送底层方法。"""

@@ -18,6 +18,59 @@ import logging
 logger = logging.getLogger("kuafu.nmm_engine")
 
 
+class NMMEmbedding:
+    """简易文本→向量嵌入（纯 Python trigram hash, 零依赖）。
+    
+    不需要 torch 或其他第三方库。
+    """
+
+    def __init__(self, dim: int = 384):
+        self.dim = dim
+        import re
+        self._word_re = re.compile(r"\w+")
+
+    def encode(self, text: str):
+        """文本 → 向量（返回 list[float]）"""
+        import math
+        vec = [0.0] * self.dim
+        text = text.lower().strip()
+        words = self._word_re.findall(text)
+
+        if not words:
+            return vec
+
+        for i in range(len(text) - 2):
+            h = hash(text[i: i + 3]) % self.dim
+            vec[h] += 1.0
+
+        from collections import Counter
+        word_counts = Counter(words)
+        max_count = max(word_counts.values()) if word_counts else 1
+        for word, count in word_counts.items():
+            tf = count / max_count
+            h = hash(word) % self.dim
+            vec[h] += 1.0 + tf
+
+        for i in range(len(words) - 1):
+            pair = words[i] + "_" + words[i + 1]
+            h = hash(pair) % self.dim
+            vec[h] += 0.5
+
+        norm = math.sqrt(sum(v * v for v in vec))
+        if norm > 0:
+            vec = [v / norm for v in vec]
+        return vec
+
+    def cosine_similarity(self, a: list, b: list) -> float:
+        import math
+        dot = sum(ai * bi for ai, bi in zip(a, b))
+        norm_a = math.sqrt(sum(ai * ai for ai in a))
+        norm_b = math.sqrt(sum(bi * bi for bi in b))
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        return dot / (norm_a * norm_b)
+
+
 class NMMEngine:
     """NMM 记忆引擎桥接。
 
@@ -48,7 +101,6 @@ class NMMEngine:
             if str(vendor_path) not in sys.path:
                 sys.path.insert(0, str(vendor_path))
 
-            from core.memory_nmm import NMMEmbedding
             from nmm.core.memory import MemoryController as NMMController
 
             self._embed = NMMEmbedding(dim=self._embed_dim)

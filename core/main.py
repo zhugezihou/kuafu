@@ -25,7 +25,7 @@ from typing import Any, Optional, Callable
 # 核心模块
 from core.identity import load_identity_statement, detect_identity_impersonation
 from core.safety import is_path_allowed_for_write, validate_command
-from core.memory_api import MemoryAPI
+from core.memory import MemoryManager as MemoryAPI
 from core.evolution import EvolutionEngine, EvolutionEvent
 from core.llm import LLMClient
 from core.model_manager import ModelManager, ALIASES
@@ -66,9 +66,9 @@ class KuafuAgent:
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.name = "夸父"
         self.version = "0.2.0"
-        self.memory = MemoryAPI()
-        self.evolution = EvolutionEngine(memory=self.memory)
         self.llm = llm_client or LLMClient()
+        self.memory = MemoryAPI(enable_nmm=True, llm_chat_fn=self.llm.chat)
+        self.evolution = EvolutionEngine(memory=self.memory)
         self.model_manager = ModelManager()
         # 同步 ModelManager 与 LLMClient：以 LLMClient 为准
         self._sync_model_manager_with_llm()

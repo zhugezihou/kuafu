@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Optional, Callable
 
 from core.llm import LLMClient
-from core.memory import MemoryManager as MemoryAPI  # 新三层记忆系统，兼容旧接口
+from core.memory import MemoryManager  # Hindsight 记忆系统
 from core.evolution import EvolutionEngine
 from core.observer import Observer
 from core.tool_registry import ToolRegistry
@@ -96,7 +96,7 @@ _BOOTUP_LOGGED = False  # 模块级 flag：首次初始化的启动日志只打�
 def _async_post_task(task_result: dict, messages: list, task: str, loop: 'AgentLoop') -> None:
     """在后台线程执行后处理 LLM 调用，不阻塞 run() 返回。
 
-    包含：深度反思、自检、进化管道、偏好学习。
+    包含：深度反思、自检、进化管道、偏好学习、对话记忆提取。
     所有 LLM 调用都在后台执行，主线程只拼接 task_result + 质量评分（零 LLM 成本）。
     """
     def _run():  # pragma: no cover
@@ -114,6 +114,10 @@ def _async_post_task(task_result: dict, messages: list, task: str, loop: 'AgentL
             pass
         try:
             loop._learn_user_preferences(task_result, task)
+        except Exception:
+            pass
+        try:
+            loop._extract_conversation_memories(task_result, messages)
         except Exception:
             pass
     t = threading.Thread(target=_run, daemon=True, name="async-post-task")
@@ -135,7 +139,7 @@ class AgentLoop:
     def __init__(
         self,
         llm: Optional[LLMClient] = None,
-        memory: Optional[MemoryAPI] = None,
+        memory: Optional[MemoryManager] = None,
         evolution: Optional[EvolutionEngine] = None,
         tool_registry: Optional[ToolRegistry] = None,
         session_store: Optional[SessionStore] = None,
@@ -144,7 +148,7 @@ class AgentLoop:
     ):
         self.max_turns = max_turns
         self.llm = llm or LLMClient()
-        self.memory = memory or MemoryAPI(enable_nmm=True)
+        self.memory = memory or MemoryManager(enable_nmm=True)
         self.evolution = evolution or EvolutionEngine(memory=memory, llm=self.llm)
         self.tools = tool_registry or ToolRegistry()
         self.sessions = session_store or SessionStore()
@@ -451,10 +455,7 @@ class AgentLoop:
     def _register_memory_tools(self):
         """注册记忆工具（memory_store / memory_search / memory_reflect）。"""
         try:
-            from core.memory_api import MemoryAPI
-            mem_api = MemoryAPI()
-            self._memory_api_for_tools = mem_api
-            schemas = mem_api.get_tool_schemas()
+            schemas = self.memory.get_tool_schemas()
             for schema in schemas:
                 name = schema["name"]
                 params = schema["parameters"]
@@ -462,7 +463,7 @@ class AgentLoop:
                 self.tools.register(name, {
                     "description": desc,
                     "parameters": params,
-                }, lambda args, _n=name: mem_api.handle_tool_call(_n, args))
+                }, lambda args, _n=name: self.memory.handle_tool_call(_n, args))
             if self._is_top_level:  # pragma: no cover
                 self._log(f"🧠 记忆工具就绪: {', '.join(s['name'] for s in schemas)}")  # pragma: no cover
         except Exception as e:  # pragma: no cover
@@ -829,21 +830,29 @@ class AgentLoop:
                 budget_tag="memory",
             )
 
-        # ── 9. 自我认知 ──
+        # ── 9. 自我认知 + 用户偏好 ──
         try:
             all_skills = discover_skills()
             skills_count = len(all_skills) if all_skills else 0
             prefs_path = ROOT_DIR / "memory" / "user_prefs.json"
             pref_count = 0
+            pref_lines = []
             if prefs_path.exists():
                 try:
-                    pref_count = len(json.loads(prefs_path.read_text(encoding="utf-8")))
+                    prefs = json.loads(prefs_path.read_text(encoding="utf-8"))
+                    if isinstance(prefs, dict):
+                        pref_count = len(prefs)
+                        for k, v in list(prefs.items())[:8]:
+                            pref_lines.append(f"  • {k}: {v[:100]}")
                 except Exception:  # pragma: no cover
                     pass
+            self_awareness = f"📚 {skills_count} 技能 | 👤 {pref_count} 用户偏好 | ⚡ {total} 次进化"
+            if pref_lines:
+                self_awareness += "\n\n**用户偏好**\n" + "\n".join(pref_lines)
             pm.add_section(
                 section_id="self_awareness",
                 title="自我认知",
-                content=f"📚 {skills_count} 技能 | 👤 {pref_count} 用户偏好 | ⚡ {total} 次进化",
+                content=self_awareness,
                 order=99,
                 budget_tag="system",
             )
@@ -2196,6 +2205,83 @@ class AgentLoop:
         except Exception as e:  # pragma: no cover
             self._log(f"⚠️ 偏好学习异常: {e}")  # pragma: no cover
 
+    # ── 对话记忆提取 ────────────────────────────────────────────────
+
+    def _extract_conversation_memories(self, task_result: dict, messages: list) -> None:
+        """从对话中提取用户事实/重要信息，写入 MemoryManager（Hindsight + NMM）。
+
+        与 _deep_reflect（存工具经验教训）互补：
+        - _deep_reflect 存工具使用经验
+        - _extract_conversation_memories 存对话中的用户事实
+
+        分两级：
+        1. 快速路径（本方法）：轻量 LLM 提取用户事实，走 MemoryManager.store()
+        2. 深度路径（TwoPhaseExtractor）：完整两阶段提取+去重
+        """
+        # 只对较长对话提取（≥4轮交互）
+        if len(messages) < 6:
+            return
+
+        # 提取用户消息中的关键事实
+        user_facts = []
+        for msg in messages:
+            if msg.get("role") == "user":
+                content = msg.get("content", "").strip()
+                if content and len(content) > 10:
+                    if not content.startswith("{") and not content.startswith("["):
+                        user_facts.append(content[:500])
+
+        if not user_facts:
+            return
+
+        # 用轻量 LLM 提取事实
+        fact_prompt = (
+            "从以下用户消息中提取可复用的**用户事实**（偏好、项目信息、决策、重要上下文）。\n"
+            "不要提取：技术经验、错误日志、命令用法。\n"
+            "每条用陈述句，一行一条，不要序号和标记。\n"
+            f"用户消息：\n{chr(10).join(user_facts[-6:])}"
+        )
+        try:
+            resp = self.llm.chat(
+                [{"role": "system", "content": "你是一个记忆提取器。只输出事实，每行一条，不要多余文字。"},
+                 {"role": "user", "content": fact_prompt}],
+                tools=None,
+            )
+            if not resp["success"]:
+                return
+            output = resp["content"].strip()
+            extracted = []
+            for line in output.split("\n"):
+                line = line.strip()
+                if len(line) > 5:
+                    extracted.append(line[:500])
+                    # 通过 MemoryManager.store() 写入 — 自动分类到四网络 + NMM
+                    self.memory.store(
+                        content=line[:500],
+                        source="conversation",
+                        tags=["user_fact"],
+                        bypass_gate=True,
+                    )
+            if extracted:
+                self._log(f"💾 提取 {len(extracted)} 条用户事实")
+        except Exception as e:
+            self._log(f"⚠️ 记忆提取异常: {e}")
+
+        # 深度路径：调用 TwoPhaseExtractor（更长对话且成功时）
+        try:
+            task = task_result.get("task", "") or task_result.get("result", "")[:200]
+            if len(messages) >= 12 and task_result.get("success", False):
+                from core.memory.two_phase_extract import TwoPhaseExtractor
+                extractor = TwoPhaseExtractor(
+                    llm_client=self.llm,
+                    memory_manager=self.memory,
+                )
+                deep_facts = extractor.extract_from_conversation(messages, task=task)
+                if deep_facts:
+                    self._log(f"🧠 深度提取: {len(deep_facts)} 条精炼知识")
+        except Exception:
+            pass
+
     # ── 白板模式 ──────────────────────────────────────────────────
 
     def run_whiteboard(self, task: str) -> dict:
@@ -2412,6 +2498,7 @@ class AgentLoop:
         )
 
         self._deep_reflect(task_result, messages)
+        self._extract_conversation_memories(task_result, messages)
         self._self_check(task_result, messages, start)
         self._learn_user_preferences(task_result, task)
 

@@ -46,7 +46,7 @@ class SQLiteFTSBackend:
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA cache_size=-8000")  # 8MB cache
 
-        # 记忆主表
+        # 记忆主表（含四网络分类字段 category + entity）
         self._conn.execute("""
             CREATE TABLE IF NOT EXISTS memories (
                 id TEXT PRIMARY KEY,
@@ -62,9 +62,18 @@ class SQLiteFTSBackend:
                 last_accessed REAL DEFAULT 0,
                 ttl_days REAL DEFAULT 30,
                 is_compressed INTEGER DEFAULT 0,
-                parent_id TEXT DEFAULT ''
+                parent_id TEXT DEFAULT '',
+                category TEXT DEFAULT '',        -- 四网络分类：world/experience/observation/opinion
+                entity TEXT DEFAULT ''            -- 实体名（用于 observation 合并）
             )
         """)
+
+        # 兼容旧库：给已有 memories 表加列（如果不存在）
+        for col, col_type in [("category", "TEXT DEFAULT ''"), ("entity", "TEXT DEFAULT ''")]:
+            try:
+                self._conn.execute(f"ALTER TABLE memories ADD COLUMN {col} {col_type}")
+            except Exception:
+                pass
 
         # FTS5 全文索引（内容同步到 memories 表）
         self._conn.execute("""
@@ -72,29 +81,28 @@ class SQLiteFTSBackend:
                 content,
                 context,
                 tags,
+                category,
                 content=memories,
                 content_rowid='rowid',
                 tokenize='unicode61 tokenchars ''-/_#@.'''
             )
         """)
 
-        # 全局数据同步触发器：确保 FTS5 与 memories 表保持同步
+        # 全局数据同步触发器
         self._conn.executescript("""
             CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
-                INSERT INTO memories_fts(rowid, content, context, tags)
-                VALUES (new.rowid, new.content, new.context, new.tags);
+                INSERT INTO memories_fts(rowid, content, context, tags, category)
+                VALUES (new.rowid, new.content, new.context, new.tags, new.category);
             END;
-
             CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-                INSERT INTO memories_fts(memories_fts, rowid, content, context, tags)
-                VALUES ('delete', old.rowid, old.content, old.context, old.tags);
+                INSERT INTO memories_fts(memories_fts, rowid, content, context, tags, category)
+                VALUES ('delete', old.rowid, old.content, old.context, old.tags, old.category);
             END;
-
             CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
-                INSERT INTO memories_fts(memories_fts, rowid, content, context, tags)
-                VALUES ('delete', old.rowid, old.content, old.context, old.tags);
-                INSERT INTO memories_fts(rowid, content, context, tags)
-                VALUES (new.rowid, new.content, new.context, new.tags);
+                INSERT INTO memories_fts(memories_fts, rowid, content, context, tags, category)
+                VALUES ('delete', old.rowid, old.content, old.context, old.tags, old.category);
+                INSERT INTO memories_fts(rowid, content, context, tags, category)
+                VALUES (new.rowid, new.content, new.context, new.tags, new.category);
             END;
         """)
 
@@ -178,7 +186,8 @@ class SQLiteFTSBackend:
     def store(self, content: str, context: str = "", source: str = "",
               tags: list[str] = None, importance: float = 0.5,
               session_id: str = "", ttl_days: float = 30,
-              is_compressed: bool = False, parent_id: str = "") -> str:
+              is_compressed: bool = False, parent_id: str = "",
+              category: str = "", entity: str = "") -> str:
         """存储一条记忆，返回记忆 ID。
 
         自动去重（相同内容更新 timestamp 和 accessed_count）。
@@ -205,10 +214,11 @@ class SQLiteFTSBackend:
         self._conn.execute(
             """INSERT INTO memories
                (id, content, context, source, tags, importance, timestamp,
-                session_id, ttl_days, is_compressed, parent_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                session_id, ttl_days, is_compressed, parent_id, category, entity)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (mem_id, content, context, source, tags_json, importance,
-             time.time(), session_id, ttl_days, 1 if is_compressed else 0, parent_id)
+             time.time(), session_id, ttl_days, 1 if is_compressed else 0, parent_id,
+             category, entity)
         )
 
         # 写入关键词哈希索引

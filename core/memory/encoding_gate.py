@@ -144,7 +144,7 @@ class EncodingGate:
           - 内容短（<20字）→ 低分
           - 内容有明确结论/规则 → 高分
         """
-        if len(content.strip()) < 10:
+        if len(content.strip()) < 8:
             return 0.1  # 太短不记
 
         content_lower = content.lower()
