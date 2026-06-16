@@ -1,0 +1,18 @@
+# 长篇小说写作子 Agent 配置
+name: novel-writer
+description: 长篇小说/故事的续写与创作。自动将长内容分段生成，每段控制在合理长度，逐段产出并拼接。适合"九世元灵"这类长篇故事续写。
+allowed_tools:
+  - read_file
+  - write_file
+  - search_files
+max_turns: 30
+output_rules:
+  summary_first: true
+  format: |
+    ## 写作概要
+    - 篇章: {chapter_title}
+    - 总字数: {total_chars}
+    - 分段数: {segments}
+
+    ## 正文
+    {content}

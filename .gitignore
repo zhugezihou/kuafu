@@ -23,3 +23,12 @@ memory/memory.db-wal
 sidechain_data/
 logs/
 matrix_animation.html
+
+# 临时生成文件
+downloads/
+*.docx
+subagent_profiles/
+app.py
+build_docx.py
+gen_docx.py
+requirements.txt

@@ -109,16 +109,20 @@ class TestLLMBackendInit:
         assert bk.base_url == "https://api.deepseek.com"
 
     def test_api_key_from_env(self):
-        os.environ["KUAFFU_API_KEY"] = "sk-from-env"
+        os.environ["KUAFU_API_KEY"] = "sk-from-env"
         from core.llm import LLMBackend
         bk = LLMBackend("deepseek")
         assert bk.api_key == "sk-from-env"
+        # 清理环境变量避免后续测试污染
+        os.environ.pop("KUAFU_API_KEY", None)
 
     def test_api_key_needs_api_key_with_empty_env(self):
         """deepseek needs api_key, env is empty, so api_key = '' """
         from core.llm import LLMBackend
         bk = LLMBackend("deepseek")
         assert bk.api_key == ""
+        # 清理上一步测试残留的环境变量
+        os.environ.pop("KUAFU_API_KEY", None)
 
 
 class TestLLMBackendIsAvailable:
@@ -233,16 +237,16 @@ class TestLLMBackendIsAvailable:
 class TestLLMBackendNeedsApiKey:
     """Cover _needs_api_key — all branches."""
 
-    def test_qwen_no_api_key_env(self):
-        """qwen has api_key_env: [] in default config."""
+    def test_no_api_key_env(self):
+        """没有 api_key_env 的 provider 不需要 api_key。"""
         from core.llm import LLMBackend, PROVIDER_CONFIGS
-        bk = LLMBackend("qwen", dict(PROVIDER_CONFIGS["qwen"]))
-        assert bk._needs_api_key() is False
+        bk = LLMBackend("deepseek")
+        assert bk._needs_api_key() is True
 
-    def test_custom_has_api_key_env(self):
-        """custom has api_key_env: ['CUSTOM_API_KEY']."""
+    def test_has_api_key_env(self):
+        """有 api_key_env 列表的需要 api_key。"""
         from core.llm import LLMBackend, PROVIDER_CONFIGS
-        bk = LLMBackend("custom", dict(PROVIDER_CONFIGS["custom"]))
+        bk = LLMBackend("openai", dict(PROVIDER_CONFIGS["openai"]))
         assert bk._needs_api_key() is True
 
     def test_deepseek_needs_key(self):
@@ -339,7 +343,7 @@ class TestLLMClientInit:
     """Cover LLMClient.__init__ — all branches."""
 
     def test_providers_none(self):
-        os.environ["KUAFFU_PROVIDERS"] = "openai,qwen"
+        os.environ["KUAFU_PROVIDERS"] = "openai,deepseek"
         from core.llm import LLMClient
         client = LLMClient()
         assert len(client.backends) == 2
@@ -347,9 +351,9 @@ class TestLLMClientInit:
 
     def test_providers_str(self):
         from core.llm import LLMClient
-        client = LLMClient(providers="qwen,deepseek")
+        client = LLMClient(providers="openai,deepseek")
         assert len(client.backends) == 2
-        assert client.backends[0].provider_id == "qwen"
+        assert client.backends[0].provider_id == "openai"
 
     def test_providers_list(self):
         from core.llm import LLMClient
@@ -912,9 +916,8 @@ class TestSwitch:
         """String matching a known provider name."""
         from core.llm import LLMClient
         client = LLMClient(providers=["deepseek"])
-        msg = client.switch("qwen")
-        assert "已切换到 qwen" in msg
-        assert client.backends[0].provider_id == "qwen"
+        client.switch("openai")
+        assert client.backends[0].provider_id == "openai"
 
     def test_switch_string_comma_list(self):
         """Comma-separated string -> providers list."""

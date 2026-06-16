@@ -9,7 +9,7 @@ import pytest
 from core.context_compress import (
     estimate_tokens,
     CompressionResult,
-    LocalSummarizer,
+    LLMSummarizer as LocalSummarizer,
     PinnedContentManager,
     ToolResultStore,
     ContextCompressor,
@@ -59,115 +59,6 @@ class TestCompressionResult:
         assert cr.summary == ""
         assert cr.compression_ratio == 0.2
 
-
-# ===================================================================
-# LocalSummarizer
-# ===================================================================
-class TestLocalSummarizer:
-    def test_init_defaults(self):
-        s = LocalSummarizer()
-        assert s.base_url == "http://localhost:8080"
-        assert s.max_tokens == 256
-        assert s.timeout == 30
-
-    def test_init_custom(self):
-        s = LocalSummarizer(base_url="http://test:9999/", max_tokens=512, timeout=10)
-        assert s.base_url == "http://test:9999"
-        assert s.max_tokens == 512
-        assert s.timeout == 10
-
-    def test_summarize_empty(self):
-        s = LocalSummarizer()
-        assert s.summarize("") == ""
-        assert s.summarize("   ") == ""
-
-    def test_summarize_short_text_fallback_on_exception(self):
-        s = LocalSummarizer(base_url="http://nonexistent:9999", timeout=1)
-        # Short text (< 600 chars) — fallback returns text itself
-        result = s.summarize("short text")
-        assert result == "short text"
-
-    def test_summarize_long_text_fallback_on_exception(self):
-        s = LocalSummarizer(base_url="http://nonexistent:9999", timeout=1)
-        text = "A" * 1000
-        result = s.summarize(text)
-        # Fallback truncates to 600 + "..."
-        assert result == text[:600] + "..."
-
-    def test_is_available_false(self):
-        s = LocalSummarizer(base_url="http://nonexistent:9999")
-        assert s.is_available() is False
-
-    @patch("urllib.request.urlopen")
-    def test_is_available_true(self, mock_urlopen):
-        mock_resp = MagicMock()
-        mock_resp.status = 200
-        mock_urlopen.return_value.__enter__.return_value = mock_resp
-        s = LocalSummarizer()
-        assert s.is_available() is True
-
-    @patch("urllib.request.urlopen")
-    def test_call_llm_success(self, mock_urlopen):
-        response_bytes = json.dumps({
-            "choices": [{"message": {"content": "这是摘要内容"}}]
-        }).encode("utf-8")
-        mock_resp = MagicMock()
-        # read() returns bytes, which has .decode()
-        mock_resp.read.return_value = response_bytes
-        mock_urlopen.return_value.__enter__.return_value = mock_resp
-
-        s = LocalSummarizer()
-        result = s._call_llm("some dialogue text")
-        assert result == "这是摘要内容"
-
-    @patch("urllib.request.urlopen")
-    def test_call_llm_empty_response(self, mock_urlopen):
-        response_bytes = json.dumps({
-            "choices": [{"message": {"content": ""}}]
-        }).encode("utf-8")
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = response_bytes
-        mock_urlopen.return_value.__enter__.return_value = mock_resp
-
-        s = LocalSummarizer()
-        text = "A" * 1000
-        result = s._call_llm(text)
-        # Empty content => fallback to truncation
-        assert result == text[:600] + "..."
-
-    @patch("urllib.request.urlopen")
-    def test_call_llm_missing_choices(self, mock_urlopen):
-        response_bytes = json.dumps({}).encode("utf-8")
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = response_bytes
-        mock_urlopen.return_value.__enter__.return_value = mock_resp
-
-        s = LocalSummarizer()
-        text = "A" * 1000
-        result = s._call_llm(text)
-        assert result == text[:600] + "..."
-
-    @patch("urllib.request.urlopen")
-    def test_call_llm_short_text_empty_response(self, mock_urlopen):
-        response_bytes = json.dumps({
-            "choices": [{"message": {"content": ""}}]
-        }).encode("utf-8")
-        mock_resp = MagicMock()
-        mock_resp.read.return_value = response_bytes
-        mock_urlopen.return_value.__enter__.return_value = mock_resp
-
-        s = LocalSummarizer()
-        text = "short"
-        result = s._call_llm(text)
-        # Empty content, text < 600 chars => returns text + "..."
-        assert result == text[:600] + "..."
-
-    def test_summarize_short_text_no_exception(self):
-        """When no exception occurs but text is short."""
-        s = LocalSummarizer(base_url="http://nonexistent:9999", timeout=1)
-        result = s.summarize("short")
-        # Exception occurs due to timeout, fallback returns original
-        assert result == "short"
 
 
 # ===================================================================

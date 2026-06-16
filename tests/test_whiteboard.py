@@ -216,7 +216,7 @@ class TestWhiteboard:
     def test_checkpoint(self):
         wb = self._make_wb()
         with patch.object(wb, '_read_partition', return_value=[{"_id": "1"}]):
-            with patch("json.dump"):
+            with patch.object(wb, '_write_partition'):
                 ck = wb.checkpoint()
                 assert "checkpoint_id" in ck
                 assert len(ck["partitions"]) == len(wb._partitions)

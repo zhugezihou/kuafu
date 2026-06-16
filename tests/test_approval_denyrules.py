@@ -315,9 +315,9 @@ class TestIsInteractive:
     """100% branch coverage for _is_interactive()."""
 
     def test_gateway_running(self):
-        """KUAFFU_GATEWAY_RUNNING=1 returns False."""
+        """KUAFU_GATEWAY_RUNNING=1 returns False."""
         from core.approval import _is_interactive
-        with patch.dict(os.environ, {"KUAFFU_GATEWAY_RUNNING": "1"}, clear=True):
+        with patch.dict(os.environ, {"KUAFU_GATEWAY_RUNNING": "1"}, clear=True):
             assert _is_interactive() is False
 
     def test_feishu_app_id(self):
@@ -333,9 +333,9 @@ class TestIsInteractive:
             assert _is_interactive() is False
 
     def test_kuaifu_interactive_env(self):
-        """KUAFFU_INTERACTIVE=1 returns True."""
+        """KUAFU_INTERACTIVE=1 returns True."""
         from core.approval import _is_interactive
-        with patch.dict(os.environ, {"KUAFFU_INTERACTIVE": "1"}, clear=True):
+        with patch.dict(os.environ, {"KUAFU_INTERACTIVE": "1"}, clear=True):
             assert _is_interactive() is True
 
     def test_tty_both_isatty(self):
@@ -371,9 +371,9 @@ class TestIsInteractive:
                     assert _is_interactive() is False
 
     def test_kuaifu_interactive_overrides_tty(self):
-        """KUAFFU_INTERACTIVE=1 returns True even without TTY."""
+        """KUAFU_INTERACTIVE=1 returns True even without TTY."""
         from core.approval import _is_interactive
-        with patch.dict(os.environ, {"KUAFFU_INTERACTIVE": "1"}, clear=True):
+        with patch.dict(os.environ, {"KUAFU_INTERACTIVE": "1"}, clear=True):
             with patch.object(sys.stdin, 'isatty', return_value=False):
                 with patch.object(sys.stdout, 'isatty', return_value=False):
                     assert _is_interactive() is True

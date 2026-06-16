@@ -20,6 +20,19 @@ from unittest.mock import MagicMock, patch, PropertyMock
 # core/skill_manager.py — SkillManager 全面覆盖
 # ═══════════════════════════════════════════════════════════════════
 
+# 兼容装饰器：让 @test(\"desc\") 定义的函数能被 pytest 发现
+import functools
+def test(name: str):
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            return fn(*args, **kwargs)
+        # 保留原名让 pytest 能收集
+        wrapper.__name__ = fn.__name__
+        wrapper.__test__ = True
+        return wrapper
+    return decorator
+
 @test("SkillManager: list_local 空技能目录")
 def test_sm_list_local_empty():
     """list_local 在无技能 yaml 时应返回空列表"""
