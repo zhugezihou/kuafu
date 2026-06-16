@@ -356,7 +356,15 @@ class FeishuWebSocketChannel(MessageChannel):
     # ── 审批卡片 ──────────────────────────────────────────────
 
     def _build_approval_card(self, approval_id: str, tool: str, args_summary: str) -> dict:
-        """构建审批按钮卡片 JSON。"""
+        """构建审批按钮卡片 JSON，含人类可读的参数说明。"""
+        # 解析 args_summary（格式: "工具: xxx\n{yaml参数}"）
+        parts = args_summary.split("\n", 1)
+        tool_name = parts[0] if parts else tool
+        args_text = parts[1] if len(parts) > 1 else ""
+
+        # 生成人类可读的操作说明
+        description = self._format_approval_description(tool_name, args_text)
+
         return {
             "config": {"wide_screen_mode": True},
             "header": {
@@ -366,7 +374,7 @@ class FeishuWebSocketChannel(MessageChannel):
             "elements": [
                 {
                     "tag": "markdown",
-                    "content": f"**工具**: `{tool}`\n**参数**: `{args_summary}`\n\n**ID**: `{approval_id}`",
+                    "content": f"**{tool_name}**\n\n{description}\n\n---\nID: `{approval_id[-8:]}`",
                 },
                 {
                     "tag": "action",
@@ -387,6 +395,102 @@ class FeishuWebSocketChannel(MessageChannel):
                 },
             ],
         }
+
+    @staticmethod
+    def _format_approval_description(tool_name: str, args_text: str) -> str:
+        """将工具名称和参数转为人类可读的操作说明。"""
+        try:
+            # args_text 可能是 JSON，也可能是其他格式
+            import json as _json
+            args = None
+            if args_text.strip().startswith("{"):
+                try:
+                    args = _json.loads(args_text)
+                except _json.JSONDecodeError:
+                    args = None
+
+            if args:
+                return FeishuWebSocketChannel._describe_tool_args(tool_name, args)
+
+            # 不是 JSON，直接展示
+            return args_text[:300] if args_text else "（无参数）"
+        except Exception:
+            return args_text[:300] if args_text else "（无参数）"
+
+    @staticmethod
+    def _describe_tool_args(tool: str, args: dict) -> str:
+        """根据工具类型生成人类可读的参数说明。"""
+        tool_lower = tool.lower()
+
+        # terminal
+        if "terminal" in tool_lower or ("终端" in tool):
+            cmd = args.get("command", args.get("cmd", ""))
+            if len(cmd) > 200:
+                cmd = cmd[:200] + "..."
+            return f"执行命令:\n```\n{cmd}\n```"
+
+        # write_file
+        if "write_file" in tool_lower or "write" in tool_lower:
+            path = args.get("path", "?")
+            content = args.get("content", "")
+            content_len = len(content) if content else 0
+            mode = args.get("mode", "replace")
+            return f"**写入文件** `{path}`\n内容长度: {content_len} 字符\n模式: {mode}"
+
+        # patch
+        if "patch" in tool_lower:
+            path = args.get("path", "?")
+            old = args.get("old_string", "")
+            new = args.get("new_string", "")
+            mode = args.get("mode", "replace")
+            desc_parts = [f"**修改文件** `{path}`"]
+            if mode:
+                desc_parts.append(f"模式: {mode}")
+            if old:
+                desc_parts.append(f"查找: `{old[:60]}...`" if len(old) > 60 else f"查找: `{old}`")
+            if new:
+                desc_parts.append(f"替换为: `{new[:60]}...`" if len(new) > 60 else f"替换为: `{new}`")
+            return "\n".join(desc_parts)
+
+        # read_file
+        if "read_file" in tool_lower or "read" in tool_lower:
+            path = args.get("path", "?")
+            offset = args.get("offset", 1)
+            limit = args.get("limit", "全部")
+            return f"**读取文件** `{path}`\n从第 {offset} 行起，读取 {limit} 行"
+
+        # delete / remove
+        if "delete" in tool_lower or "remove" in tool_lower or "rm" in tool_lower:
+            path = args.get("path", args.get("target", "?"))
+            return f"**删除** `{path}`"
+
+        # search_files
+        if "search" in tool_lower or "grep" in tool_lower:
+            pattern = args.get("pattern", "")
+            path = args.get("path", ".")
+            return f"**搜索** `{pattern}` 在 `{path}` 中"
+
+        # git
+        if "git" in tool_lower:
+            cmd = args.get("command", "")
+            return f"**Git 操作** `{cmd[:200]}`"
+
+        # browser
+        if "browser" in tool_lower:
+            url = args.get("url", "")
+            action = args.get("action", "导航")
+            return f"**浏览器** {action}: `{url[:200]}`"
+
+        # 兜底：列出关键参数
+        lines = []
+        for k, v in list(args.items())[:5]:
+            v_str = str(v)
+            if len(v_str) > 100:
+                v_str = v_str[:100] + "..."
+            lines.append(f"▪ {k}: {v_str}")
+        if len(args) > 5:
+            lines.append(f"▪ ... 还有 {len(args)-5} 个参数")
+        return "\n".join(lines) if lines else "（无参数）"
 
     def send_approval_card(self, approval_id: str, tool: str, args_summary: str, chat_id: str = "") -> SendResult:
         """发送审批卡片并注册等待事件。"""

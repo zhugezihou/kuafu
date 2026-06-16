@@ -51,8 +51,13 @@ class GatewayLoop:
             title = tool
             if tool == "terminal":
                 title = "终端: " + args.get("command", "")[:60]
-            detail = json.dumps(args, ensure_ascii=False)[:200]
-            args_summary = f"{title}\n{detail}"
+            # 构造人类可读的参数摘要
+            try:
+                from core.channel.feishu_ws import FeishuWebSocketChannel
+                readable_args = FeishuWebSocketChannel._describe_tool_args(tool, args)
+            except Exception:
+                readable_args = json.dumps(args, ensure_ascii=False)[:200]
+            args_summary = f"{title}\n{readable_args}"
 
             # 只推送到触发审批的通道
             triggered_platform = getattr(self, '_last_message_source', None) or "feishu"
@@ -107,7 +112,7 @@ class GatewayLoop:
                                 "🔐 审批请求\n"
                                 + "━━━━━━━━━━━━━━━━\n"
                                 + f"工具: {title}\n"
-                                + f"详情: {detail[:100]}\n"
+                                + f"详情: {readable_args[:100]}\\n"
                                 + f"ID: {short_id}\n"
                                 + "━━━━━━━━━━━━━━━━\n"
                                 + f"回复「1 {short_id}」批准\n"
