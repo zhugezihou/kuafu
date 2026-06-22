@@ -339,15 +339,20 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self.shutdown_event.set()
 
     def _handle_restart(self):
-        import subprocess, os
+        import subprocess, os, sys
         restart_script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "restart.sh")
+        # 方案一：如果 restart.sh 存在，异步执行（不阻塞响应）
         if os.path.exists(restart_script):
-            self._send_json(200, {"status": "restarting"})
-            # 分离执行重启脚本，不阻塞 HTTP 响应
+            self._send_json(200, {"status": "restarting", "method": "script"})
             subprocess.Popen(["bash", restart_script, "gateway"],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        else:
-            self._send_json(500, {"error": "restart.sh not found"})
+            return
+
+        # 方案二：直接 exec 重新启动自己（无脚本时的兜底）
+        self._send_json(200, {"status": "restarting", "method": "exec"})
+        python = sys.executable
+        cli_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "core", "cli.py")
+        os.execv(python, [python, cli_path, "gateway", "start"])
 
     # ── 通道管理 API ──────────────────────────────────────────
 

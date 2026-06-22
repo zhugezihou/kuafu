@@ -24,7 +24,8 @@ echo -e "${CYAN}  🌞 夸父重启中...                     ${NC}"
 echo -e "${CYAN}═══════════════════════════════════════${NC}"
 
 # 1. 检测并停止正在运行的夸父进程
-KUAFU_PIDS=$(pgrep -f "python.*core\.main" 2>/dev/null || true)
+# 匹配 gateway/cli/main 三种启动方式
+KUAFU_PIDS=$(pgrep -f "python.*core\.(main|cli)" 2>/dev/null || true)
 GATEWAY_PIDS=$(pgrep -f "kuafu.*gateway" 2>/dev/null || true)
 
 if [ -n "$KUAFU_PIDS" ] || [ -n "$GATEWAY_PIDS" ]; then
