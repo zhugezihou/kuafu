@@ -134,6 +134,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self._handle_cron_stop()
         elif path == "/api/shutdown":
             self._handle_shutdown()
+        elif path == "/api/restart":
+            self._handle_restart()
         # ── 通道管理 API ──
         elif path == "/api/channel/discover":
             self._handle_channel_discover()
@@ -335,6 +337,17 @@ class GatewayHandler(BaseHTTPRequestHandler):
         self._send_json(200, {"status": "shutting down"})
         if self.shutdown_event:
             self.shutdown_event.set()
+
+    def _handle_restart(self):
+        import subprocess, os
+        restart_script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "restart.sh")
+        if os.path.exists(restart_script):
+            self._send_json(200, {"status": "restarting"})
+            # 分离执行重启脚本，不阻塞 HTTP 响应
+            subprocess.Popen(["bash", restart_script, "gateway"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            self._send_json(500, {"error": "restart.sh not found"})
 
     # ── 通道管理 API ──────────────────────────────────────────
 

@@ -124,6 +124,10 @@ def _is_safe_terminal(cmd: str) -> bool:
         "kuafu gateway stop",
         "kuafu gateway start",
         "kuafu sessions list",
+        "kuafu restart",
+        "bash /home/asus/kuafu/restart.sh",
+        "curl -X POST http://localhost:8765/api/restart",
+        "curl -X POST http://127.0.0.1:8765/api/restart",
     )
     for prefix in KUAFU_SAFE_PREFIXES:
         if lower.startswith(prefix):
