@@ -157,7 +157,7 @@ class TestAgentLoopInitHelpers:
         """Create an AgentLoop with all deps mocked and all lazy init set to None."""
         from core.agent_loop import AgentLoop
         with patch('core.agent_loop.LLMClient') as mock_llm_cls, \
-             patch('core.agent_loop.MemoryAPI') as mock_mem_cls, \
+             patch('core.agent_loop.MemoryManager') as mock_mem_cls, \
              patch('core.agent_loop.EvolutionEngine') as mock_evo_cls, \
              patch('core.agent_loop.ToolRegistry') as mock_tr_cls, \
              patch('core.agent_loop.SessionStore') as mock_ss_cls, \
@@ -310,7 +310,7 @@ class TestRegisterTools:
     def _make_basic_loop(self):
         from core.agent_loop import AgentLoop
         with patch('core.agent_loop.LLMClient') as mock_llm_cls, \
-             patch('core.agent_loop.MemoryAPI') as mock_mem_cls, \
+             patch('core.agent_loop.MemoryManager') as mock_mem_cls, \
              patch('core.agent_loop.EvolutionEngine') as mock_evo_cls, \
              patch('core.agent_loop.ToolRegistry') as mock_tr_cls, \
              patch('core.agent_loop.SessionStore') as mock_ss_cls, \
@@ -510,7 +510,7 @@ class TestRegisterTools:
             {"name": "memory_store", "description": "Store memory", "parameters": {"type": "object", "properties": {}}},
             {"name": "memory_search", "description": "Search memory", "parameters": {"type": "object", "properties": {}}},
         ]
-        with patch('core.agent_loop.MemoryAPI', return_value=mock_mem_api):
+        with patch('core.agent_loop.MemoryManager', return_value=mock_mem_api):
             loop._register_memory_tools()
             # Should have called tools.register 1 more time (skill_rollback already called in init)
             assert loop.tools.register.call_count >= 2
@@ -518,7 +518,7 @@ class TestRegisterTools:
     def test_register_memory_tools_error(self):
         """_register_memory_tools handles exception gracefully (L376-377)."""
         loop = self._make_basic_loop()
-        with patch('core.agent_loop.MemoryAPI', side_effect=Exception("mem_api failed")):
+        with patch('core.agent_loop.MemoryManager', side_effect=Exception("mem_api failed")):
             # Should not raise
             loop._register_memory_tools()
 
@@ -613,7 +613,7 @@ class TestRegisterTools:
     def test_init_hooks_exception_in_init(self):
         """AgentLoop.__init__ handles hooks init exception (L214-215)."""
         with patch('core.agent_loop.LLMClient'), \
-             patch('core.agent_loop.MemoryAPI'), \
+             patch('core.agent_loop.MemoryManager'), \
              patch('core.agent_loop.EvolutionEngine'), \
              patch('core.agent_loop.ToolRegistry'), \
              patch('core.agent_loop.SessionStore'), \
@@ -640,7 +640,7 @@ class TestBuildSystemPromptInternals:
     def _make_loop(self):
         from core.agent_loop import AgentLoop
         with patch('core.agent_loop.LLMClient') as mock_llm_cls, \
-             patch('core.agent_loop.MemoryAPI') as mock_mem_cls, \
+             patch('core.agent_loop.MemoryManager') as mock_mem_cls, \
              patch('core.agent_loop.EvolutionEngine') as mock_evo_cls, \
              patch('core.agent_loop.ToolRegistry') as mock_tr_cls, \
              patch('core.agent_loop.SessionStore') as mock_ss_cls, \
@@ -978,7 +978,7 @@ class TestTryDelegateComplexSkills:
     def _make_loop(self):
         from core.agent_loop import AgentLoop
         with patch('core.agent_loop.LLMClient') as mock_llm_cls, \
-             patch('core.agent_loop.MemoryAPI') as mock_mem_cls, \
+             patch('core.agent_loop.MemoryManager') as mock_mem_cls, \
              patch('core.agent_loop.EvolutionEngine') as mock_evo_cls, \
              patch('core.agent_loop.ToolRegistry') as mock_tr_cls, \
              patch('core.agent_loop.SessionStore') as mock_ss_cls, \
@@ -1096,7 +1096,7 @@ class TestSelfCheck:
     def _make_loop(self):
         from core.agent_loop import AgentLoop
         with patch('core.agent_loop.LLMClient') as mock_llm_cls, \
-             patch('core.agent_loop.MemoryAPI') as mock_mem_cls, \
+             patch('core.agent_loop.MemoryManager') as mock_mem_cls, \
              patch('core.agent_loop.EvolutionEngine') as mock_evo_cls, \
              patch('core.agent_loop.ToolRegistry') as mock_tr_cls, \
              patch('core.agent_loop.SessionStore') as mock_ss_cls, \
@@ -1206,7 +1206,7 @@ class TestQualityScore:
     def _make_loop(self):
         from core.agent_loop import AgentLoop
         with patch('core.agent_loop.LLMClient') as mock_llm_cls, \
-             patch('core.agent_loop.MemoryAPI') as mock_mem_cls, \
+             patch('core.agent_loop.MemoryManager') as mock_mem_cls, \
              patch('core.agent_loop.EvolutionEngine') as mock_evo_cls, \
              patch('core.agent_loop.ToolRegistry') as mock_tr_cls, \
              patch('core.agent_loop.SessionStore') as mock_ss_cls, \
@@ -1333,7 +1333,7 @@ class TestGenerateReport:
     def _make_loop(self):
         from core.agent_loop import AgentLoop
         with patch('core.agent_loop.LLMClient') as mock_llm_cls, \
-             patch('core.agent_loop.MemoryAPI') as mock_mem_cls, \
+             patch('core.agent_loop.MemoryManager') as mock_mem_cls, \
              patch('core.agent_loop.EvolutionEngine') as mock_evo_cls, \
              patch('core.agent_loop.ToolRegistry') as mock_tr_cls, \
              patch('core.agent_loop.SessionStore') as mock_ss_cls, \
@@ -1477,7 +1477,7 @@ class TestDetectUserCorrection:
     def _make_loop(self):
         from core.agent_loop import AgentLoop
         with patch('core.agent_loop.LLMClient'), \
-             patch('core.agent_loop.MemoryAPI'), \
+             patch('core.agent_loop.MemoryManager'), \
              patch('core.agent_loop.EvolutionEngine'), \
              patch('core.agent_loop.ToolRegistry'), \
              patch('core.agent_loop.SessionStore'), \
@@ -1537,7 +1537,7 @@ class TestDeepReflect:
     def _make_loop(self):
         from core.agent_loop import AgentLoop
         with patch('core.agent_loop.LLMClient') as mock_llm_cls, \
-             patch('core.agent_loop.MemoryAPI') as mock_mem_cls, \
+             patch('core.agent_loop.MemoryManager') as mock_mem_cls, \
              patch('core.agent_loop.EvolutionEngine') as mock_evo_cls, \
              patch('core.agent_loop.ToolRegistry') as mock_tr_cls, \
              patch('core.agent_loop.SessionStore') as mock_ss_cls, \
@@ -1642,7 +1642,7 @@ class TestLearnUserPreferences:
     def _make_loop(self):
         from core.agent_loop import AgentLoop
         with patch('core.agent_loop.LLMClient') as mock_llm_cls, \
-             patch('core.agent_loop.MemoryAPI') as mock_mem_cls, \
+             patch('core.agent_loop.MemoryManager') as mock_mem_cls, \
              patch('core.agent_loop.EvolutionEngine') as mock_evo_cls, \
              patch('core.agent_loop.ToolRegistry') as mock_tr_cls, \
              patch('core.agent_loop.SessionStore') as mock_ss_cls, \
@@ -1871,7 +1871,7 @@ class TestTriggerEvolutionRuleAnalysis:
     def _make_loop(self):
         from core.agent_loop import AgentLoop
         with patch('core.agent_loop.LLMClient') as mock_llm_cls, \
-             patch('core.agent_loop.MemoryAPI') as mock_mem_cls, \
+             patch('core.agent_loop.MemoryManager') as mock_mem_cls, \
              patch('core.agent_loop.EvolutionEngine') as mock_evo_cls, \
              patch('core.agent_loop.ToolRegistry') as mock_tr_cls, \
              patch('core.agent_loop.SessionStore') as mock_ss_cls, \
@@ -2012,7 +2012,7 @@ class TestRunEvolutionPipeline:
     def _make_loop(self):
         from core.agent_loop import AgentLoop
         with patch('core.agent_loop.LLMClient') as mock_llm_cls, \
-             patch('core.agent_loop.MemoryAPI') as mock_mem_cls, \
+             patch('core.agent_loop.MemoryManager') as mock_mem_cls, \
              patch('core.agent_loop.EvolutionEngine') as mock_evo_cls, \
              patch('core.agent_loop.ToolRegistry') as mock_tr_cls, \
              patch('core.agent_loop.SessionStore') as mock_ss_cls, \

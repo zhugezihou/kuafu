@@ -1966,7 +1966,7 @@ class TestAgentLoop:
         """Create an AgentLoop with all dependencies mocked."""
         from core.agent_loop import AgentLoop
         with patch('core.agent_loop.LLMClient') as mock_llm_cls, \
-             patch('core.agent_loop.MemoryAPI') as mock_mem_cls, \
+             patch('core.agent_loop.MemoryManager') as mock_mem_cls, \
              patch('core.agent_loop.EvolutionEngine') as mock_evo_cls, \
              patch('core.agent_loop.ToolRegistry') as mock_tr_cls, \
              patch('core.agent_loop.SessionStore') as mock_ss_cls, \
@@ -1991,6 +1991,7 @@ class TestAgentLoop:
             mock_llm.base_url = "https://api.deepseek.com"
             mock_llm.max_tokens = 4096
             mock_llm.temperature = 0.7
+            mock_llm.get_context_window = MagicMock(return_value=800000)
             mock_llm_cls.return_value = mock_llm
 
             mock_memory = MagicMock()
@@ -2091,13 +2092,14 @@ class TestAgentLoop:
     def test_initialization(self):
         loop = self._make_loop()
         assert loop.max_turns == 5
-        assert loop.current_session_id is None
+        # current_session_id 由 run() 惰性设置
+        assert not hasattr(loop, 'current_session_id')
 
     def test_initialization_with_defaults(self):
         """Test AgentLoop init without providing dependencies."""
         from core.agent_loop import AgentLoop
         with patch('core.agent_loop.LLMClient') as mock_llm, \
-             patch('core.agent_loop.MemoryAPI') as mock_mem, \
+             patch('core.agent_loop.MemoryManager') as mock_mem, \
              patch('core.agent_loop.EvolutionEngine') as mock_evo, \
              patch('core.agent_loop.ToolRegistry') as mock_tr, \
              patch('core.agent_loop.SessionStore') as mock_ss, \
@@ -4621,7 +4623,7 @@ class TestAgentLoopExtended:
         """Create an AgentLoop with all dependencies mocked."""
         from core.agent_loop import AgentLoop
         with patch('core.agent_loop.LLMClient') as mock_llm_cls, \
-             patch('core.agent_loop.MemoryAPI') as mock_mem_cls, \
+             patch('core.agent_loop.MemoryManager') as mock_mem_cls, \
              patch('core.agent_loop.EvolutionEngine') as mock_evo_cls, \
              patch('core.agent_loop.ToolRegistry') as mock_tr_cls, \
              patch('core.agent_loop.SessionStore') as mock_ss_cls, \
@@ -4646,6 +4648,7 @@ class TestAgentLoopExtended:
             mock_llm.base_url = "https://api.deepseek.com"
             mock_llm.max_tokens = 4096
             mock_llm.temperature = 0.7
+            mock_llm.get_context_window = MagicMock(return_value=800000)
             mock_llm_cls.return_value = mock_llm
 
             mock_memory = MagicMock()
@@ -8863,7 +8866,7 @@ class TestAgentLoopDeep:
         """Create an AgentLoop with all dependencies mocked."""
         from core.agent_loop import AgentLoop
         with patch('core.agent_loop.LLMClient') as mock_llm_cls, \
-             patch('core.agent_loop.MemoryAPI') as mock_mem_cls, \
+             patch('core.agent_loop.MemoryManager') as mock_mem_cls, \
              patch('core.agent_loop.EvolutionEngine') as mock_evo_cls, \
              patch('core.agent_loop.ToolRegistry') as mock_tr_cls, \
              patch('core.agent_loop.SessionStore') as mock_ss_cls, \
@@ -8888,6 +8891,7 @@ class TestAgentLoopDeep:
             mock_llm.base_url = "https://api.deepseek.com"
             mock_llm.max_tokens = 4096
             mock_llm.temperature = 0.7
+            mock_llm.get_context_window = MagicMock(return_value=800000)
             mock_llm_cls.return_value = mock_llm
 
             mock_memory = MagicMock()
@@ -9178,7 +9182,8 @@ class TestAgentLoopDeep:
     def test_reset_conversation_no_active_session(self):
         """Verify initial session state is None."""
         loop = self._make_loop()
-        assert loop.current_session_id is None or loop.current_session_id == "sess_test_001"
+        # current_session_id 由 run() 设置，测试直接检查时默认不存在
+        assert not hasattr(loop, 'current_session_id') or loop.current_session_id is None
 
     def test_deep_reflect_skipped_for_simple(self):
         """_deep_reflect() is skipped for simple successful tasks."""
@@ -9240,10 +9245,9 @@ class TestAgentLoopDeep:
     def test_build_system_prompt_with_skills(self):
         """build_system_prompt() includes skills section."""
         loop = self._make_loop()
-        with patch('core.agent_loop.discover_skills', return_value=["skill1", "skill2"]), \
-             patch('core.agent_loop.match_skills', return_value=["skill1"]), \
-             patch('core.agent_loop.inject_skills_to_prompt', return_value="--- Skills ---\n- skill1"):
-            prompt = loop.build_system_prompt(task="test skills")
+        with patch('core.agent_loop.discover_skills', return_value=['skill1', 'skill2']), \
+             patch('core.agent_loop.match_skills', return_value=['skill1']):
+            prompt = loop.build_system_prompt(task='test skills')
             assert isinstance(prompt, str)
 
     def test_build_system_prompt_with_memory(self):
@@ -11914,7 +11918,7 @@ class TestAgentLoopExtended:
         """Create an AgentLoop with all deps mocked."""
         from core.agent_loop import AgentLoop
         with patch('core.agent_loop.LLMClient') as mock_llm_cls, \
-             patch('core.agent_loop.MemoryAPI') as mock_mem_cls, \
+             patch('core.agent_loop.MemoryManager') as mock_mem_cls, \
              patch('core.agent_loop.EvolutionEngine') as mock_evo_cls, \
              patch('core.agent_loop.ToolRegistry') as mock_tr_cls, \
              patch('core.agent_loop.SessionStore') as mock_ss_cls, \
@@ -11939,6 +11943,7 @@ class TestAgentLoopExtended:
             mock_llm.base_url = "https://api.deepseek.com"
             mock_llm.max_tokens = 4096
             mock_llm.temperature = 0.7
+            mock_llm.get_context_window = MagicMock(return_value=800000)
             mock_llm_cls.return_value = mock_llm
 
             mock_memory = MagicMock()
@@ -12015,6 +12020,7 @@ class TestAgentLoopExtended:
             loop.on_turn = None
             loop.on_error = None
             loop.on_finish = None
+            loop.on_phase = None
             loop._pretooluse_cache = {}
 
             # Mock prompt_cache.get_block
@@ -13472,7 +13478,7 @@ class TestAgentLoopComprehensive:
         """Create an AgentLoop with all dependencies mocked."""
         from core.agent_loop import AgentLoop
         with patch('core.agent_loop.LLMClient') as mock_llm_cls, \
-             patch('core.agent_loop.MemoryAPI') as mock_mem_cls, \
+             patch('core.agent_loop.MemoryManager') as mock_mem_cls, \
              patch('core.agent_loop.EvolutionEngine') as mock_evo_cls, \
              patch('core.agent_loop.ToolRegistry') as mock_tr_cls, \
              patch('core.agent_loop.SessionStore') as mock_ss_cls, \
@@ -13497,6 +13503,7 @@ class TestAgentLoopComprehensive:
             mock_llm.base_url = "https://api.deepseek.com"
             mock_llm.max_tokens = 4096
             mock_llm.temperature = 0.7
+            mock_llm.get_context_window = MagicMock(return_value=800000)
             mock_llm_cls.return_value = mock_llm
 
             mock_memory = MagicMock()
@@ -13576,6 +13583,7 @@ class TestAgentLoopComprehensive:
             loop.on_turn = None
             loop.on_error = None
             loop.on_finish = None
+            loop.on_phase = None
             loop._pretooluse_cache = {}
 
             # Mock prompt_cache.get_block
@@ -14604,7 +14612,7 @@ class TestAgentLoopComprehensive:
         assert hasattr(loop, 'tools')
         assert hasattr(loop, 'sessions')
         assert hasattr(loop, 'max_turns')
-        assert hasattr(loop, 'current_session_id')
+        # current_session_id 由 run() 惰性设置，__init__ 后不一定存在
         assert hasattr(loop, 'hooks_enabled')
 
     def test_session_state_before_run(self):
@@ -15944,6 +15952,7 @@ class TestAgentLoopCoverage:
         from core.agent_loop import AgentLoop
         loop = self._make_loop()
         loop.compressor = None
+        loop._ctx_threshold = 14000
         # This would be called by _lazy_init
         with patch('core.agent_loop.ContextCompressor') as MockCC:
             with patch('core.agent_loop.BudgetAllocator') as MockBA:
@@ -15960,6 +15969,7 @@ class TestAgentLoopCoverage:
         loop = self._make_loop()
         loop.llm.backend = 'local'
         loop.compressor = None
+        loop._ctx_threshold = 14000  # 手动设置，_lazy_init 依赖此值
         with patch('core.agent_loop.ContextCompressor') as MockCC:
             with patch('core.agent_loop.BudgetAllocator') as MockBA:
                 with patch('core.agent_loop.ToolResultStore') as MockTRS:
@@ -19154,6 +19164,7 @@ class TestAgentLoopExtra:
         from core.context_compress import ToolResultStore
 
         loop = AgentLoop()
+        loop.on_phase = None  # 默认值，防止 _handle_tool_result 中 AttributeError
         loop._lazy_init = MagicMock()
         loop.build_system_prompt = MagicMock(return_value="sysprompt")
         loop.sessions.create_session = MagicMock(return_value="sid1")
