@@ -37,6 +37,9 @@ class GatewayLoop:
         self._running = False
         self._thread: Optional[threading.Thread] = None
 
+        # 从 sessions.db 恢复最近 50 条 session 的平台映射
+        self._restore_session_map()
+
         # 注册审批推送回调到 agent
         self._register_approval_callback()
 
@@ -44,6 +47,25 @@ class GatewayLoop:
         """带时间戳的日志输出。"""
         ts = time.strftime("%H:%M:%S")
         print(f"[{ts}] {msg}", flush=True)
+
+    def _restore_session_map(self):
+        """从 sessions.db + session_map.json 恢复会话映射。
+        
+        Gateway 重启后 _session_map（内存 dict）丢失，
+        导致同渠道连续消息无法关联上下文。
+        从持久化的 session_map.json 恢复映射。
+        """
+        try:
+            import json as _json
+            map_path = os.path.join(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__))), "memory", "session_map.json")
+            if os.path.exists(map_path):
+                with open(map_path) as f:
+                    data = _json.load(f)
+                self._session_map.update(data)
+                self._log(f"会话映射已恢复: {len(data)} 条")
+        except Exception:
+            pass
 
     def _register_approval_callback(self):
         """注册审批推送回调：审批 pending 时通过消息通道通知用户。
@@ -321,6 +343,15 @@ class GatewayLoop:
             session_id = result.get("session_id", "")
             if session_id:
                 self._session_map[chat_key] = session_id
+                # 持久化到磁盘，防止 Gateway 重启后丢失
+                try:
+                    import json as _json
+                    map_path = os.path.join(os.path.dirname(os.path.dirname(
+                        os.path.abspath(__file__))), "memory", "session_map.json")
+                    with open(map_path, "w") as f:
+                        _json.dump(self._session_map, f, ensure_ascii=False)
+                except Exception:
+                    pass
 
             # 回消息到来源通道
             channel = self.channels.get(msg.platform)
