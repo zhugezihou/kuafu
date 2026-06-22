@@ -1658,7 +1658,7 @@ class AgentLoop:
                     needs_filter = (
                         len(safe_output) > 500  # 只有大结果才判，小结果直接保留
                         and tool_result["success"]
-                        and fn_name not in ("web_search", "web_extract", "web_crawl", "read_file")  # 搜索/提取/读文件默认保留
+                        and fn_name not in ("web_search", "web_extract", "web_crawl", "read_file", "invoke_expert", "invoke_experts")  # 搜索/提取/读文件/专家输出默认保留
                     )
                     if needs_filter:  # pragma: no cover
                         filter_prompt = (  # pragma: no cover
