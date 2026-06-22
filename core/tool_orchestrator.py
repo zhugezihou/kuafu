@@ -122,12 +122,18 @@ class ToolOrchestrator:
 
     def set_approval_callback(self, callback):
         """设置审批通知回调。"""
-        self._approval_callback = callback
-        self.policy.set_approval_callback(callback)
+        with self._lock:
+            self._approval_callback = callback
+            self.policy.set_approval_callback(callback)
 
     # ── 主入口 ──
 
     def execute(self, req: ToolExecutionRequest) -> ToolExecutionResult:
+        with self._lock:
+            return self._execute_impl(req)
+
+    def _execute_impl(self, req: ToolExecutionRequest) -> ToolExecutionResult:
+        """带锁的实际执行逻辑。"""
         t0 = time.monotonic()
 
         # Safety 在前：危险命令在审批之前拦截，避免用户批准了却被拦
@@ -177,7 +183,8 @@ class ToolOrchestrator:
     def execute_direct(self, tool_name: str, args: dict) -> ToolExecutionResult:
         """直接执行（跳过审批和安全检查）。用于内部调用。"""
         req = ToolExecutionRequest(tool_name=tool_name, args=args, source="internal")
-        return self._phase_execute_with_retry(req)
+        with self._lock:
+            return self._phase_execute_with_retry(req)
 
     # ── Phase 1: Approval（委托 PolicyManager）──
 

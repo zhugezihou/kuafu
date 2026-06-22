@@ -71,6 +71,7 @@ def parse_schedule(expr: str) -> tuple[float, str]:
             interval = 0
         return (interval, "once")
     except ValueError:
+        print(f"[CronScheduler] ⚠️ ISO时间解析失败: '{expr}', 回退到默认间隔", flush=True)
         pass
 
     # 简易 cron 表达式（只支持标准 5 字段）
@@ -335,24 +336,29 @@ class CronScheduler:
         """调度主循环。"""
         print(f"[CronScheduler] 🟢 启动，{len(self._tasks)} 个任务")
         while self._running:
-            now = time.time()
-            due_tasks: list[CronTask] = []
+            try:
+                now = time.time()
+                due_tasks: list[CronTask] = []
 
-            with self._lock:
-                for task in self._tasks:
-                    if task.enabled and now >= task.next_run:
-                        due_tasks.append(task)
-                        task.next_run = now + task.interval
+                with self._lock:
+                    for task in self._tasks:
+                        if task.enabled and now >= task.next_run:
+                            due_tasks.append(task)
+                            task.next_run = now + task.interval
 
-            # 执行到期的任务
-            for task in due_tasks:
-                if not self._running:
-                    break
-                self._execute_task(task)
+                # 执行到期的任务
+                for task in due_tasks:
+                    if not self._running:
+                        break
+                    self._execute_task(task)
 
-            # 状态持久化
-            if due_tasks:
-                self._save_state()
+                # 状态持久化
+                if due_tasks:
+                    self._save_state()
+            except Exception as e:
+                print(f"[CronScheduler] ❌ 主循环异常: {e}", flush=True)
+                import traceback
+                traceback.print_exc()
 
             # 每秒检查一次
             time.sleep(1)
@@ -388,31 +394,37 @@ class CronScheduler:
                 channel_bot = self._wechat_bot
 
         if channel_bot:
-            if hasattr(channel_bot, 'send_text'):
-                channel_bot.send_text(
-                    f"⏰ Cron 任务: {task.name}\n"
-                    f"时间: {task.last_run}\n\n"
-                    f"{task.last_result[:19000] if task.last_result else '(无输出)'}"
-                )
-            elif hasattr(channel_bot, 'send'):
-                channel_bot.send(
-                    f"⏰ Cron 任务: {task.name}\n"
-                    f"时间: {task.last_run}\n\n"
-                    f"{task.last_result[:19000] if task.last_result else '(无输出)'}"
-                )
+            try:
+                if hasattr(channel_bot, 'send_text'):
+                    channel_bot.send_text(
+                        f"⏰ Cron 任务: {task.name}\n"
+                        f"时间: {task.last_run}\n\n"
+                        f"{task.last_result[:19000] if task.last_result else '(无输出)'}"
+                    )
+                elif hasattr(channel_bot, 'send'):
+                    channel_bot.send(
+                        f"⏰ Cron 任务: {task.name}\n"
+                        f"时间: {task.last_run}\n\n"
+                        f"{task.last_result[:19000] if task.last_result else '(无输出)'}"
+                    )
+            except Exception as e:
+                print(f"[CronScheduler] ⚠️ 源通道推送失败 ({task.source_channel}): {e}")
             self._save_to_file(task)
         elif task.output_mode == "file":
             self._save_to_file(task)
         elif task.output_mode in ("feishu", "all") and self._feishu_bot is not None:
-            msg = (
-                f"⏰ Cron 任务: {task.name}\n"
-                f"时间: {task.last_run}\n\n"
-                f"{task.last_result[:19000] if task.last_result else '(无输出)'}"
-            )
-            if hasattr(self._feishu_bot, 'send_text'):
-                self._feishu_bot.send_text(msg)
-            elif hasattr(self._feishu_bot, 'send'):
-                self._feishu_bot.send(msg)
+            try:
+                msg = (
+                    f"⏰ Cron 任务: {task.name}\n"
+                    f"时间: {task.last_run}\n\n"
+                    f"{task.last_result[:19000] if task.last_result else '(无输出)'}"
+                )
+                if hasattr(self._feishu_bot, 'send_text'):
+                    self._feishu_bot.send_text(msg)
+                elif hasattr(self._feishu_bot, 'send'):
+                    self._feishu_bot.send(msg)
+            except Exception as e:
+                print(f"[CronScheduler] ⚠️ 飞书推送失败: {e}")
             self._save_to_file(task)
         elif task.output_mode in ("wechat", "all") and hasattr(self, '_wechat_bot'):
             try:
