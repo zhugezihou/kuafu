@@ -45,6 +45,21 @@
     setTimeout(() => { copiedIdx = null; }, 2000);
   }
 
+  // 复制错误详情（从消息中提取错误部分）
+  function copyError(content: string, idx: number) {
+    // 提取 ❌ / 错误: 之后的内容
+    const errMatch = content.match(/错误:\s*([\s\S]+)/);
+    const text = errMatch ? errMatch[1].trim() : content;
+    navigator.clipboard.writeText(text);
+    copiedIdx = idx;
+    setTimeout(() => { copiedIdx = null; }, 2000);
+  }
+
+  // 检测是否包含错误信息
+  function isErrorContent(content: string): boolean {
+    return content.includes("❌") || content.includes("错误:") || content.includes("错误:");
+  }
+
   function startEdit(idx: number, content: string) {
     editingIdx = idx;
     editText = content;
@@ -96,7 +111,7 @@
   </div>
 
   {#each filteredMessages as msg, i (i)}
-    <div class="message" class:user={msg.role === "user"} class:assistant={msg.role === "assistant"}
+    <div class="message" class:user={msg.role === "user"} class:assistant={msg.role === "assistant"} class:error={msg.role === "assistant" && isErrorContent(msg.content)}
          onmouseenter={() => (hoveredIdx = i)}
          onmouseleave={() => (hoveredIdx = null)}>
       <div class="avatar">
@@ -110,6 +125,11 @@
             <button class="copy-btn" onclick={() => copyContent(msg.content, i)}>
               {copiedIdx === i ? "✓" : "📋"}
             </button>
+            {#if isErrorContent(msg.content)}
+              <button class="copy-err-btn" onclick={() => copyError(msg.content, i)} title="复制错误详情">
+                {copiedIdx === i ? "✓" : "⚠️ 错误"}
+              </button>
+            {/if}
             <button class="edit-btn" onclick={() => startEdit(i, msg.content)}>✎</button>
             <button class="delete-btn" onclick={() => handleDelete(i)}>🗑</button>
           {/if}
@@ -221,6 +241,11 @@
     background: var(--surface);
   }
 
+  .message.error {
+    border: 1px solid #ef4444;
+    background: rgba(239, 68, 68, 0.08);
+  }
+
   .avatar {
     width: 28px;
     height: 28px;
@@ -275,6 +300,22 @@
   .copy-btn:hover {
     opacity: 1;
     background: rgba(255,255,255,0.05);
+  }
+
+  .copy-err-btn {
+    background: none;
+    border: 1px solid #ef4444;
+    color: #ef4444;
+    padding: 0 6px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 11px;
+    line-height: 1.6;
+    opacity: 0.8;
+  }
+  .copy-err-btn:hover {
+    opacity: 1;
+    background: rgba(239, 68, 68, 0.15);
   }
 
   .text {

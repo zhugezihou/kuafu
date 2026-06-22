@@ -64,10 +64,10 @@ function parseMarkdown(text: string): { plain: string; segments: { text: string;
   return { plain: text, segments };
 }
 
-function MarkdownText({ content }: { content: string }) {
+function MarkdownText({ content, isError }: { content: string; isError?: boolean }) {
   const { segments } = parseMarkdown(content);
   return (
-    <Text style={styles.msgText}>
+    <Text style={[styles.msgText, isError && styles.msgTextError]}>
       {segments.map((seg, i) => {
         if (seg.code) {
           return <Text key={i} style={styles.inlineCode}>{seg.text}</Text>;
@@ -254,23 +254,58 @@ export default function ChatScreen() {
   }
 
   // ── 渲染消息 ──
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  function isError(text: string): boolean {
+    return text.includes('❌') || text.includes('错误:');
+  }
+
+  async function copyText(text: string, id: string) {
+    try {
+      const Clipboard = await import('expo-clipboard');
+      await Clipboard.setStringAsync(text);
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(null), 2000);
+    } catch {}
+  }
+
+  function extractError(text: string): string {
+    const match = text.match(/错误:\s*([\s\S]+)/);
+    return match ? match[1].trim() : text;
+  }
+
   const renderMessage = useCallback(({ item }: { item: StoredMessage }) => {
     const isUser = item.role === 'user';
     const isStreaming = !item.content;
+    const isErr = !isUser && isError(item.content);
     return (
       <View style={[styles.msgRow, isUser && styles.msgRowUser]}>
         {!isUser && (
-          <View style={styles.avatar}>
+          <View style={[styles.avatar, isErr && styles.avatarError]}>
             <Text style={styles.avatarText}>夸</Text>
           </View>
         )}
-        <View style={[styles.msgBubble, isUser && styles.msgBubbleUser]}>
+        <TouchableOpacity
+          activeOpacity={0.8}
+          onLongPress={() => copyText(item.content, item.id)}
+          style={[styles.msgBubble, isUser && styles.msgBubbleUser, isErr && styles.msgBubbleError]}
+        >
           {isStreaming ? (
             <ActivityIndicator color={theme.accent} size="small" />
           ) : (
-            <MarkdownText content={item.content} />
+            <MarkdownText content={item.content} isError={isErr} />
           )}
-        </View>
+          {isErr && (
+            <TouchableOpacity
+              style={styles.copyErrBtn}
+              onPress={() => copyText(extractError(item.content), item.id)}
+            >
+              <Text style={styles.copyErrBtnText}>
+                {copiedId === item.id ? '✓ 已复制' : '📋 复制错误'}
+              </Text>
+            </TouchableOpacity>
+          )}
+        </TouchableOpacity>
         {isUser && (
           <View style={[styles.avatar, styles.avatarUser]}>
             <Text style={[styles.avatarText, { color: theme.text2 }]}>我</Text>
@@ -793,9 +828,33 @@ const styles = StyleSheet.create({
     maxWidth: '80%',
   },
   msgText: {
+    fontSize: 15,
+    lineHeight: 22,
     color: theme.text,
-    fontSize: 14,
-    lineHeight: 21,
+  },
+  msgTextError: {
+    color: '#ef4444',
+  },
+  msgBubbleError: {
+    borderColor: '#ef4444',
+    borderWidth: 1,
+  },
+  avatarError: {
+    borderColor: '#ef4444',
+    borderWidth: 1,
+  },
+  copyErrBtn: {
+    marginTop: 8,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#ef4444',
+    alignSelf: 'flex-start',
+  },
+  copyErrBtnText: {
+    fontSize: 12,
+    color: '#ef4444',
   },
   inlineCode: {
     backgroundColor: theme.surface2,
