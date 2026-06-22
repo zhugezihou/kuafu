@@ -33,4 +33,4 @@ pitfalls:
 - 不要用 sed 进行精确替换（用 patch 工具）
 - 绝对不要在终端中编辑 core/ 目录下的文件
 - 命令输出超过 3000 字符会被截断
-usage_count: 270
+usage_count: 271

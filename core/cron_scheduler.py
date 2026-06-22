@@ -397,19 +397,27 @@ class CronScheduler:
         elif task.output_mode == "file":
             self._save_to_file(task)
         elif task.output_mode in ("feishu", "all") and self._feishu_bot is not None:
-            self._feishu_bot.send_text(
+            msg = (
                 f"⏰ Cron 任务: {task.name}\n"
                 f"时间: {task.last_run}\n\n"
                 f"{task.last_result[:19000] if task.last_result else '(无输出)'}"
             )
+            if hasattr(self._feishu_bot, 'send_text'):
+                self._feishu_bot.send_text(msg)
+            elif hasattr(self._feishu_bot, 'send'):
+                self._feishu_bot.send(msg)
             self._save_to_file(task)
         elif task.output_mode in ("wechat", "all") and hasattr(self, '_wechat_bot'):
             try:
-                self._wechat_bot.send_text(
+                msg = (
                     f"⏰ Cron 任务: {task.name}\n"
                     f"时间: {task.last_run}\n\n"
                     f"{task.last_result[:19000] if task.last_result else '(无输出)'}"
                 )
+                if hasattr(self._wechat_bot, 'send_text'):
+                    self._wechat_bot.send_text(msg)
+                elif hasattr(self._wechat_bot, 'send'):
+                    self._wechat_bot.send(msg)
             except Exception as e:
                 print(f"[CronScheduler] ⚠️ 微信推送失败: {e}")
             self._save_to_file(task)

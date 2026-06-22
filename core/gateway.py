@@ -672,10 +672,10 @@ class GatewayServer:
                 for ch in mgr.list():
                     ch_name = getattr(ch, 'name', '') or ch.__class__.__name__
                     if 'feishu' in ch_name.lower() or '飞书' in ch_name:
-                        if hasattr(ch, 'send_text'):
+                        if hasattr(ch, 'send') or hasattr(ch, 'send_text'):
                             self._feishu_bot = ch
                     if 'wechat' in ch_name.lower() or '微信' in ch_name or 'ilink' in ch_name.lower():
-                        if hasattr(ch, 'send_text'):
+                        if hasattr(ch, 'send') or hasattr(ch, 'send_text'):
                             self._wechat_bot = ch
                 if self._feishu_bot:
                     print("[Gateway] 📱 飞书 Bot 已注入")
