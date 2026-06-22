@@ -1,0 +1,22 @@
+name: logic-trap-analysis
+description: 从research类任务中自动提取的技能
+task_type: logical_reasoning
+keywords:
+- 逻辑陷阱
+- 矛盾分析
+- 可行性验证
+steps:
+- 逻辑陷阱
+- 矛盾分析
+- 可行性验证
+- 物理约束
+- 归谬推理
+- 提取任务中的核心前提条件和逻辑假设
+- 识别潜在的语义歧义或隐藏的分类陷阱
+- 推导各条件之间的逻辑冲突或物理矛盾
+- 区分类别属性与个体属性以破除误导
+- 结合现实物理规则判断任务是否可执行
+pitfalls: null
+usage_count: 10
+created_at: 1779683468
+source: kuafu_impromptu_evolution

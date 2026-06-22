@@ -221,48 +221,6 @@ def _match_by_task_type(task_type: str) -> list[str]:
     return matched
 
 
-def inject_skills_to_prompt(task: str, existing_prompt: str) -> str:
-    """将匹配的技能注入到 system prompt 末尾。
-
-    Args:
-        task: 用户任务文本
-        existing_prompt: 已有的 system prompt
-
-    Returns:
-        追加了技能信息的 system prompt
-    """
-    matched = match_skills(task)
-    if not matched:
-        return existing_prompt
-
-    parts = [existing_prompt, ""]
-    parts.append("## 相关技能参考")
-    parts.append("以下技能与你当前任务相关，仅供参考：")
-    parts.append("")
-
-    for skill in matched[:3]:  # 最多注入 3 个
-        parts.append(f"---")
-        parts.append(f"### {skill['name']}")
-        if skill.get("description"):
-            parts.append(f"{skill['description']}")
-        parts.append("")
-        if skill.get("steps"):
-            parts.append("**步骤：**")
-            for i, step in enumerate(skill["steps"], 1):
-                parts.append(f"  {i}. {step}")
-            parts.append("")
-        if skill.get("pitfalls"):
-            parts.append("**注意事项：**")
-            for pitfall in skill["pitfalls"]:
-                parts.append(f"  ⚠️ {pitfall}")
-            parts.append("")
-
-    parts.append("---")
-    parts.append("技能仅供参考，你不必完全照做。根据实际情况决定如何执行。")
-
-    return "\n".join(parts)
-
-
 def record_usage(skill_name: str, task: str, success: bool, duration: float):
     """记录技能使用情况。
 

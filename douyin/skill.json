@@ -1,0 +1,26 @@
+{
+  "name": "douyin-publisher",
+  "version": "1.0.0",
+  "description": "抖音视频自动发布技能。支持扫码登录、Cookie持久化、单视频发布、批量发布、定时发布、素材管理。基于Playwright浏览器自动化。",
+  "author": "夸父",
+  "commands": {
+    "login": "python douyin/cli.py login",
+    "publish": "python douyin/cli.py publish --video <路径> [--title <标题>] [--tags <标签>] [--schedule <时间>]",
+    "batch": "python douyin/cli.py batch --dir <目录> [--title <模板>]",
+    "today": "python douyin/cli.py today",
+    "status": "python douyin/cli.py status",
+    "add": "python douyin/cli.py add --video <路径>"
+  },
+  "dependencies": ["playwright"],
+  "workflow": [
+    "1. 准备视频素材 → 放入 douyin/templates/",
+    "2. 首次使用: python douyin/cli.py login (扫码登录)",
+    "3. 日常发布: python douyin/cli.py today (自动发布最旧未发布的视频)",
+    "4. 查看状态: python douyin/cli.py status"
+  ],
+  "notes": [
+    "首次使用需要手动扫码登录",
+    "Cookie 有效期约7天，过期后需重新登录",
+    "建议用 cron 定时任务实现完全自动化"
+  ]
+}

@@ -479,7 +479,8 @@ def main():
     import core.approval as kuafu_approval_module
     def _global_approval_cb(tool_name, args, req_id):
         _sse_broadcast({"type": "approval_request", "tool": tool_name, "args": args, "req_id": req_id, "ts": time.time(), "risk": "medium"})
-    kuafu_approval_module.ON_APPROVAL_REQUEST_CB = _global_approval_cb
+    # TODO: web server 审批通知需要迁移到 ToolOrchestrator.set_approval_callback
+    # kuafu_approval_module.ON_APPROVAL_REQUEST_CB = _global_approval_cb
 
     # 加载 Agent
     log.info("预热夸父 Agent...")

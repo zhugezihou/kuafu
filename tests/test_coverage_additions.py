@@ -469,69 +469,6 @@ def test_sr_discover_skills():
         assert "usage_count" in s
     print(f"    ✅ SkillResolver: discover_skills 返回列表")
 
-@test("SkillResolver: inject_skills_to_prompt 无匹配时返回原 prompt")
-def test_sr_inject_no_match():
-    """inject_skills_to_prompt 无匹配时返回原 prompt"""
-    from core.skill_resolver import inject_skills_to_prompt
-    with patch("core.skill_resolver.match_skills", return_value=[]):
-        result = inject_skills_to_prompt("随便聊聊", "原始 prompt")
-        assert result == "原始 prompt"
-    print(f"    ✅ SkillResolver: inject_skills_to_prompt 无匹配时返回原 prompt")
-
-@test("SkillResolver: inject_skills_to_prompt 有匹配时注入格式")
-def test_sr_inject_with_match():
-    """inject_skills_to_prompt 有匹配时正确注入"""
-    from core.skill_resolver import inject_skills_to_prompt
-    mock_matched = [
-        {
-            "name": "test-skill",
-            "description": "测试技能",
-            "steps": ["第一步", "第二步"],
-            "pitfalls": ["注意安全"],
-            "score": 10,
-            "file": "test.yaml",
-        }
-    ]
-    with patch("core.skill_resolver.match_skills", return_value=mock_matched):
-        result = inject_skills_to_prompt("测试任务", "原始 prompt")
-        assert "原始 prompt" in result
-        assert "## 相关技能参考" in result
-        assert "test-skill" in result
-        assert "测试技能" in result
-        assert "第一步" in result
-        assert "注意安全" in result
-        assert "技能仅供参考" in result
-    print(f"    ✅ SkillResolver: inject_skills_to_prompt 有匹配时注入格式")
-
-@test("SkillResolver: inject_skills_to_prompt 最多 3 个技能")
-def test_sr_inject_max_3():
-    """inject_skills_to_prompt 最多注入 3 个技能"""
-    from core.skill_resolver import inject_skills_to_prompt
-    mock_matched = [
-        {"name": f"skill-{i}", "description": f"描述{i}", "steps": [], "score": i, "file": f"{i}.yaml"}
-        for i in range(5)
-    ]
-    with patch("core.skill_resolver.match_skills", return_value=mock_matched):
-        result = inject_skills_to_prompt("任务", "prompt")
-        for i in [0, 1, 2]:
-            assert f"skill-{i}" in result
-        assert "skill-3" not in result
-        assert "skill-4" not in result
-    print(f"    ✅ SkillResolver: inject_skills_to_prompt 最多 3 个技能")
-
-@test("SkillResolver: inject_skills_to_prompt 无 pitfalls 时不添加")
-def test_sr_inject_no_pitfalls():
-    """inject_skills_to_prompt 技能无 pitfalls 时跳过"""
-    from core.skill_resolver import inject_skills_to_prompt
-    mock_matched = [
-        {"name": "no-pitfalls", "description": "无陷阱", "steps": ["step1"], "score": 1, "file": "x.yaml"}
-    ]
-    with patch("core.skill_resolver.match_skills", return_value=mock_matched):
-        result = inject_skills_to_prompt("任务", "prompt")
-        assert "注意事项" not in result
-        assert "⚠️" not in result
-    print(f"    ✅ SkillResolver: inject_skills_to_prompt 无 pitfalls 时不添加")
-
 @test("SkillResolver: _match_by_task_type 匹配技能")
 def test_sr_match_by_tt():
     """_match_by_task_type 按 task_type 匹配技能"""

@@ -123,7 +123,7 @@ kuafu/
 │   ├── agents_md.py              # AGENTS.md 发现【新】
 │   ├── compact_hooks.py          # 压缩 Hook 接口【新】
 │   ├── turn_diff_tracker.py       # 文件变更追踪【新】
-│   ├── skill_discovery.py         # 隐式技能触发【新】
+│   ├── skill_resolver.py          # 技能解析
 │   ├── approval.py                # 审批系统 (Layer 1~3)
 │   ├── safety.py                  # 三态安全决策
 │   ├── context_compress.py        # 上下文压缩管线

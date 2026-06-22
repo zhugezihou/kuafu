@@ -53,6 +53,7 @@ class ToolRegistry:
         self._compact: list[dict] = []     # 紧凑工具完整 schema（不暴露给 LLM，调用时自动提升）
         self._deferred: list[dict] = []     # 延迟加载工具定义（含 keywords 用于搜索）
         self._injected_tools: list[dict] = []  # 当前 session 已注入的完整 schema（compact 提升 + 延迟发现）
+        self._deferred_call_count: dict[str, int] = {}  # 延迟工具调用计数，用于热提升
         self._register_core_tools()
 
     # ── 注册 API ───────────────────────────────────────────────────
@@ -308,6 +309,33 @@ class ToolRegistry:
         # 紧凑工具自动提升：首次调用时注入完整 schema（下轮 LLM 调用就能看到参数）
         promoted = self._promote_compact_tool(fn_name)
 
+        # ── 延迟工具热提升：同一 Session 内调用 ≥3 次 → 自动升为 compact ──
+        if fn_name in self._handlers and fn_name not in self._schemas:
+            # 检查是否是一个延迟工具（不在 _schemas 也不在 _compact）
+            is_deferred = any(
+                e["schema"]["function"]["name"] == fn_name
+                for e in self._deferred
+            )
+            if is_deferred:
+                count = self._deferred_call_count.get(fn_name, 0) + 1
+                self._deferred_call_count[fn_name] = count
+                if count >= 3:
+                    # 热提升：向 compact 池加入 schema，保留 deferred 池中记录
+                    # 注意：不从 _deferred 移除，这样 ToolSearch 元工具仍能发现它
+                    schema_entry = None
+                    for e in self._deferred:
+                        if e["schema"]["function"]["name"] == fn_name:
+                            schema_entry = e["schema"]
+                            break
+                    if schema_entry:
+                        # 避免重复加入 compact 池
+                        if not any(s["function"]["name"] == fn_name for s in self._compact):
+                            self._compact.append(schema_entry)
+                        # 同时将其注入到当前会话
+                        if not any(s["function"]["name"] == fn_name for s in self._injected_tools):
+                            self._injected_tools.append(schema_entry)
+                        print(f"[ToolRegistry] 🔥 热提升延迟工具: {fn_name}（调用 {count} 次，升为 compact）")
+
         try:
             result = self._handlers[fn_name](args)
             # 保证返回格式
@@ -458,7 +486,7 @@ class ToolRegistry:
     @staticmethod
     def _read_schema() -> dict:
         return {
-            "description": "读取文件内容（支持分页）",
+            "description": "读取文件内容（支持分页）。参数: path(必需), offset(可选,默认1), limit(可选,默认200)",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -482,7 +510,7 @@ class ToolRegistry:
     @staticmethod
     def _write_schema() -> dict:
         return {
-            "description": "写入文件内容（覆盖模式）",
+            "description": "写入文件内容（覆盖模式）。参数: path(必需), content(必需)",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -502,7 +530,7 @@ class ToolRegistry:
     @staticmethod
     def _patch_schema() -> dict:
         return {
-            "description": "对文件执行精确的查找替换编辑",
+            "description": "对文件执行精确的查找替换编辑。参数: path(必需), old_string(必需), new_string(必需)",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -526,7 +554,7 @@ class ToolRegistry:
     @staticmethod
     def _search_schema() -> dict:
         return {
-            "description": "在项目中搜索文件内容或文件名",
+            "description": "在项目中搜索文件内容或文件名。参数: pattern(必需), target(可选,'content'或'files'), path(可选)",
             "parameters": {
                 "type": "object",
                 "properties": {

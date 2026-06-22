@@ -120,6 +120,7 @@ class CronTask:
         task_text: str,
         enabled: bool = True,
         output_mode: str = "file",
+        source_channel: str = "",
         run_count: int = 0,
         last_run: Optional[str] = None,
         last_result: str = "",
@@ -129,6 +130,7 @@ class CronTask:
         self.task_text = task_text
         self.enabled = enabled
         self.output_mode = output_mode
+        self.source_channel = source_channel
         self.run_count = run_count
         self.last_run = last_run
         self.last_result = last_result
@@ -143,6 +145,7 @@ class CronTask:
             "task": self.task_text,
             "enabled": self.enabled,
             "output_mode": self.output_mode,
+            "source_channel": self.source_channel,
             "run_count": self.run_count,
             "last_run": self.last_run or "",
             "last_result": self.last_result[:200] if self.last_result else "",
@@ -176,6 +179,8 @@ class CronScheduler:
         self.on_task_run = on_task_run
         self._state_path = Path(state_path or (ROOT_DIR / "memory" / "cron_state.json"))
         self._lock = threading.Lock()
+        self._feishu_bot: Optional[Any] = None
+        self._wechat_bot: Optional[Any] = None
 
         # 从配置加载
         config_path_obj = Path(config_path or (ROOT_DIR / "cron" / "schedule.yaml"))
@@ -210,6 +215,7 @@ class CronScheduler:
                     task_text=item.get("task", ""),
                     enabled=item.get("enabled", True),
                     output_mode=item.get("output_mode", "file"),
+                    source_channel=item.get("source_channel", ""),
                 )
                 self._tasks.append(task)
 
@@ -372,16 +378,41 @@ class CronScheduler:
         else:
             task.last_result = "(无回调)"
 
-        # 输出模式: file / feishu
-        if task.output_mode == "file":
+        # 输出模式: file / feishu / wechat / all
+        # 优先按 source_channel 推送
+        channel_bot = None
+        if task.source_channel:
+            if 'feishu' in task.source_channel.lower() and self._feishu_bot is not None:
+                channel_bot = self._feishu_bot
+            elif 'wechat' in task.source_channel.lower() and self._wechat_bot is not None:
+                channel_bot = self._wechat_bot
+
+        if channel_bot:
+            channel_bot.send_text(
+                f"⏰ Cron 任务: {task.name}\n"
+                f"时间: {task.last_run}\n\n"
+                f"{task.last_result[:19000] if task.last_result else '(无输出)'}"
+            )
             self._save_to_file(task)
-        elif task.output_mode == "feishu" and hasattr(self, '_feishu_bot'):
+        elif task.output_mode == "file":
+            self._save_to_file(task)
+        elif task.output_mode in ("feishu", "all") and self._feishu_bot is not None:
             self._feishu_bot.send_text(
                 f"⏰ Cron 任务: {task.name}\n"
                 f"时间: {task.last_run}\n\n"
                 f"{task.last_result[:19000] if task.last_result else '(无输出)'}"
             )
-            self._save_to_file(task)  # 也保存文件
+            self._save_to_file(task)
+        elif task.output_mode in ("wechat", "all") and hasattr(self, '_wechat_bot'):
+            try:
+                self._wechat_bot.send_text(
+                    f"⏰ Cron 任务: {task.name}\n"
+                    f"时间: {task.last_run}\n\n"
+                    f"{task.last_result[:19000] if task.last_result else '(无输出)'}"
+                )
+            except Exception as e:
+                print(f"[CronScheduler] ⚠️ 微信推送失败: {e}")
+            self._save_to_file(task)
 
     def _save_to_file(self, task: CronTask):
         """将任务结果保存到文件。"""
@@ -402,6 +433,11 @@ class CronScheduler:
         """注入飞书 Bot 实例，使 feishu output_mode 生效。"""
         self._feishu_bot = bot
         print(f"[CronScheduler] 📱 已接入飞书 Bot")
+
+    def set_wechat_bot(self, bot) -> None:
+        """注入微信 Bot 实例，使 wechat output_mode 生效。"""
+        self._wechat_bot = bot
+        print(f"[CronScheduler] 💬 已接入微信 Bot")
 
     # ── 启动 / 停止 ─────────────────────────────────────────────
 

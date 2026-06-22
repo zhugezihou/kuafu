@@ -26,7 +26,7 @@
 |------|------|------|
 | **Rollout 事件日志** | `core/rollout_log.py` | JSONL 事件源 + 游标查询 + 归档恢复 |
 | **ExecPolicyManager** | `core/exec_policy.py` | 规则文件 + 命令降级解析（`bash -c "rm"` → `rm`） |
-| **Skill 隐式触发** | `core/skill_discovery.py` | 自然语言自动匹配 + SkillMetadata 优先级 |
+| **Skill 隐式触发** | ~~`core/skill_discovery.py`~~（已删除） |
 
 #### P2 — 智能化（4 项）
 

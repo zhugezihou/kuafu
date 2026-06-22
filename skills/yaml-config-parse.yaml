@@ -1,0 +1,20 @@
+name: yaml-config-parse
+description: 从file_operation类任务中自动提取的技能
+task_type: file_operation
+keywords:
+- file_operation
+steps:
+- YAML
+- 配置文件
+- 结构化数据
+- 缩进格式
+- 参数定义
+- 分析用户需求，确认需生成结构化配置或参数定义。
+- 优先选择 YAML 格式以利用其层级清晰和易解析优势。
+- 使用标准缩进构建键值对，确保层级关系一目了然。
+- 检查特殊字符转义，避免非法字符导致解析失败。
+- 验证生成的 YAML 文件语法正确性，确保机器可顺利读取。
+pitfalls: null
+usage_count: 10
+created_at: 1779714589
+source: kuafu_impromptu_evolution

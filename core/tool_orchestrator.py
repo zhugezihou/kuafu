@@ -2,12 +2,12 @@
 core/tool_orchestrator.py — 工具执行编排系统
 
 四阶段设计（源自 Codex CLI ToolOrchestrator 模式）：
-  Phase 1: Approval — 权限审批（委托给 PolicyManager）
-  Phase 2: Safety — 安全检查（命令降级解析、危险操作检测）
+  Phase 1: Safety — 安全检查（危险命令拦截，先于审批）
+  Phase 2: Approval — 权限审批（委托给 PolicyManager）
   Phase 3: Execute — 实际执行（调用 ToolRegistry handler）
   Phase 4: Retry — 失败重试（可选降级重试策略）
 
-v2 变更：Phase 1 使用统一的 PolicyManager 替代直接调用 DenyRules/AutoMode
+v3 变更：Safety -> Approval -> Execute，危险命令在审批之前拦截。
 """
 
 import json
@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from core.policy_manager import PolicyManager, PolicyAction, PolicyDecision
-from core.safety import SafetyLayer, CommandLevel
+from core.safety import SafetyLayer, CommandLevel, classify_tool_operation
 from core.hooks import trigger_sync
 
 logger = logging.getLogger("kuafu.orchestrator")
@@ -130,35 +130,44 @@ class ToolOrchestrator:
     def execute(self, req: ToolExecutionRequest) -> ToolExecutionResult:
         t0 = time.monotonic()
 
+        # Safety 在前：危险命令在审批之前拦截，避免用户批准了却被拦
+        safety = self._phase_safety(req)
+        if safety == SafetyDecision.BLOCK:
+            return self._result(req, success=False,
+                                output="🛡️ 被安全系统拦截", decision=ApprovalDecision.DENY)
+        # Safety ESCALATE 和 ALLOW 都继续走审批——ATTENTION 交给用户决策
+
         decision = self._phase_approval(req)
         if decision == ApprovalDecision.DENY:
             return self._result(req, success=False,
                                 output="🔒 被审批系统拒绝", decision=ApprovalDecision.DENY)
         if decision == ApprovalDecision.ESCALATE:
-            # 审批已提交，等待用户决策
+            # 审批已提交，等待用户决策（事件通知，不轮询文件）
             if req.req_id:
                 from core.approval import ApprovalManager
-                import time as _time
-                deadline = _time.time() + 300  # 5 分钟超时
-                while _time.time() < deadline:
-                    req_info = ApprovalManager._resolve(req.req_id)
-                    if req_info and req_info.status == "approved":
+                # 获取事件对象，等待被 set
+                ev = ApprovalManager._get_event(req.req_id)
+                waited = ev.wait(timeout=300)
+                if waited:
+                    # 直接从事件对象读取状态，无需再次读磁盘
+                    if getattr(ev, '_approved', None) is True:
                         logger.info(f"✅ 审批通过: {req.req_id}")
-                        break
-                    elif req_info and req_info.status == "rejected":
+                        # 记录到短时重复抑制缓存（后续相同命令自动放行）
+                        from core.approval import AutoMode
+                        fp = AutoMode._get_content_fingerprint(req.tool_name, req.args)
+                        if fp:
+                            AutoMode._recent_auto_approvals[fp] = time.time()
+                        self.policy.clear_merge_state()
+                    else:
                         logger.info(f"❌ 审批拒绝: {req.req_id}")
+                        self.policy.clear_merge_state()
                         return self._result(req, success=False,
                                             output="🔒 审批被拒绝", decision=ApprovalDecision.DENY)
-                    _time.sleep(1)
                 else:
                     logger.info(f"⏰ 审批超时: {req.req_id}")
+                    self.policy.clear_merge_state()
                     return self._result(req, success=False,
                                         output="⏰ 审批超时", decision=ApprovalDecision.DENY)
-
-        safety = self._phase_safety(req)
-        if safety == SafetyDecision.BLOCK:
-            return self._result(req, success=False,
-                                output="🛡️ 被安全系统拦截", decision=ApprovalDecision.DENY)
 
         result = self._phase_execute_with_retry(req)
         result.duration_ms = (time.monotonic() - t0) * 1000
@@ -196,52 +205,58 @@ class ToolOrchestrator:
             # 保存 req_id 到请求对象，供 execute 等待时使用
             req.req_id = policy_decision.req_id
             # 通过 ToolOrchestrator 的审批回调通知通道推送
+            # 仅在首次创建审批时推送通知（合并审批不重复推送）
+            print(f"[ToolOrchestrator] 审批推送检查: _approval_callback={'有' if hasattr(self, '_approval_callback') and self._approval_callback else '无'}")
             if hasattr(self, '_approval_callback') and self._approval_callback:
-                try:
-                    self._approval_callback(req.tool_name, req.args, policy_decision.req_id)
-                except Exception:
-                    pass
+                # 检查是否合并审批的首次推送
+                if self.policy._merge_req_id == policy_decision.req_id and self.policy._merge_notified:
+                    pass  # 已推送过，不再重复
+                else:
+                    try:
+                        self._approval_callback(req.tool_name, req.args, policy_decision.req_id)
+                        if self.policy._merge_req_id == policy_decision.req_id:
+                            self.policy._merge_notified = True
+                    except Exception:
+                        pass
 
         logger.info(f"🟡 需要审批: {req.tool_name} — {policy_decision.reason}")
         return ApprovalDecision.ESCALATE
 
-    # ── Phase 2: Safety（三态决策）──
+    # ── Phase 1: Safety（三态决策，覆盖所有工具）──
 
     def _phase_safety(self, req: ToolExecutionRequest) -> SafetyDecision:
+        """安全检查——对所有工具生效。
+
+        terminal → classify_command（危险命令检测）
+        其他工具 → classify_tool_operation（路径/操作检测）
+
+        注意：仅拦截 FORBIDDEN/DANGEROUS 级别。ATTENTION 及以下
+        放行到审批系统（ToolOrchestrator._phase_approval 或 PolicyManager 处理），
+        避免与 PolicyManager.decide() 的 Pre-check / _is_safe_terminal 重复判断。
+        """
         if not self.config.enable_safety:
             return SafetyDecision.ALLOW
         try:
+            cmd = ""
             if req.tool_name == "terminal":
                 cmd = req.args.get("command", "") if isinstance(req.args, dict) else ""
-                tri_state = SafetyLayer.get_tri_state(cmd)
-                decision = tri_state["decision"]
-                level = tri_state["level"]
-                reason = tri_state["reason"]
+                level, risk_name, reason = SafetyLayer.classify_command(cmd)
+            else:
+                level, risk_name, reason = classify_tool_operation(
+                    req.tool_name, req.args if isinstance(req.args, dict) else {}
+                )
 
-                # 发射安全检查事件
+            if level in (CommandLevel.FORBIDDEN, CommandLevel.DANGEROUS):
+                # 直接拦截，不走审批
+                logger.warning(f"🛡️ 安全拦截 [{req.tool_name}]: {reason}")
                 trigger_sync("on_safety_check", {
-                    "tool": req.tool_name,
-                    "command": cmd[:100],
-                    "level": level,
-                    "decision": decision,
-                    "reason": reason,
-                    "suggestions": tri_state["suggestions"],
+                    "tool": req.tool_name, "command": cmd or str(req.args)[:100],
+                    "level": level, "decision": "block", "reason": reason,
                 })
+                return SafetyDecision.BLOCK
 
-                if decision == "block":
-                    logger.warning(f"🛡️ 安全拦截: {reason}")
-                    return SafetyDecision.BLOCK
-
-                if decision == "escalate":
-                    logger.info(f"⚠️ 安全升级: {reason}")
-                    trigger_sync("on_safety_escalate", {
-                        "tool": req.tool_name,
-                        "command": cmd[:100],
-                        "reason": reason,
-                        "suggestions": tri_state["suggestions"],
-                    })
-                    return SafetyDecision.ESCALATE
-
+            # ATTENTION 或 SAFE → 统一放行到审批系统
+            # （PolicyManager.decide() 的 Pre-check / _is_safe_terminal 已覆盖安全终端命令的快速放行）
             return SafetyDecision.ALLOW
         except Exception as e:
             logger.error(f"安全检测异常: {e}")

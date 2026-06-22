@@ -1,0 +1,20 @@
+name: model-token-limit-parse
+description: 从generic类任务中自动提取的技能
+task_type: generic
+keywords:
+- generic
+steps:
+- max_tokens
+- Token
+- 文本生成
+- 字数限制
+- 确认用户请求中的 max_tokens 参数数值。
+- 向用户说明该数值代表模型最大生成 Token 数。
+- 解释 Token 是文本处理的基本单位概念。
+- 说明英文单词可能拆分，中文通常一字一 Token。
+- 指出标点符号和空格均单独计为 1 个 Token。
+- 根据上下文判断用户是否需要调整参数。
+pitfalls: null
+usage_count: 0
+created_at: 1779714180
+source: kuafu_impromptu_evolution

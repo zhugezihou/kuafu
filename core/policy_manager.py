@@ -103,11 +103,60 @@ _SAFE_COMMANDS = Platform.safe_commands()
 
 
 def _is_safe_terminal(cmd: str) -> bool:
-    """快速判断是否为安全 terminal 命令。"""
-    if not cmd:
+    """判断是否为安全（只读）终端命令。"""
+    if not isinstance(cmd, str):
         return False
-    stripped = cmd.strip().lower()
-    return any(stripped.startswith(p) for p in _SAFE_COMMANDS)
+    stripped = cmd.strip()
+    if not stripped:
+        return False
+
+    lower = stripped.lower()
+
+    # ── 明确安全的 kuafu 管理命令（不触发审批） ──
+    # 这些命令是夸父自身的管理 CL，只读或受控操作，无需人工审批
+    KUAFU_SAFE_PREFIXES = (
+        "kuafu cron list",
+        "kuafu cron remove",
+        "kuafu cron stop",
+        "kuafu cron start",
+        "kuafu cron status",
+        "kuafu gateway status",
+        "kuafu gateway stop",
+        "kuafu gateway start",
+        "kuafu sessions list",
+    )
+    for prefix in KUAFU_SAFE_PREFIXES:
+        if lower.startswith(prefix):
+            return True
+
+    # ── 额外的安全命令（无法被 _SAFE_COMMANDS 匹配） ──
+    EXTRA_SAFE_PREFIXES = (
+        "python3 -c", "python -c",
+        "docker ps", "docker images",
+    )
+    for prefix in EXTRA_SAFE_PREFIXES:
+        if lower.startswith(prefix):
+            return True
+
+    # 先检测危险关键词——包含这些的命令需要审批
+    danger_kw = [
+        "pip install", "pip3 install", "npm install", "apt ", "apt-get",
+        "wget ", "curl -o", "curl -O", "> ", ">> ",
+        "| python3", "| python ", "| bash", "| sh",
+        "sudo ", "chmod ", "chown ", "kill ", "rm ", "mv ",
+        "dd if=", "mkfs", "fdisk", "write_file",
+        "playwright install", "playwright open",
+    ]
+    for kw in danger_kw:
+        if kw in lower:
+            return False
+
+    # 安全前缀匹配
+    if any(lower.startswith(p) for p in _SAFE_COMMANDS):
+        return True
+
+    # 没被识别为危险，也没匹配安全前缀——需要审批
+    return False
 
 
 # =========================================================================
@@ -121,6 +170,9 @@ class PolicyManager:
       Layer 1: DenyRules — 硬黑名单
       Layer 2: AutoMode — 自动分类决策
       Layer 3: 人工审批 — 文件/终端/通道审批
+
+    支持合并审批（Merge Approval）：同一 LLM 轮次内连续触发审批的同类工具
+    合并为一个审批请求，避免每个工具调用都独立弹审批。
     """
 
     # 可自动放行的只读工具（不经过审批系统）
@@ -132,10 +184,19 @@ class PolicyManager:
     # 硬黑名单工具（直接拒绝）
     HARD_DENY_TOOLS = frozenset({"shutdown", "self_modify"})
 
+    # 合并审批配置
+    MERGE_WINDOW_SECONDS = 30      # 合并时间窗口
+    MERGE_MAX_TOOLS = 20           # 单次合并最多包含的工具数
+
     def __init__(self):
         """初始化 PolicyManager。不加载文件，惰性加载。"""
         self._loaded = False
         self._approval_callback = None
+        # ── 合并审批状态 ──
+        self._merge_req_id: Optional[str] = None   # 当前合并批次的审批 ID
+        self._merge_tools: list[dict] = []          # 合并批次中的工具列表 [{tool, args, ts}]
+        self._merge_deadline: float = 0             # 合并窗口截止时间
+        self._merge_notified: bool = False          # 是否已通知用户
 
     def set_approval_callback(self, callback):
         """设置审批通知回调（用于通道推送）。"""
@@ -144,13 +205,14 @@ class PolicyManager:
     # ── 主决策入口 ────────────────────────────────────────────────
 
     def decide(self, tool: str, args: dict,
-               context: Optional[dict] = None) -> PolicyDecision:
+               context: Optional[dict] = None,
+               auto_override: bool = True) -> PolicyDecision:
         """三层策略决策入口。
 
         流程：
           Pre-check: 硬黑名单 / 只读工具 / 安全 terminal 命令
           Layer 1:   DenyRules 静态规则
-          Layer 2:   AutoMode 自动分类器
+          Layer 2:   AutoMode 自动分类器（auto_override=False 时跳过）
           Layer 3:   人工审批（提交审批请求）
 
         关键变更：每个决策结果都发射 Hook 事件，形成 Hook → Approval 的完整链路。
@@ -189,17 +251,19 @@ class PolicyManager:
             return decision
 
         # ── Layer 2: AutoMode ──
-        auto = AutoMode.should_auto_approve(tool, args)
-        if auto is True:
-            decision = PolicyDecision.allow("✅ 自动模式通过")
-            self._emit_hooks(tool, args, decision)
-            return decision
-        if auto is False:
-            decision = PolicyDecision.deny("⛔ 自动模式拒绝")
-            self._emit_hooks(tool, args, decision)
-            return decision
+        if auto_override:
+            auto = AutoMode.should_auto_approve(tool, args)
+            if auto is True:
+                decision = PolicyDecision.allow("✅ 自动模式通过")
+                self._emit_hooks(tool, args, decision)
+                return decision
+            if auto is False:
+                decision = PolicyDecision.deny("⛔ 自动模式拒绝")
+                self._emit_hooks(tool, args, decision)
+                return decision
+        # auto_override=False 或 AutoMode 不确定 → 走 Layer 3
 
-        # ── Layer 3: 人工审批 ──
+        # ── Layer 3: 人工审批（合并审批） ──
         risk = AutoMode._get_tool_risk(tool)
 
         # 仅高风险走人工，中低风险自动通过
@@ -208,27 +272,120 @@ class PolicyManager:
             self._emit_hooks(tool, args, decision)
             return decision
 
+        return self._merge_or_submit(tool, args, risk)
+
+    # ── 合并审批 ──────────────────────────────────────────────────
+
+    def clear_merge_state(self):
+        """清除合并审批状态（由 ToolOrchestrator 在每轮 LLM 调用后调用）。"""
+        self._merge_req_id = None
+        self._merge_tools = []
+        self._merge_deadline = 0
+        self._merge_notified = False
+
+    def _merge_or_submit(self, tool: str, args: dict, risk: str) -> PolicyDecision:
+        """合并审批或新建审批请求。
+
+        同一窗口内连续触发的审批合并为一个请求：
+        - 第一个工具触发新建审批
+        - 后续工具在窗口内返回同一个 req_id（pending）
+        - 窗口到期或审批被处理后自动重置
+        """
+        now = time.time()
+
+        # 检查当前合并批次是否过期
+        if self._merge_req_id and now >= self._merge_deadline:
+            self._flush_merge()
+
+        # 如果已有合并批次且未过期
+        if self._merge_req_id and now < self._merge_deadline:
+            if len(self._merge_tools) < self.MERGE_MAX_TOOLS:
+                self._merge_tools.append({
+                    "tool": tool,
+                    "args": dict(args),
+                    "ts": now,
+                })
+                # 更新审批请求详情（追加工具）
+                self._update_merge_approval()
+                # 返回同一个 req_id（pending状态）
+                decision = PolicyDecision.escalate(
+                    reason=f"🟡 批量审批 (ID: {self._merge_req_id}) — 第{len(self._merge_tools)}个工具等待决策",
+                    req_id=self._merge_req_id, risk=risk,
+                )
+                # 首次合并时不重复发射回调
+                self._emit_hooks(tool, args, decision)
+                return decision
+            # 超出合并上限 → 重新创建审批
+            self._flush_merge()
+
+        # 第一个工具或重新开始 → 创建审批请求
         title = f"审批工具调用: {tool}"
         if tool == "terminal":
             cmd = args.get("command", "")[:60]
             title = f"终端: {cmd}"
 
-        detail = json.dumps(args, ensure_ascii=False, indent=2)[:500]
+        self._merge_tools = [{"tool": tool, "args": dict(args), "ts": now}]
+        self._merge_deadline = now + self.MERGE_WINDOW_SECONDS
+        self._merge_notified = False
+
+        detail = self._build_merge_detail()
 
         req_id = ApprovalManager.submit(
-            title=title, detail=detail, risk=risk,
+            title=detail[:80] + "…" if len(detail) > 80 else detail,
+            detail=detail,
+            risk=risk,
             tool=tool,
-            args_snapshot=json.dumps(args, ensure_ascii=False),
-            context_type=f"policy_{tool}",
+            args_snapshot=json.dumps(args, ensure_ascii=False)[:500],
+            context_type=f"policy_merge_{tool}",
         )
+        self._merge_req_id = req_id
 
         decision = PolicyDecision.escalate(
             reason=f"🟡 需要审批 (ID: {req_id}) — {title}",
             req_id=req_id, risk=risk,
         )
         self._emit_hooks(tool, args, decision)
-
         return decision
+
+    def _build_merge_detail(self) -> str:
+        """构建合并审批的详情文本。"""
+        parts = []
+        for i, item in enumerate(self._merge_tools, 1):
+            t = item["tool"]
+            a = item["args"]
+            if t == "terminal":
+                cmd = a.get("command", "")[:80]
+                parts.append(f"  {i}. 终端: `{cmd}`")
+            elif t == "write_file":
+                path = a.get("path", "?")
+                parts.append(f"  {i}. 写入: {path}")
+            elif t == "patch":
+                path = a.get("path", "?")
+                parts.append(f"  {i}. 编辑: {path}")
+            else:
+                arg_preview = json.dumps(a, ensure_ascii=False)[:60]
+                parts.append(f"  {i}. {t}: {arg_preview}")
+        return "\n".join(parts)
+
+    def _update_merge_approval(self):
+        """更新合并审批请求的详情（追加新工具到已提交的审批）。"""
+        if not self._merge_req_id:
+            return
+        req = ApprovalManager._resolve(self._merge_req_id)
+        if not req:
+            return
+        detail = self._build_merge_detail()
+        # 更新磁盘上的请求详情
+        req.detail = detail
+        from core.approval import _save as _save_req
+        _save_req(req)
+
+    def _flush_merge(self):
+        """强制结束当前合并批次（超出上限时），重置状态。"""
+        self._merge_req_id = None
+        self._merge_tools = []
+        self._merge_deadline = 0
+        self._merge_notified = False
 
     def _emit_hooks(self, tool: str, args: dict, decision: PolicyDecision):
         """发射权限相关的 Hook 事件，打通 Hook → Approval 链路。"""

@@ -40,6 +40,11 @@ class GatewayLoop:
         # 注册审批推送回调到 agent
         self._register_approval_callback()
 
+    def _log(self, msg: str):
+        """带时间戳的日志输出。"""
+        ts = time.strftime("%H:%M:%S")
+        print(f"[{ts}] {msg}", flush=True)
+
     def _register_approval_callback(self):
         """注册审批推送回调：审批 pending 时通过消息通道通知用户。
 
@@ -59,12 +64,25 @@ class GatewayLoop:
                 readable_args = json.dumps(args, ensure_ascii=False)[:200]
             args_summary = f"{title}\n{readable_args}"
 
+            # 尝试从 PolicyManager 获取合并审批的详情
+            merge_detail = ""
+            try:
+                from core.policy_manager import get_policy
+                policy = get_policy()
+                if policy._merge_req_id == req_id and policy._merge_tools:
+                    merge_detail = policy._build_merge_detail()
+                    title = f"批量审批({len(policy._merge_tools)}个工具)"
+            except Exception:
+                pass
+
             # 只推送到触发审批的通道
             triggered_platform = getattr(self, '_last_message_source', None) or "feishu"
+            self._log(f"审批推送: platform={triggered_platform}, req_id={req_id}")
 
             # 只推送到触发审批的通道
             for name in [triggered_platform]:
                 channel = self.channels.get(name)
+                self._log(f"  channel '{name}': {'有' if channel else '无'}")
                 if channel:
                     try:
                         chat_id = None
@@ -94,11 +112,11 @@ class GatewayLoop:
                                     chat_id=feishu_chat_id,
                                 )
                                 if not result.success:
-                                    print(f"[GatewayLoop] ⚠️ 飞书审批卡片推送失败: {result.error}")
+                                    self._log(f"⚠️ 飞书审批卡片推送失败: {result.error}")
                             else:
-                                result = channel.send("🔐 | " + title + " | " + detail, **kwargs)
+                                result = channel.send("🔐 | " + title + " | " + args_summary, **kwargs)
                                 if not result.success:
-                                    print(f"[GatewayLoop] ⚠️ 飞书审批文本推送失败: {result.error}")
+                                    self._log(f"⚠️ 飞书审批文本推送失败: {result.error}")
                         else:
                             # 微信/其他 → 短指令文本，用4位短ID方便输入
                             kwargs = {}
@@ -120,19 +138,15 @@ class GatewayLoop:
                             )
                             result = channel.send(msg, **kwargs)
                             if not result.success:
-                                print(f"[GatewayLoop] ⚠️ 微信审批推送失败: {result.error}")
+                                self._log(f"⚠️ 微信审批推送失败: {result.error}")
                     except Exception as e:
-                        print(f"[GatewayLoop] ⚠️ 审批推送失败 ({name}): {e}")
+                        self._log(f"⚠️ 审批推送失败 ({name}): {e}")
 
         # 注入到 agent 的审批回调
         if hasattr(self.agent, 'on_approval_request'):
             self.agent.on_approval_request = _on_approval
-        # 同时也注入到全局回调
-        import core.approval as approval_mod
-        approval_mod.ON_APPROVAL_REQUEST_CB = lambda tool, args, req_id: _on_approval(tool, args, req_id)
 
         # 设置飞书卡片回调：卡片按钮点击 → 执行审批
-        from core.channel.feishu_ws import ON_CARD_APPROVAL_CB as feishu_cb_global
         import core.channel.feishu_ws as feishu_mod
 
         def _on_card_approval(approval_id: str, action: str):
@@ -140,12 +154,12 @@ class GatewayLoop:
             from core.approval import ApprovalManager
             if action == "approve":
                 ok = ApprovalManager.approve(approval_id)
-                print(f"[GatewayLoop] ✅ 飞书卡片批准 {approval_id}: {'成功' if ok else '失败（不存在或已处理）'}")
+                self._log(f"✅ 飞书卡片批准 {approval_id}: {'成功' if ok else '失败（不存在或已处理）'}")
             else:
                 ok = ApprovalManager.reject(approval_id)
-                print(f"[GatewayLoop] ❌ 飞书卡片拒绝 {approval_id}: {'成功' if ok else '失败（不存在或已处理）'}")
+                self._log(f"❌ 飞书卡片拒绝 {approval_id}: {'成功' if ok else '失败（不存在或已处理）'}")
 
-        feishu_mod.ON_CARD_APPROVAL_CB = _on_card_approval
+        feishu_mod.register_card_approval_cb(_on_card_approval)
 
     def start(self):
         """启动消息循环（后台线程）。"""
@@ -160,12 +174,12 @@ class GatewayLoop:
         )
         self._thread.start()
         channels = self.channels.list()
-        print(f"[GatewayLoop] 🟢 已启动，通道: {', '.join(channels) if channels else '(无)'}")
+        self._log(f"🟢 已启动，通道: {', '.join(channels) if channels else '(无)'}")
 
     def stop(self):
         """停止消息循环。"""
         self._running = False
-        print("[GatewayLoop] 🔴 已停止")
+        self._log("🔴 已停止")
 
     def _loop(self):
         """主循环：轮询所有通道的消息并处理。"""
@@ -220,7 +234,7 @@ class GatewayLoop:
             return
 
         text = msg.text.strip()
-        print(f"[GatewayLoop] 📩 {msg.platform}/{msg.chat_id}: {text[:60]}")
+        self._log(f"📩 {msg.platform}/{msg.chat_id}: {text[:60]}")
 
         # 记录最近消息的来源通道（用于审批推送通道选择）
         self._last_message_source = msg.platform
@@ -249,8 +263,16 @@ class GatewayLoop:
         if decision:
             channel = self.channels.get(msg.platform)
             reply = _handle_dec(decision, msg.chat_id, channel)
-            print(f"[GatewayLoop] 审批决策已处理: {reply}")
+            self._log(f"审批决策已处理: {reply}")
             return
+
+        # 飞书消息：添加 👀 reaction 表示已收到
+        if msg.platform == "feishu" and msg.msg_id:
+            feishu_ch = self.channels.get("feishu")
+            if hasattr(feishu_ch, 'add_reaction'):
+                ok = feishu_ch.add_reaction(msg.msg_id, "OK")
+                if not ok:
+                    self._log(f"⚠️ 飞书 reaction 失败: msg_id={msg.msg_id}")
 
         try:
             # 实时进度推送：每步都通过消息通道发送
@@ -271,9 +293,9 @@ class GatewayLoop:
                             kwargs["context_token"] = msg.raw["context_token"]
                         result = channel.send(f"\n{summary}\n", **kwargs)
                         if not result.success:
-                            print(f"[GatewayLoop] ⚠️ 阶段总结推送失败: {result.error}")
+                            self._log(f"⚠️ 阶段总结推送失败: {result.error}")
                 except Exception as e:
-                    print(f"[GatewayLoop] ⚠️ 阶段总结推送异常: {e}")
+                    self._log(f"⚠️ 阶段总结推送异常: {e}")
 
             # 注入当前消息的通道信息，供 finish 工具发文件时使用
             self.agent._current_platform = msg.platform
@@ -286,6 +308,13 @@ class GatewayLoop:
             result = self.agent.run(text, on_step=_on_step, on_phase=_on_phase, resume_from=resume_from)
             reply = result.get("result", "")
             if not reply:
+                # 结果为空时也推一条提示，不让用户觉得系统没反应
+                channel = self.channels.get(msg.platform)
+                if channel:
+                    kwargs = {"chat_id": msg.chat_id}
+                    if msg.raw and "context_token" in msg.raw:
+                        kwargs["context_token"] = msg.raw["context_token"]
+                    channel.send("🤔 正在处理中，请稍候…", **kwargs)
                 return
 
             # 保存 session_id 供后续消息关联上下文
@@ -301,9 +330,9 @@ class GatewayLoop:
                 if msg.raw and "context_token" in msg.raw:
                     kwargs["context_token"] = msg.raw["context_token"]
                 channel.send(reply, **kwargs)
-                print(f"[GatewayLoop] ✅ 已回复 {msg.platform}")
+                self._log(f"✅ 已回复 {msg.platform}")
         except Exception as e:
-            print(f"[GatewayLoop] ❌ 处理失败: {e}")
+            self._log(f"❌ 处理失败: {e}")
             channel = self.channels.get(msg.platform)
             if channel:
                 channel.send(f"❌ 处理出错: {str(e)[:200]}", chat_id=msg.chat_id)

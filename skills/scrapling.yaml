@@ -1,4 +1,40 @@
 name: scrapling
-description: "Scrapling 是一个自适应 Web 抓取框架，能够自动适应网站结构变化，无需手动维护选择器。支持反爬虫绕过、无头浏览、爬虫框架、自适应抓取和 JavaScript 渲染。"
+description: "Scrapling 是一个自适应 Web 抓取框架，能够自动适应网站结构变化，无需手动维护选择器。支持反爬虫绕过（Cloudflare Turnstile）、无头浏览、爬虫框架、自适应抓取和 JavaScript 渲染。由 D4Vinci (Karim Shoair) 开发。"
+keywords:
+- Scrapling
+- 网页抓取
+- 爬虫
+- 自适应抓取
+- 反爬虫绕过
+- Cloudflare
+- Turnstile
+- 无头浏览器
+- JS渲染
+- 数据提取
+- web scraping
+- 自动化
+- AI抓取
+- BeautifulSoup替代
 install_command: "pip install scrapling"
-ins: []
+ins:
+- pip install scrapling
+- pip install scrapling[all]  # 安装所有依赖（含浏览器引擎）
+steps:
+- 1. 安装: pip install scrapling（或 pip install scrapling[all] 安装全部依赖）
+- 2. 基础解析: 使用 AutoSelector 或 Selector 解析 HTML 内容
+- 3. 基础抓取: 使用 Fetcher 发起 HTTP 请求获取页面
+- 4. 反爬虫绕过: 使用 StealthyFetcher 绕过 Cloudflare Turnstile 等防护
+- 5. 动态渲染: 使用 DynamicFetcher 处理 JavaScript 渲染页面
+- 6. 自适应抓取: 启用 adaptive=True 让解析器自动适应网站结构变化
+- 7. 爬虫框架: 使用 Spider 构建大规模并发爬虫，支持暂停/恢复、代理轮换
+- 8. CLI 交互: 使用命令行交互式 shell 调试和提取数据
+- 9. AI 集成: 通过 MCP Server 与 AI 工具集成
+examples:
+- "基础 HTML 解析:\n  from scrapling.parser import AutoSelector\n  page = AutoSelector(html_content)\n  titles = page.css('h1').text\n  links = page.css('a').attrib['href']"
+- "使用 Fetcher 抓取页面:\n  from scrapling.fetchers import Fetcher\n  page = Fetcher().fetch('https://example.com')\n  page.css('.content').text"
+- "绕过 Cloudflare 反爬:\n  from scrapling.fetchers import StealthyFetcher\n  page = StealthyFetcher().fetch('https://target.com', headless=True, network_idle=True)\n  page.css('.product-title').text"
+- "动态 JS 渲染页面:\n  from scrapling.fetchers import DynamicFetcher\n  page = DynamicFetcher().fetch('https://spa-site.com')\n  page.css('.dynamic-content').text"
+- "自适应抓取（网站结构变化后仍能定位元素）:\n  page = StealthyFetcher().fetch('https://example.com')\n  # 首次抓取时保存元素位置\n  products = page.css('.product', auto_save=True)\n  # 网站改版后，启用自适应模式自动重定位\n  products = page.css('.product', adaptive=True)"
+- "构建爬虫:\n  from scrapling.spiders import Spider, Response\n  class MySpider(Spider):\n      name = 'demo'\n      start_urls = ['https://example.com/']\n      async def parse(self, response: Response):\n          for item in response.css('.item'):\n              yield {'title': item.css('.title').text}\n  MySpider.run()"
+- "CLI 交互式抓取:\n  scrapling shell https://example.com\n  # 进入交互式环境后可直接使用 css() 等方法"
+usage_count: 0

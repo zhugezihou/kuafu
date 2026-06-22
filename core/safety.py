@@ -361,6 +361,7 @@ DANGEROUS_COMMANDS = [
     (re.compile(r'\bpip\s+install\b'), "安装 Python 包"),
     (re.compile(r'\bnpm\s+install\b'), "安装 npm 包"),
     (re.compile(r'\bshutdown\b|\breboot\b|\bpoweroff\b'), "关机/重启"),
+    (re.compile(r'\bkill\s+-[0-9]+\b'), "强制终止进程"),
     # Windows 特有危险命令
     (re.compile(r'\bformat\s+[a-zA-Z]:'), "格式化磁盘"),
     (re.compile(r'\bdiskpart\b'), "磁盘分区"),
@@ -369,6 +370,82 @@ DANGEROUS_COMMANDS = [
     (re.compile(r'\btaskkill\s+/[fF]'), "强制终止进程"),
     (re.compile(r'\bshutdown\s+/[sSrR]'), "关机/重启"),
 ]
+
+
+# ── 安全文件操作检测 ──────────────────────────────────────────────
+
+# 禁止写入的系统路径模式
+FORBIDDEN_WRITE_PATHS = [
+    "/etc/", "/usr/", "/bin/", "/sbin/", "/boot/", "/dev/",
+    "/proc/", "/sys/", "/lib/", "/lib64/", "/opt/",
+]
+# 敏感文件路径模式
+SENSITIVE_WRITE_PATHS = [
+    ".env", "id_rsa", "id_ed25519", ".ssh/", "credentials",
+    "secret", "token", ".netrc", ".npmrc", "passwd", "shadow",
+]
+
+# ── 非 terminal 工具安全检查 ──────────────────────────────────────
+
+
+def classify_tool_operation(tool: str, args: dict) -> tuple[str, str, str]:
+    """对非 terminal 工具的操作进行安全分级。
+
+    Returns:
+        (level: str, risk_name: str, reason: str)
+        level 取值: safe / attention / danger / forbid
+    """
+    if not isinstance(args, dict):
+        return (CommandLevel.SAFE, "", "")
+
+    # write_file
+    if tool == "write_file":
+        path = args.get("path", "")
+        for forbidden in FORBIDDEN_WRITE_PATHS:
+            if path.startswith(forbidden):
+                return (CommandLevel.FORBIDDEN, "写入系统路径",
+                        f"禁止写入系统目录: {path}")
+        for sensitive in SENSITIVE_WRITE_PATHS:
+            if sensitive in path.lower():
+                return (CommandLevel.ATTENTION, "写入敏感文件",
+                        f"写入敏感文件: {path}")
+        return (CommandLevel.SAFE, "", "")
+
+    # delete_file
+    if tool == "delete_file":
+        path = args.get("path", "")
+        for forbidden in FORBIDDEN_WRITE_PATHS:
+            if path.startswith(forbidden):
+                return (CommandLevel.DANGEROUS, "删除系统文件",
+                        f"删除系统目录文件: {path}")
+        for sensitive in SENSITIVE_WRITE_PATHS:
+            if sensitive in path.lower():
+                return (CommandLevel.DANGEROUS, "删除敏感文件",
+                        f"删除敏感文件: {path}")
+        return (CommandLevel.ATTENTION, "删除文件",
+                f"删除文件: {path}")
+
+    # patch
+    if tool == "patch":
+        path = args.get("path", "")
+        for forbidden in FORBIDDEN_WRITE_PATHS:
+            if path.startswith(forbidden):
+                return (CommandLevel.DANGEROUS, "修改系统文件",
+                        f"修改系统目录文件: {path}")
+        return (CommandLevel.SAFE, "", "")
+
+    # mcp_* — 默认 attention
+    if tool.startswith("mcp_"):
+        op = tool.replace("mcp_", "", 1)[:30]
+        return (CommandLevel.ATTENTION, f"MCP 操作: {op}",
+                f"外部工具调用: {tool}")
+
+    # execute_code
+    if tool == "execute_code":
+        return (CommandLevel.ATTENTION, "执行代码",
+                "Agent 执行 Python 代码")
+
+    return (CommandLevel.SAFE, "", "")
 
 
 class SafetyLayer:
@@ -468,7 +545,7 @@ class SafetyLayer:
             if re.match(pat, command):
                 return (CommandLevel.SAFE, "", "")
 
-        return (CommandLevel.SAFE, "", "")
+        return (CommandLevel.ATTENTION, "未知命令", f"无法确认命令安全性，需要审批: {command[:80]}")
 
     @staticmethod
     def needs_approval(level: str) -> bool:

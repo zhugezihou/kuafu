@@ -554,8 +554,12 @@ class EvolutionTracker:
     def undo_last_skill_evolution(self, skill_name: str) -> Optional[dict]:
         """回滚 skill 的最新版本。
 
+        从 evolution_skill_content 表取上一版本内容回写文件，
+        然后清理版本记录。
+
         Returns:
-            {"rolled_back_v": int, "restored_to_v": int} 或 None
+            {"rolled_back_v": int, "restored_to_v": int,
+             "file_restored": str or None} 或 None
         """
         versions = self._execute(
             "SELECT * FROM evolution_skills WHERE name = ? ORDER BY version DESC LIMIT 2",
@@ -566,6 +570,27 @@ class EvolutionTracker:
 
         latest = versions[0]
         previous = versions[1]
+
+        # 尝试从 evolution_skill_content 表恢复上一版本的文件内容
+        file_restored = None
+        try:
+            content_row = self._execute(
+                "SELECT content, file_path FROM evolution_skill_content "
+                "WHERE skill_name = ? AND version = ? ORDER BY created_at DESC LIMIT 1",
+                (skill_name, previous["version"]),
+            ).fetchone()
+            if content_row:
+                file_path = Path(self.db_path.parent.parent / content_row["file_path"])
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                file_path.write_text(content_row["content"], encoding="utf-8")
+                file_restored = str(file_path)
+            else:
+                # 没有内容快照，尝试检查文件系统上是否还保留着旧文件
+                old_path = Path(self.db_path.parent.parent / previous["file_path"])
+                if old_path.exists():
+                    file_restored = str(old_path)
+        except Exception as e:
+            logger.warning(f"技能回滚: 文件恢复失败 ({e})，仅清理版本记录")
 
         # 删除最新版本
         self._execute(
@@ -582,6 +607,7 @@ class EvolutionTracker:
         return {
             "rolled_back_v": latest["version"],
             "restored_to_v": previous["version"],
+            "file_restored": file_restored,
         }
 
     # ── 退化检测 ────────────────────────────────────────────

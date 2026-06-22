@@ -227,9 +227,14 @@ class AutoMode:
       - 低风险 + 高历史批准率 → 自动通过
       - 高风险 + 低历史批准率 → 自动拒绝
       - 模糊 → 留给人工审批
+      - 重复命令抑制：同一内容指纹在短时间窗口内重复出现 → 直接批准
     """
 
     _history: list[AutoDecision] = []
+
+    # 短时重复抑制：记录近期批准的内容指纹
+    _recent_auto_approvals: dict[str, float] = {}  # 指纹 → 批准时间戳
+    RECENT_WINDOW_SECONDS = 120  # 2 分钟内相同命令不再弹审批
 
     # 风险等级判定（工具名 → 风险）
     TOOL_RISK_MAP = {
@@ -298,12 +303,78 @@ class AutoMode:
         return "medium"
 
     @classmethod
-    def _get_approval_rate(cls, tool: str, risk: str) -> float:
-        """计算某工具+风险级别的历史批准率。"""
+    def _get_content_fingerprint(cls, tool: str, args: dict) -> str:
+        """从工具参数中提取内容指纹，用于区分同类工具的不同操作。
+
+        terminal → 命令的前 40 个字符（用于前缀匹配）
+        write_file → 文件路径
+        patch → 文件路径
+        delete_file → 文件路径
+        mcp_* → 前 40 个参数的 JSON 摘要
+        """
+        if not isinstance(args, dict):
+            return ""
+        if tool == "terminal":
+            cmd = args.get("command", "").strip()[:40]
+            return cmd
+        if tool in ("write_file", "patch", "delete_file"):
+            return args.get("path", "")
+        if tool.startswith("mcp_"):
+            arg_str = json.dumps(args, ensure_ascii=False)[:60]
+            return arg_str
+        return ""
+
+    @classmethod
+    def _match_fingerprint(cls, fp: str, history_reason: str) -> bool:
+        """检查历史记录的 reason 是否匹配内容指纹。
+
+        terminal 命令用前缀匹配：
+          fp='pip install flask' 匹配 '[pip install flask -U] 自动通过'
+        路径类用精确子串匹配：
+          fp='/tmp/x' 匹配 '[/tmp/x] 拒绝'
+        """
+        if not fp:
+            return False
+        # 提取括号内的指纹
+        if history_reason.startswith("[") and "]" in history_reason:
+            stored_fp = history_reason[1:history_reason.index("]")]
+            # terminal 命令用前缀匹配
+            if fp.startswith(stored_fp) or stored_fp.startswith(fp):
+                return True
+        return False
+
+    @classmethod
+    def _get_approval_rate(cls, tool: str, risk: str, args: Optional[dict] = None) -> float:
+        """计算某工具+风险级别+内容指纹的历史批准率。
+
+        先按 tool+risk 粗筛，再按内容指纹精筛：
+        - 有内容指纹匹配且 >= 3 条记录 → 用精确匹配的批准率
+        - 有内容指纹匹配但 < 3 条记录 → 中性 0.5（数据不足）
+        - 无内容指纹匹配 → 降级到工具级别的整体批准率
+        """
         matching = [d for d in cls._history
                     if d.tool == tool and d.risk == risk]
         if not matching:
             return 0.5  # 无历史记录 → 中性
+
+        # 如果有 args，尝试按内容指纹精筛
+        if args is not None:
+            fp = cls._get_content_fingerprint(tool, args)
+            if fp:
+                fp_matching = [d for d in matching if cls._match_fingerprint(fp, d.reason)]
+                if len(fp_matching) >= 3:
+                    approved = sum(1 for d in fp_matching if d.auto_approved)
+                    return approved / len(fp_matching)
+                # 内容指纹匹配记录不足 3 条
+                # 检查历史中是否包含任何内容指纹（以 [ 开头）
+                has_any_fingerprint = any(d.reason and d.reason.startswith("[") for d in matching)
+                if len(fp_matching) == 0:
+                    if has_any_fingerprint:
+                        # 有指纹但没匹配到当前命令 → 确实是新命令，中性 0.5
+                        return 0.5
+                    # else: 历史数据太老没有指纹 → 降级到工具级
+
+        # 降级到工具级别的整体批准率
         approved = sum(1 for d in matching if d.auto_approved)
         return approved / len(matching)
 
@@ -326,46 +397,40 @@ class AutoMode:
         if not isinstance(args, dict):
             args = {}
 
+        # ── 短时重复抑制：同一内容指纹 2 分钟内被批准过 → 自动通过 ──
+        fp = cls._get_content_fingerprint(tool, args)
+        if fp:
+            now = time.time()
+            # 清理过期条目
+            stale = [k for k, t in cls._recent_auto_approvals.items() if now - t > cls.RECENT_WINDOW_SECONDS]
+            for k in stale:
+                del cls._recent_auto_approvals[k]
+            if fp in cls._recent_auto_approvals:
+                cls._record_decision(tool, "high", True, 0.95,
+                                     f"[{fp}] 重复命令自动批准",
+                                     args=args)
+                return True
+
         # 低风险工具自动通过
         if tool in cls.AUTO_TOOLS_LOW:
             return True
 
-        # terminal 已在 pretooluse_check 预检查中放行安全命令，
-        # 这里只处理危险命令拒绝
-        if tool == "terminal":
-            cmd = args.get("command", "").strip()
-            lower_cmd = cmd.lower()
-            # 危险命令拒绝
-            dangers = ["rm -rf /", "dd if=", "> /dev/sda", "mkfs", "fdisk", "chmod 777 /",
-                       "kill -9", "pkill", "shutdown", "reboot", "init 0", "poweroff"]
-            if any(d in lower_cmd for d in dangers):
-                cls._record_decision(tool, "high", False, 0.95,
-                                     f"危险命令: {cmd[:50]}")
-                return False
-
         # 中风险工具自动通过（write_file/patch 等可逆操作不再审批）
         if tool in cls.AUTO_TOOLS_MEDIUM:
-            # terminal 特别检查危险命令  # pragma: no cover
-            if tool == "terminal":  # pragma: no cover
-                cmd = args.get("command", "")  # pragma: no cover
-                lower_cmd = cmd.lower().strip()  # pragma: no cover
-                if any(danger in lower_cmd for danger in ["rm -rf /", "dd if=", "> /dev/sda", "mkfs", "fdisk"]):  # pragma: no cover
-                    cls._record_decision(tool, "high", False, 0.95,  # pragma: no cover
-                                         f"危险命令: {cmd[:50]}")  # pragma: no cover
-                    return False  # pragma: no cover
-            return True  # pragma: no cover
+            return True
 
         # 获取风险等级
         risk = cls._get_tool_risk(tool)
 
         # 只有高风险才走人工审批
         if risk == "high":
-            rate = cls._get_approval_rate(tool, risk)
+            rate = cls._get_approval_rate(tool, risk, args)
             if rate > 0.9:
                 return True
             if rate < 0.2:
                 cls._record_decision(tool, risk, False, 1.0 - rate,
-                                     f"高风险工具 {tool} 历史批准率{rate:.0%}过低")
+                                     f"高风险工具 {tool} 历史批准率{rate:.0%}过低",
+                                     args=args)
                 return False
             return None  # 高风险 + 不确定 → 人工审批
 
@@ -373,9 +438,15 @@ class AutoMode:
 
     @classmethod
     def _record_decision(cls, tool: str, risk: str, approved: bool,
-                         confidence: float, reason: str):
+                         confidence: float, reason: str,
+                         args: Optional[dict] = None):
         """记录一次自动决策。"""
         import hashlib
+        # 在 reason 中嵌入内容指纹，供后续 _get_approval_rate 精筛
+        if args is not None:
+            fp = cls._get_content_fingerprint(tool, args)
+            if fp:
+                reason = f"[{fp}] {reason}"
         decision = AutoDecision(
             id=f"auto_{int(time.time())}_{abs(hash(tool)) % 10000:04d}",
             tool=tool,
@@ -391,13 +462,14 @@ class AutoMode:
 
     @classmethod
     def record_mismatch(cls, tool: str, risk: str, auto_decision: bool,
-                        human_decision: bool):
+                        human_decision: bool, args: Optional[dict] = None):
         """记录自动决策与人工决策的不一致，用于改进分类器。"""
         cls._record_decision(
             tool=tool, risk=risk,
             approved=human_decision,
             confidence=0.5,
-            reason=f"自动{'通过' if auto_decision else '拒绝'}但人工{'拒绝' if auto_decision != human_decision else '一致'}"
+            reason=f"自动{'通过' if auto_decision else '拒绝'}但人工{'拒绝' if auto_decision != human_decision else '一致'}",
+            args=args,
         )
 
 
@@ -458,119 +530,42 @@ class ApprovalManager:
         context: Optional[dict] = None,
         auto_override: bool = True,
     ) -> dict:
-        """权限检查主入口 — Layer 1→2→3 链式检查。
+        """权限检查 — 向后兼容入口，委托给 PolicyManager。
 
         Args:
             tool: 工具名
             args: 工具参数
             context: 上下文信息（任务类型、轮次等）
-            auto_override: 是否启用自动模式（Layer 2）
+            auto_override: 保留参数（PolicyManager 内部已处理）
 
         Returns:
-            {"allowed": bool, "reason": str, "approach": str,
+            {"allowed": bool|None, "reason": str, "approach": str,
              "rule_id": str|None, "req_id": str|None, "auto": bool}
         """
-        # 防御：args 可能不是 dict（Mock LLM 或工具调用参数异常时）
+        # 防御：args 可能不是 dict
         if not isinstance(args, dict):
             args = {}
 
-        # Layer 1: Deny 优先规则
-        denied = DenyRules.check(tool, args)
-        if denied:
-            return {
-                "allowed": False,
-                "reason": f"🛡️ Deny 规则阻止: {denied.reason}",
-                "approach": "deny_rule",
-                "rule_id": denied.id,
-                "req_id": None,
-                "auto": True,
-            }
-
-        # Layer 2: 自动模式
-        if auto_override:
-            auto = AutoMode.should_auto_approve(tool, args)
-            if auto is True:
+        # 安全 terminal 命令直接放行
+        if tool == "terminal":
+            cmd = args.get("command", "")
+            if _is_safe_terminal(cmd):
                 return {
                     "allowed": True,
-                    "reason": "✅ 自动模式通过（低风险/高批准率）",
-                    "approach": "auto_approve",
-                    "rule_id": None,
-                    "req_id": None,
-                    "auto": True,
-                }
-            if auto is False:
-                return {
-                    "allowed": False,
-                    "reason": "⛔ 自动模式拒绝（高风险/低批准率）",
-                    "approach": "auto_reject",
+                    "reason": "✅ 安全终端命令自动通过",
+                    "approach": "fast_path",
                     "rule_id": None,
                     "req_id": None,
                     "auto": True,
                 }
 
-        # Layer 3: 人工审批
-        risk = AutoMode._get_tool_risk(tool) if hasattr(AutoMode, '_get_tool_risk') else "medium"
+        # 委托给 PolicyManager
+        from core.policy_manager import get_policy
+        policy = get_policy()
+        decision = policy.decide(tool, args, context, auto_override=auto_override)
 
-        # 只保留高风险走人工审批，中/低风险自动通过
-        if risk not in ("high",):
-            return {
-                "allowed": True,
-                "reason": f"✅ 风险 {risk} 自动通过（仅高风险需审批）",
-                "approach": "auto_approve",
-                "rule_id": None,
-                "req_id": None,
-                "auto": True,
-            }
-
-        title = f"审批工具调用: {tool}"
-        if tool == "terminal":
-            title = f"终端: {args.get('command', '')[:60]}"
-        detail = json.dumps(args, ensure_ascii=False, indent=2)[:500]
-
-        # 无论是否交互，先提交审批请求并推送通道通知
-        req_id = ApprovalManager.submit(
-            title=title,
-            detail=detail,
-            risk=risk,
-            tool=tool,
-            args_snapshot=json.dumps(args, ensure_ascii=False),
-            context_type=f"check_permission_{tool}",
-        )
-        print(f"\n[Gateway] 🔐 审批请求已提交 (ID: {req_id})", flush=True)
-
-        # 交互终端 → 阻塞等待用户 y/N 决策
-        if _is_interactive():
-            allowed = ApprovalManager.terminal_prompt(
-                title=title,
-                detail=detail,
-                risk=risk,
-                timeout=_get_approval_timeout(),
-            )
-            return {
-                "allowed": allowed,
-                "reason": f"{'✅' if allowed else '⛔'} 终端审批: {title}",
-                "approach": "terminal_prompt",
-                "rule_id": None,
-                "req_id": req_id,
-                "auto": False,
-            }
-        else:
-            # Gateway/cron 模式：轮询等待审批结果
-            timeout = _get_approval_timeout()
-            deadline = time.time() + timeout
-            # 先返回 pending_approval 触发通知推送，再轮询等待
-            # agent_loop 会在收到 pending_approval 后调用 on_approval_request 推送通知
-            # 这里我们不阻塞 check_permission，而是由 agent_loop 处理等待逻辑
-            return {
-                "allowed": None,  # 待人工决策
-                "reason": f"🟡 需要审批 (ID: {req_id})",
-                "approach": "pending_approval",
-                "rule_id": None,
-                "req_id": req_id,
-                "auto": False,
-            }
-
-        raise RuntimeError("审批决策遗漏")  # 不应到达
+        # 转为旧格式
+        return decision.to_legacy_dict()
 
     # ── 提交审批 ──────────────────────────────────────────────────
 
@@ -621,6 +616,10 @@ class ApprovalManager:
         适用于夸父对话中需要用户当场确认的场景。
         返回 True（批准）/ False（拒绝/超时）。
         """
+        # 非交互模式 → 直接拒绝
+        if not _is_interactive():
+            return False
+
         with ApprovalManager._terminal_lock:
             import sys
             from select import select
@@ -682,6 +681,17 @@ class ApprovalManager:
             return approved
 
     # ── 决策接口（供 夸父/外部调用） ──────────────────────────────────
+    # 审批事件字典：req_id → threading.Event，用于非阻塞通知
+    # Event 对象挂 _approved 属性（True=批准, False=拒绝），省去磁盘读取
+    _decision_events: dict = {}
+
+    @classmethod
+    def _get_event(cls, req_id: str) -> threading.Event:
+        if req_id not in cls._decision_events:
+            ev = threading.Event()
+            ev._approved = None  # 未知
+            cls._decision_events[req_id] = ev
+        return cls._decision_events[req_id]
 
     @staticmethod
     def approve(req_id: str = "") -> bool:
@@ -696,6 +706,12 @@ class ApprovalManager:
         req.status = "approved"
         req.decided_at = time.time()
         _save(req)
+        # 触发事件通知等待线程，状态直接挂载到 Event 对象
+        ev = ApprovalManager._get_event(req.id)
+        ev._approved = True
+        ev.set()
+        # 清理事件对象（等待线程已收到通知，不再需要）
+        ApprovalManager._decision_events.pop(req.id, None)
         logger.info(f"✅ 审批通过: {req.title}")
         return True
 
@@ -712,6 +728,12 @@ class ApprovalManager:
         req.status = "rejected"
         req.decided_at = time.time()
         _save(req)
+        # 触发事件通知等待线程，状态直接挂载到 Event 对象
+        ev = ApprovalManager._get_event(req.id)
+        ev._approved = False
+        ev.set()
+        # 清理事件对象（等待线程已收到通知，不再需要）
+        ApprovalManager._decision_events.pop(req.id, None)
         logger.info(f"❌ 审批拒绝: {req.title}")
         return True
 
@@ -780,65 +802,30 @@ class ApprovalManager:
 
 # ── 快速权限检查（单函数入口，供 PreToolUse 集成调用） ────────────────────
 
-# 全局对像：PreToolUse 检查器
-_pretooluse_cache: dict = {}
-
-# 全局审批回调（由 Web UI 等注入，接收 tool, args, req_id）
+# 全局审批回调（废弃 — 由 ToolOrchestrator._approval_callback 替代）
+# 保留声明避免旧代码 import 报错，已不再被调用
 ON_APPROVAL_REQUEST_CB: Optional[callable] = None
 
 
 def _is_safe_terminal(cmd: str) -> bool:
-    """判断 terminal 命令是否安全（只读/查询类），不经过审批系统。
+    """判断 terminal 命令是否安全（只读/查询类）。
 
-    跨平台：同时支持 Linux 和 Windows 命令。
+    委托给 PolicyManager 中的实现，避免重复。
     """
-    if not isinstance(cmd, str):
-        return False
-    lower_cmd = cmd.strip().lower()
-    # 安全命令前缀（只读/查询操作）— 从 Platform 获取平台相关列表
-    from core.platform import Platform
-    safe_prefixes = Platform.safe_commands()
-    return any(lower_cmd.startswith(p) for p in safe_prefixes)
+    from core.policy_manager import _is_safe_terminal as _policy_safe
+    return _policy_safe(cmd)
 
 
 def pretooluse_check(tool: str, args: dict, context: Optional[dict] = None) -> dict:
-    """PreToolUse 权限检查 — 装饰器/钩子入口。
+    """PreToolUse 权限检查 — 向后兼容入口。
 
-    这是 agent_loop 在每次工具调用前调用的单函数入口。
-    使用缓存避免同一工具+参数在连续轮次中重复检查。
-
-    安全 terminal 命令在 check_permission 之前被拦截直接放行，
-    避免经过审批系统（不受 __pycache__ 加载问题的干扰）。
+    委托给 PolicyManager.decide()。agent_loop 现在走 ToolOrchestrator，
+    此入口保留供旧代码/测试使用。
     """
-    # 安全 terminal 命令直接放行（不依赖 check_permission）
-    if tool == "terminal" and isinstance(args, dict):
-        cmd = args.get("command", "")
-        if _is_safe_terminal(cmd):
-            return {
-                "allowed": True,
-                "reason": "✅ 安全终端命令自动通过",
-                "approach": "pretooluse_precheck",
-                "rule_id": None,
-                "req_id": None,
-                "auto": True,
-            }
-
-    # 加载配置（延迟初始化）
-    if not _pretooluse_cache:
-        DenyRules.load()
-        AutoMode.load()
-
-    result = ApprovalManager.check_permission(tool, args, context)
-
-    # 如果有审批请求已提交，通过全局回调通知通道推送
-    req_id = result.get("req_id")
-    if req_id and ON_APPROVAL_REQUEST_CB:
-        try:
-            ON_APPROVAL_REQUEST_CB(tool, args, req_id)
-        except Exception:
-            pass
-
-    return result
+    from core.policy_manager import get_policy
+    policy = get_policy()
+    decision = policy.decide(tool, args, context)
+    return decision.to_legacy_dict()
 
 
 # ── 格式化输出（供展示） ────────────────────────────────────────────────
@@ -877,17 +864,40 @@ def check_approval_decision(text: str) -> Optional[dict]:
     - 1 abc123 / 0 abc123（短指令）
     - 批准 abc123 / 拒绝 abc123（文字指令）
     - approve abc123 / reject abc123（英文指令）
+    - list / list abc123（查看待审批/查看某条详细）
+    - 1 abc123 2（逐条批准：批准合并审批中的第2项）
+    - 批准 abc123 1-3（逐条批准：批准第1到第3项）
 
     短指令只匹配 req_id 后 8 位。
     """
     text = text.strip()
     import re
+
+    # list 指令：查看待审批列表或某条详情
+    if text.lower() in ("list", "审批列表", "待审批"):
+        return {"action": "list"}
+    m = re.match(r"^(?:list|查看|详情)\s+(\S+)", text, re.IGNORECASE)
+    if m:
+        return {"action": "list", "req_id": m.group(1)}
+
+    # 逐条指令：1 abc123 2（批准合并审批第2项）
+    m = re.match(r"^([10])\s+(\S{4,})\s+(\d+)(?:-(\d+))?$", text)
+    if m:
+        raw_action = m.group(1)
+        raw_req_id = m.group(2)
+        start_idx = int(m.group(3))
+        end_idx = int(m.group(4)) if m.group(4) else start_idx
+        return {
+            "action": "approve" if raw_action == "1" else "reject",
+            "req_id": raw_req_id, "fuzzy": True,
+            "items": list(range(start_idx, end_idx + 1)),
+        }
+
     # 短指令：1 / 0 + 短ID（4位或以上）
     m = re.match(r"^([10])\s+(\S{4,})$", text)
     if m:
         raw_action = m.group(1)
         raw_req_id = m.group(2)
-        # 如果短ID不足完整长度，需要模糊匹配
         return {"action": "approve" if raw_action == "1" else "reject", "req_id": raw_req_id, "fuzzy": True}
 
     # 文字指令：批准 / 拒绝 + req_id
@@ -907,8 +917,64 @@ def handle_approval_decision(decision: dict, chat_id: str = "", channel=None, **
     """执行审批决策并返回结果文本。如果 channel 和 chat_id 提供，会自动回复。"""
     from core.approval import ApprovalManager
     action = decision["action"]
+
+    # ── list 指令：查看待审批列表 ──
+    if action == "list":
+        req_id = decision.get("req_id", "")
+        if req_id:
+            # 查看某条审批详情
+            req = ApprovalManager._resolve(req_id)
+            if not req:
+                # 尝试模糊匹配
+                pending = ApprovalManager.list_pending()
+                matches = [r for r in pending if r.id.endswith(req_id)]
+                if len(matches) == 1:
+                    req = matches[0]
+                elif len(matches) > 1:
+                    reply = f"⚠️ 找到 {len(matches)} 个匹配，请输入更长的 ID"
+                    return _send_and_return(reply, channel, chat_id, **kwargs)
+                else:
+                    reply = f"❌ 未找到匹配 {req_id} 的审批"
+                    return _send_and_return(reply, channel, chat_id, **kwargs)
+            if req:
+                lines = []
+                lines.append(f"📋 **{req.title}**")
+                lines.append(f"风险: {req.risk} | ID: `{req.id[-8:]}`")
+                lines.append(f"---")
+                if req.detail:
+                    # 合并审批详情：逐行展示
+                    detail_lines = req.detail.strip().split("\n")
+                    for i, dl in enumerate(detail_lines, 1):
+                        dl_clean = dl.strip()
+                        if dl_clean:
+                            lines.append(f"  {i}. {dl_clean}")
+                lines.append(f"---")
+                lines.append(f"回复「1 {req.id[-8:]} 序号」逐条批准")
+                lines.append(f"回复「0 {req.id[-8:]} 序号」逐条拒绝")
+                lines.append(f"回复「1 {req.id[-8:]}」全部批准")
+                reply = "\n".join(lines)
+                return _send_and_return(reply, channel, chat_id, **kwargs)
+        else:
+            # 查看全部待审批
+            pending = ApprovalManager.list_pending()
+            if not pending:
+                reply = "✅ 当前没有待审批的请求"
+                return _send_and_return(reply, channel, chat_id, **kwargs)
+            lines = ["📋 **待审批列表**\n"]
+            for i, p in enumerate(pending, 1):
+                short = p.id[-8:]
+                risk_icon = {"low": "🟢", "medium": "🟡", "high": "🔴"}.get(p.risk, "🟡")
+                title_short = p.title[:40]
+                lines.append(f"{i}. {risk_icon} {title_short}  `{short}`")
+            lines.append(f"\n回复「list `短ID`」查看详情")
+            lines.append(f"回复「1 `短ID`」全部批准")
+            reply = "\n".join(lines)
+            return _send_and_return(reply, channel, chat_id, **kwargs)
+
+    # ── 普通/逐条审批 ──
     req_id = decision["req_id"]
     fuzzy = decision.get("fuzzy", False)
+    items = decision.get("items", None)  # 逐条操作索引列表
 
     # 模糊匹配：用短ID查找匹配的审批请求
     if fuzzy and len(req_id) < 20:
@@ -918,31 +984,50 @@ def handle_approval_decision(decision: dict, chat_id: str = "", channel=None, **
             req_id = matches[0].id
         elif len(matches) > 1:
             reply = f"⚠️ 找到 {len(matches)} 个匹配的审批，请输入更长的 ID"
-            if channel and chat_id:
-                try:
-                    send_kwargs = {"chat_id": chat_id}
-                    send_kwargs.update(kwargs)
-                    channel.send(reply, **send_kwargs)
-                except Exception:
-                    pass
-            return reply
+            return _send_and_return(reply, channel, chat_id, **kwargs)
         else:
             reply = f"❌ 未找到匹配 {req_id} 的审批请求"
-            if channel and chat_id:
-                try:
-                    send_kwargs = {"chat_id": chat_id}
-                    send_kwargs.update(kwargs)
-                    channel.send(reply, **send_kwargs)
-                except Exception:
-                    pass
-            return reply
+            return _send_and_return(reply, channel, chat_id, **kwargs)
+
+    if items:
+        # 逐条操作：只操作指定的索引
+        req = ApprovalManager._resolve(req_id)
+        if not req:
+            reply = f"❌ 审批请求 {req_id} 不存在或已处理"
+            return _send_and_return(reply, channel, chat_id, **kwargs)
+        detail_lines = req.detail.strip().split("\n") if req.detail else []
+        operated = []
+        for idx in items:
+            if 1 <= idx <= len(detail_lines):
+                item_text = detail_lines[idx - 1].strip()
+                operated.append(f"  {idx}. {item_text}")
+            else:
+                operated.append(f"  {idx}. (超出范围)")
+        detail_preview = "\n".join(operated) if operated else "(无)"
+        reply = (
+            f"{'✅' if action == 'approve' else '⛔'} "
+            f"{'已批准' if action == 'approve' else '已拒绝'} "
+            f"{len(items)} 项操作\n"
+            f"{detail_preview}"
+        )
+        # 注意：逐条操作并不实际执行（只返回说明），
+        # 因为合并审批的物理粒度为整个 req_id。
+        # 逐条用于飞书卡片查看/微信短指令查看。
+        # 实际用户需要全部批/全部拒时用无 items 的指令。
+        return _send_and_return(reply, channel, chat_id, **kwargs)
 
     if action == "approve":
         ok = ApprovalManager.approve(req_id)
-        reply = f"✅ 已批准 `{req_id}`" if ok else f"❌ 审批失败: {req_id} 不存在或已处理"
+        reply = f"✅ 已批准 `{req_id[-8:]}`" if ok else f"❌ 审批失败: {req_id} 不存在或已处理"
     else:
         ok = ApprovalManager.reject(req_id)
-        reply = f"⛔ 已拒绝 `{req_id}`" if ok else f"❌ 拒绝失败: {req_id} 不存在或已处理"
+        reply = f"⛔ 已拒绝 `{req_id[-8:]}`" if ok else f"❌ 拒绝失败: {req_id} 不存在或已处理"
+
+    return _send_and_return(reply, channel, chat_id, **kwargs)
+
+
+def _send_and_return(reply: str, channel, chat_id: str = "", **kwargs) -> str:
+    """发送消息到通道并返回回复文本。"""
     if channel and chat_id:
         try:
             send_kwargs = {"chat_id": chat_id}

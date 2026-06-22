@@ -1,0 +1,37 @@
+# 夸父抖音自动发布配置
+# ═══════════════════════════════════════════════
+
+# 抖音账号配置
+account:
+  # 抖音创作者平台地址
+  creator_url: "https://creator.douyin.com"
+  # 登录页面
+  login_url: "https://creator.douyin.com/login"
+
+# Cookie 配置
+cookie:
+  # Cookie 文件存储路径
+  file: "douyin/cookies.json"
+  # Cookie 过期前提醒天数
+  expire_warning_days: 3
+
+# 视频发布配置
+publish:
+  # 默认发布时间（24小时制，空=立即发布）
+  default_schedule: ""
+  # 默认标签
+  default_tags: ["日常", "生活"]
+  # 发布间隔（秒），避免频繁发布
+  min_interval: 300
+
+# 视频素材目录
+video_sources:
+  - "douyin/templates"
+
+# 发布记录
+history_file: "douyin/publish_history.json"
+
+# 浏览器配置
+browser:
+  headless: false        # 首次需关闭 headless 以登录
+  slow_mo: 500           # 操作延迟(ms)，模拟人类

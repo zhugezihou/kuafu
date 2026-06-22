@@ -10,6 +10,7 @@
 import json
 import logging
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 
@@ -31,6 +32,10 @@ SKILL_EXTRACT_PROMPT = """你是一个经验提取器。分析以下任务结果
 - 错误摘要: {error_summary}
 - 结果摘要: {result_summary}
 - 已有同名技能: {existing_skill}
+- 该技能的历史使用信息: {skill_usage_stats}
+
+## 对话上下文（最近关键轮次）
+{dialogue_context}
 
 ## 判断标准
 返回 "worth_learning": true 的场景：
@@ -44,6 +49,10 @@ SKILL_EXTRACT_PROMPT = """你是一个经验提取器。分析以下任务结果
 1. 简单任务 (≤ 3 步工具调用) 且成功 — 太 trivial
 2. 只读操作（查看、读取、搜索）且成功
 3. 所有错误都是已知错误
+4. **已有同名技能但历史成功率低于 30%** — 这个技能模式不可靠，不应继续学习
+
+## 历史使用信息说明
+{skill_usage_guide}
 
 ## 进化模式选择（evolution_mode）
 当 worth_learning=true 时，选择以下一种模式：
@@ -58,16 +67,19 @@ SKILL_EXTRACT_PROMPT = """你是一个经验提取器。分析以下任务结果
     "evolution_mode": "CAPTURED"|"FIX"|"DERIVED",
     "reason": "简短理由，用中文",
     "skill": null 或 {{
-        "name": "技能名（英文小写，hyphens连接，如 fix-pip-install）",
+        "name": "技能名（必须英文小写，hyphens连接，如 fix-pip-install）",
         "trigger": "什么场景触发（中文，一句话）",
         "steps": ["步骤1", "步骤2"],
         "error_pattern": "相关错误模式（如果有）"
     }}
 }}
+
+重要：name 字段必须使用英文小写字母、数字和连字符(-)，不能包含中文、空格或特殊字符。
+如果技能是对现有技能的修复或衍生，name 必须与已有技能名相同。
 """
 
 
-def build_digest(observation: Any, state: Any) -> dict:
+def build_digest(observation: Any, state: Any, messages: Optional[list] = None) -> dict:
     """从 Observation 和 EvolutionState 构建 LLM 输入摘要。"""
     consecutive = 0
     task_history = 0
@@ -85,6 +97,62 @@ def build_digest(observation: Any, state: Any) -> dict:
     # 检查是否有同名已有技能（通过 Observation 的 skill_name 字段）
     existing_skill = getattr(observation, 'skill_name', None) or ""
 
+    # 从对话历史提取关键上下文
+    dialogue_context = ""
+    if messages:
+        recent = messages[-12:] if len(messages) > 12 else messages
+        lines = []
+        for msg in recent:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if not content or role == "system":
+                continue
+            snippet = content[:200].replace("\n", " ")
+            lines.append(f"[{role}] {snippet}")
+        dialogue_context = "\n".join(lines[-6:]) if lines else "无"
+
+    # 从 skill_usage.jsonl 读取历史使用信息
+    skill_usage_stats = ""
+    skill_usage_guide = ""
+    _completion_log = Path(__file__).resolve().parent.parent / "logs" / "skill_usage.jsonl"
+    if _completion_log.exists():
+        try:
+            _lines = _completion_log.read_text(encoding="utf-8").strip().split("\n")
+            from collections import Counter as _Counter
+            _total = _Counter()
+            _ok = _Counter()
+            for _line in _lines[-1000:]:
+                try:
+                    _r = json.loads(_line)
+                    _sn = _r.get("skill", "")
+                    _total[_sn] += 1
+                    if _r.get("success"):
+                        _ok[_sn] += 1
+                except:
+                    pass
+            if _total:
+                _stats = []
+                for _sn, _n in _total.most_common(10):
+                    _ok_n = _ok.get(_sn, 0)
+                    _rate = f"{_ok_n*100//_n}%" if _n > 0 else "N/A"
+                    _stats.append(f"  {_sn}: 使用{_n}次, 成功{_ok_n}次({_rate})")
+                skill_usage_stats = "\n".join(_stats)
+                _guides = []
+                for _sn, _n in _total.most_common(10):
+                    _ok_n = _ok.get(_sn, 0)
+                    _r = _ok_n / _n if _n > 0 else 0
+                    if _r < 0.3 and _n >= 3:
+                        _guides.append(f"  {_sn}: 成功率{_r:.0%}({_ok_n}/{_n}) - 建议不再学习这类技能")
+                    elif _r >= 0.8 and _n >= 3:
+                        _guides.append(f"  {_sn}: 成功率{_r:.0%}({_ok_n}/{_n}) - 可靠技能，可继续迭代")
+                if _guides:
+                    skill_usage_guide = "基于历史数据的使用建议：\n" + "\n".join(_guides)
+                else:
+                    skill_usage_guide = "暂无足够使用数据（各技能使用次数不足3次）"
+        except Exception:
+            skill_usage_stats = "读取失败"
+            skill_usage_guide = "数据不可用"
+
     return {
         "task_type": getattr(observation, 'task_type', 'generic'),
         "success": getattr(observation, 'success', False),
@@ -98,6 +166,9 @@ def build_digest(observation: Any, state: Any) -> dict:
         "error_summary": "; ".join(all_errors[:3])[:300] if all_errors else "",
         "result_summary": (getattr(observation, 'result', '') or '')[:300],
         "existing_skill": existing_skill,
+        "dialogue_context": dialogue_context,
+        "skill_usage_stats": skill_usage_stats,
+        "skill_usage_guide": skill_usage_guide,
     }
 
 
@@ -114,12 +185,13 @@ class Judge:
     def __init__(self, llm_chat_fn: callable):
         self._llm_chat = llm_chat_fn
 
-    def evaluate(self, observation: Any, state_entry: Optional[dict] = None) -> dict:
+    def evaluate(self, observation: Any, state_entry: Optional[dict] = None, messages: Optional[list] = None) -> dict:
         """一次 LLM 调用：判断+提取。
 
         Args:
             observation: Observer 产出的 Observation 对象
             state_entry: EvolutionState 中该 task_type 的 entry（可选）
+            messages: 完整对话历史（可选）
 
         Returns:
             dict: {
@@ -129,8 +201,14 @@ class Judge:
                 "skill": dict | None,
             }
         """
-        digest = build_digest(observation, state_entry)
-        prompt = SKILL_EXTRACT_PROMPT.format(**digest)
+        digest = build_digest(observation, state_entry, messages=messages)
+        # 确保 digest 中不含未转义的 { 和 }，防止 str.format 崩溃
+        safe_digest = {}
+        for k, v in digest.items():
+            if isinstance(v, str):
+                v = v.replace("{", "{{").replace("}", "}}")
+            safe_digest[k] = v
+        prompt = SKILL_EXTRACT_PROMPT.format(**safe_digest)
 
         try:
             result = self._llm_chat([

@@ -76,6 +76,8 @@ class KuafuAgent:
         # 多轮对话上下文
         self._conversation: Optional[dict] = None
         self._conversation_messages: list = []
+        # 审批回调（GatewayLoop 会注入到此属性）
+        self.on_approval_request: Optional[Callable[[str, dict, str], None]] = None
         self._setup()
         # P0: 启动后台复盘线程（daemon=True，自动随主进程退出）
         if _HAS_REVIEWER:
@@ -239,7 +241,8 @@ class KuafuAgent:
     def run(self, task: str, task_type: str = "generic", mode: str = "standard",
             on_step: Optional[Callable[[str], None]] = None,
             on_phase: Optional[Callable[[str], None]] = None,
-            resume_from: Optional[str] = None) -> dict:
+            resume_from: Optional[str] = None,
+            skip_approval: bool = False) -> dict:
         """执行一次任务。
 
         支持两种模式：
@@ -304,6 +307,12 @@ class KuafuAgent:
             evolution=self.evolution,
             on_step=_on_step,
         )
+        # 审批回调：KuafuAgent 上的 on_approval_request → AgentLoop 实例
+        if getattr(self, 'on_approval_request', None):
+            loop.on_approval_request = self.on_approval_request
+        # Cron 任务跳过审批
+        if skip_approval:
+            loop.permission_enabled = False
         # 注入阶段性总结回调
         if on_phase:
             loop.on_phase = on_phase
@@ -428,6 +437,9 @@ class KuafuAgent:
             evolution=self.evolution,
             on_step=lambda msg: print(f"  {msg}", flush=True),
         )
+        # 审批回调：KuafuAgent 上的 on_approval_request → AgentLoop 实例
+        if getattr(self, 'on_approval_request', None):
+            loop.on_approval_request = self.on_approval_request
 
         # 传递历史上下文（最近的 5 轮）
         if is_followup:

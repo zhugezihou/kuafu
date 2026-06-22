@@ -442,7 +442,7 @@ class TestClassifyCommand:
     def test_safe_fallback(self):
         from core.safety import SafetyLayer, CommandLevel
         level, risk, reason = SafetyLayer.classify_command("some random command")
-        assert level == CommandLevel.SAFE
+        assert level == CommandLevel.ATTENTION
 
 
 # ===================================================================

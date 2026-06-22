@@ -272,6 +272,11 @@ class WeChatILinkChannel(MessageChannel):
         if not to_user:
             return SendResult(success=False, platform="wechat", error="chat_id 未指定")
 
+        # iLink 文本消息有长度限制，截断过长内容
+        text_bytes = text.encode("utf-8")
+        if len(text_bytes) > 7000:
+            text = text_bytes[:6997].decode("utf-8", errors="ignore") + "..."
+
         msg = {
             "to_user_id": to_user,
             "from_user_id": "",

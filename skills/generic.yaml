@@ -17,6 +17,6 @@ examples:
 - 无（保底生成）
 pitfalls:
 - 自动保底生成的技能包，请酌情使用
-usage_count: 4
+usage_count: 5
 created_at: 1779631531
 source: auto_extracted_from_L3_fallback

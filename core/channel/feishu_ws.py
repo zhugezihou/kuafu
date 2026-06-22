@@ -30,9 +30,22 @@ from core.channel.base import MessageChannel, Message, SendResult
 
 logger = logging.getLogger("kuafu.feishu_ws")
 
-# 审批按钮回调 — 外部注入
-ON_CARD_APPROVAL_CB: Optional[Callable[[str, str], None]] = None
+# 审批按钮回调 — 支持多回调注册（列表形式，防止单例覆盖丢失）
+ON_CARD_APPROVAL_CBS: list[Callable[[str, str], None]] = []
 """回调签名: (approval_id: str, action: str) -> None, action 为 'approve' 或 'reject'"""
+_CARD_CB_LOCK = threading.Lock()  # 保护 _CBS 的并发写
+
+def register_card_approval_cb(cb: Callable[[str, str], None]) -> None:
+    """注册卡片审批回调。支持多注册，避免单例覆盖导致回调丢失。"""
+    with _CARD_CB_LOCK:
+        if cb not in ON_CARD_APPROVAL_CBS:
+            ON_CARD_APPROVAL_CBS.append(cb)
+
+def unregister_card_approval_cb(cb: Callable[[str, str], None]) -> None:
+    """注销卡片审批回调。"""
+    with _CARD_CB_LOCK:
+        if cb in ON_CARD_APPROVAL_CBS:
+            ON_CARD_APPROVAL_CBS.remove(cb)
 
 
 class FeishuWebSocketChannel(MessageChannel):
@@ -58,6 +71,9 @@ class FeishuWebSocketChannel(MessageChannel):
         self._card_approval_state: dict[str, threading.Event] = {}
         self._seen_msg_ids: deque[str] = deque(maxlen=500)  # 已处理消息ID缓存，防止重连后重放
         self._ws_start_time: float = time.time()  # WS 连接时间，用于过滤连接前的历史消息
+        # token 缓存
+        self._cached_token: str = ""
+        self._token_expires_at: float = 0
         """approval_id → Event，用于解阻塞等待审批的线程"""
 
     # ── 消息发送 ──────────────────────────────────────────────
@@ -218,6 +234,19 @@ class FeishuWebSocketChannel(MessageChannel):
 
     def _send_api(self, chat_id: str, msg_type: str, content: dict | str) -> SendResult:
         """飞书 API 消息发送底层方法。"""
+
+        # text 类型消息有 8000 字节限制，截断过长内容
+        if msg_type == "text":
+            if isinstance(content, dict):
+                text_val = content.get("text", "")
+                # 截断到 7500 字节（留 500 字节给 JSON 外壳）
+                text_bytes = text_val.encode("utf-8")
+                if len(text_bytes) > 7500:
+                    text_val = text_bytes[:7497].decode("utf-8", errors="ignore") + "..."
+                    content["text"] = text_val
+            elif isinstance(content, str) and len(content.encode("utf-8")) > 7500:
+                content = content.encode("utf-8")[:7497].decode("utf-8", errors="ignore") + "..."
+
         token = self._get_tenant_token()
         if not token:
             return SendResult(success=False, platform="feishu", error="token 获取失败")
@@ -252,17 +281,62 @@ class FeishuWebSocketChannel(MessageChannel):
             with urlopen(req, timeout=15) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 ok = data.get("code") == 0
+                msg_id = ""
+                if ok:
+                    msg_data = data.get("data", {})
+                    if isinstance(msg_data, dict):
+                        msg_id = msg_data.get("message_id", "")
                 return SendResult(
                     success=ok,
                     platform="feishu",
                     error="" if ok else str(data),
+                    msg_id=msg_id,
                 )
         except Exception as e:
             return SendResult(success=False, platform="feishu", error=str(e))
 
-    # ── Token 管理 ────────────────────────────────────────────
+    # ── 消息表情回复（Reaction） ──────────────────────────────
+
+    def add_reaction(self, message_id: str, emoji: str = "EYES") -> bool:
+        """给指定消息添加表情回复。
+        
+        Args:
+            message_id: 飞书消息 ID
+            emoji: emoji 类型，如 EYES / THUMBS_UP / THINKING / SMILE 等（飞书 emoji_type）
+        """
+        try:
+            token = self._get_tenant_token()
+            if not token:
+                return False
+            body = json.dumps({"reaction_type": {"emoji_type": emoji}}).encode("utf-8")
+            from urllib.request import Request, urlopen
+            req = Request(
+                f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/reactions",
+                data=body,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            with urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode())
+                code = data.get("code")
+                if code != 0:
+                    print(f"[Feishu] reaction 失败: code={code}, msg={data.get('msg', '')}")
+                return code == 0
+        except Exception as e:
+            print(f"[Feishu] reaction 异常: {e}")
+            return False
+
+    # ── Token 管理（带缓存，飞书 tenant_access_token 有效期 2 小时） ──
 
     def _get_tenant_token(self) -> str:
+        # 缓存命中且未过期（提前 5 分钟刷新）
+        now = time.time()
+        if self._cached_token and now < self._token_expires_at - 300:
+            return self._cached_token
+
         from urllib.request import Request, urlopen
         body = json.dumps({
             "app_id": self.app_id,
@@ -277,9 +351,15 @@ class FeishuWebSocketChannel(MessageChannel):
         try:
             with urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-                return data.get("tenant_access_token", "")
+                token = data.get("tenant_access_token", "")
+                expire = data.get("expire", 7200)  # 默认 2 小时
+                if token:
+                    self._cached_token = token
+                    self._token_expires_at = now + expire
+                return token
         except Exception:
-            return ""
+            # token 获取失败时，返回缓存的旧 token（可能还能用几分钟）
+            return self._cached_token
 
     # ── 消息接收 ──────────────────────────────────────────────
 
@@ -515,17 +595,16 @@ class FeishuWebSocketChannel(MessageChannel):
         # 将卡片按钮回调写入事件
         result_holder: list[Optional[str]] = [None]
         import core.channel.feishu_ws as _feishu_mod
-        original_cb = _feishu_mod.ON_CARD_APPROVAL_CB
 
         def _cb(aid: str, action: str):
             if aid == approval_id:
                 result_holder[0] = action
                 ev.set()
 
-        _feishu_mod.ON_CARD_APPROVAL_CB = _cb
+        _feishu_mod.register_card_approval_cb(_cb)
 
         ev.wait(timeout=timeout)
-        _feishu_mod.ON_CARD_APPROVAL_CB = original_cb
+        _feishu_mod.unregister_card_approval_cb(_cb)
         self._card_approval_state.pop(approval_id, None)
         return result_holder[0]
 
@@ -704,9 +783,14 @@ class FeishuWebSocketChannel(MessageChannel):
                                 except Exception as e2:
                                     print(f"[FeishuWS] 卡片更新异常: {e2}")
 
-                        cb = ON_CARD_APPROVAL_CB
-                        if cb:
-                            cb(str(approval_id), str(action_type))
+                        # 快照遍历回调列表（防止并发修改导致 list changed during iteration）
+                        with _CARD_CB_LOCK:
+                            _snapshot = list(ON_CARD_APPROVAL_CBS)
+                        for _cb in _snapshot:
+                            try:
+                                _cb(str(approval_id), str(action_type))
+                            except Exception:
+                                pass
                     except Exception as e:
                         import traceback
                         print(f"[FeishuWS] 处理卡片回调异常: {e}")
@@ -728,6 +812,8 @@ class FeishuWebSocketChannel(MessageChannel):
 
                 print(f"[FeishuWS] WebSocket 已连接 (重连 #{reconnect_count})", flush=True)
                 reconnect_count = 0
+                # 更新 WS 连接时间，用于过滤重连后飞书重放的历史消息
+                self._ws_start_time = time.time()
                 cli.start()  # 阻塞直到断开
 
             except Exception as e:

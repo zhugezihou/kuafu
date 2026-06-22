@@ -28,7 +28,7 @@ from core.context_compress import ContextCompressor, LLMSummarizer, ToolResultSt
 from core.budget_allocator import BudgetAllocator, BudgetSnapshot, BudgetPolicy
 from core.prompt_template import PromptManager, PromptCache, Section, build_reminders
 from core.safety import SafetyLayer
-from core.skill_resolver import discover_skills, match_skills, inject_skills_to_prompt, increment_usage, record_usage
+from core.skill_resolver import discover_skills, match_skills, increment_usage, record_usage
 from core.whiteboard import Whiteboard, Decomposer, Step, WhiteboardExecutor
 from core.mcp_bridge import MCPBridge
 from core.approval import pretooluse_check, DenyRules, AutoMode, ApprovalManager
@@ -196,8 +196,9 @@ class AgentLoop:
         self._pretooluse_cache: dict = {}
 
         # ── 审批通知回调 ──
-        self.on_approval_request: Optional[Callable[[str, dict, str], None]] = None
-        # 尝试从全局审批回调同步（GatewayLoop 可能已注入）
+        if not hasattr(self, 'on_approval_request') or self.on_approval_request is None:
+            self.on_approval_request = None
+            # 尝试从全局审批回调同步（GatewayLoop 可能已注入）
         try:
             from core.approval import ON_APPROVAL_REQUEST_CB
             if ON_APPROVAL_REQUEST_CB and not self.on_approval_request:
@@ -295,11 +296,65 @@ class AgentLoop:
 
     # ── 专家执行（在父 Agent 内完成，不创建子 Agent） ──
 
+    @staticmethod
+    def _parse_expert_args(raw_args) -> dict:
+        """解析专家工具调用的 arguments（兼容 JSON 字符串和 dict）。"""
+        import json as _j
+        if isinstance(raw_args, str):
+            try:
+                return _j.loads(raw_args)
+            except (_j.JSONDecodeError, TypeError):
+                return {}
+        elif isinstance(raw_args, dict):
+            return raw_args
+        return {}
+
+    def _build_expert_tools(self, profile) -> Optional[list]:
+        """从专家配置的工具白名单构造 tools schema 列表。
+        
+        从 core + injected + compact + deferred 四个池中搜索工具 schema，
+        确保 expert 使用的无论是 core/deferred/compact 工具都能拿到完整描述。
+        首次调用 compact 或 deferred 工具时，自动提升其 schema 以便后续 LLM 可见。
+        """
+        if not profile.tools:
+            return None
+        all_schemas = list(self.tools.get_schemas())  # core + injected
+        # 补充 compact 工具（如 read_file、write_file 等）
+        try:
+            if hasattr(self.tools, '_compact'):
+                for entry in self.tools._compact:
+                    if entry["function"]["name"] in profile.tools:
+                        all_schemas.append(entry)
+        except Exception:
+            pass
+        # 补充 deferred 工具（如 web_search、tavily_search 等）
+        try:
+            if hasattr(self.tools, '_deferred'):
+                for entry in self.tools._deferred:
+                    if entry["schema"]["function"]["name"] in profile.tools:
+                        all_schemas.append(entry["schema"])
+        except Exception:
+            pass
+        expert_schemas = [s for s in all_schemas
+                          if s["function"]["name"] in profile.tools]
+        return expert_schemas or None
+
+    def _exec_expert_tool_calls(self, resp: dict) -> str:
+        """执行专家 LLM 返回的工具调用，拼接工具结果。"""
+        tool_outputs = []
+        for tc in resp.get("tool_calls", []):
+            fn_name = tc["function"]["name"]
+            args_dict = self._parse_expert_args(tc["function"]["arguments"])
+            tool_result = self._execute_via_orchestrator(fn_name, args_dict)
+            tool_outputs.append(f"[{fn_name}] {tool_result.output[:500]}")
+        return "\n\n".join(tool_outputs)
+
     def _handle_invoke_expert(self, args: dict) -> dict:
         """执行单个专家任务。
 
         直接在当前 Agent 的 LLM 上做独立推理。
         专家 identity + task 作为一次 chat 调用，不污染主对话上下文。
+        如果专家配置了 tools，会传给 LLM 以便执行实际操作。
         """
         from core.expert_registry import get_registry
 
@@ -318,28 +373,72 @@ class AgentLoop:
                 "output": f"专家 '{expert_name}' 不存在。可用专家: {available}",
             }
 
-        # 一次独立 LLM 调用：identity 作为 system prompt，task 作为用户输入
         try:
+            memory_label = getattr(profile, 'memory_label', None)
+
+            # ── 专家记忆注入 ──
+            memory_context = ""
+            if memory_label:
+                try:
+                    # 1. 专业领域知识 — 搜索 记忆标签为 memory_label 的内容
+                    knowledge = self.memory.search(query=memory_label, limit=5)
+                    # 2. 用户历史任务 — 搜索含 memory_label:task 标签的历史
+                    task_tag = f"{memory_label}:task"
+                    task_history = self.memory.search(query=task_tag, limit=5)
+                    parts = []
+                    if knowledge:
+                        lines = "\n".join(f"  - {m.get('content','')[:300]}" for m in knowledge)
+                        parts.append(f"[{memory_label} 专业知识]\n{lines}")
+                    if task_history:
+                        lines = "\n".join(f"  - {m.get('content','')[:300]}" for m in task_history)
+                        parts.append(f"[历史任务记录]\n{lines}")
+                    if parts:
+                        memory_context = "\n\n".join(parts)
+                except Exception:
+                    pass
+
+            system_prompt = profile.identity
+            if memory_context:
+                system_prompt += f"\n\n{memory_context}"
+
             messages = [
-                {"role": "system", "content": profile.identity},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": task},
             ]
-            resp = self.llm.chat(messages)
+            tools = self._build_expert_tools(profile)
+            resp = self.llm.chat(messages, tools=tools)
+
             content = ""
             if isinstance(resp, dict):
-                content = resp.get("content", "")
+                content = resp.get("content", "") or ""
+                tool_text = self._exec_expert_tool_calls(resp)
+                if tool_text:
+                    content = content + "\n\n" + tool_text if content else tool_text
             elif isinstance(resp, str):
                 content = resp
-            return {
-                "success": True,
-                "output": content,
-                "expert": expert_name,
-            }
+
+            # ── 专家记忆持久化 ──
+            if memory_label and content:
+                try:
+                    import time as _t
+                    from datetime import datetime as _dt
+                    ts = _dt.now().strftime('%Y%m%d_%H%M%S')
+                    key = f"{memory_label}:task:{ts}"
+                    task_tag = f"{memory_label}:task"
+                    self.memory.store(
+                        content=f"任务: {task[:200]}\n\n结果:\n{content[:500]}",
+                        source=key,
+                        tags=[memory_label, task_tag],
+                    )
+                except Exception:
+                    pass
+
+            return {"success": True, "output": content, "expert": expert_name}
         except Exception as e:
             return {"success": False, "output": f"专家执行异常: {e}"}
 
     def _handle_invoke_experts(self, args: dict) -> dict:
-        """并行执行多个专家任务。"""
+        """并行执行多个专家任务（tools 由各专家 profile 独立配置）。"""
         from core.expert_registry import get_registry
 
         expert_names = args.get("experts", [])
@@ -361,7 +460,7 @@ class AgentLoop:
                 if not profile:
                     results[name] = {"success": False, "output": f"专家 '{name}' 不存在"}
                     continue
-                fut = executor.submit(self._call_expert_once, profile.identity, task)
+                fut = executor.submit(self._call_expert_once, profile, task)
                 future_map[fut] = name
 
             for fut in concurrent.futures.as_completed(future_map):
@@ -374,26 +473,72 @@ class AgentLoop:
         return {
             "success": True,
             "output": "\n\n".join(
-                f"【{name}】\n{r.get('output', r.get('result', ''))}"
+                f"【{name}】\n{r.get('output', r.get('result', ''))[:1000]}"
                 for name, r in results.items()
                 if r.get("success")
             ),
             "results": results,
         }
 
-    def _call_expert_once(self, identity: str, task: str) -> dict:
-        """一次独立 LLM 推理（供 ThreadPoolExecutor 调用）。"""
+    def _call_expert_once(self, profile, task: str) -> dict:
+        """一次独立 LLM 推理（供 ThreadPoolExecutor 调用），支持工具。"""
         try:
+            memory_label = getattr(profile, 'memory_label', None)
+
+            # ── 专家记忆注入 ──
+            memory_context = ""
+            if memory_label:
+                try:
+                    knowledge = self.memory.search(query=memory_label, limit=5)
+                    task_tag = f"{memory_label}:task"
+                    task_history = self.memory.search(query=task_tag, limit=5)
+                    parts = []
+                    if knowledge:
+                        lines = "\n".join(f"  - {m.get('content','')[:300]}" for m in knowledge)
+                        parts.append(f"[{memory_label} 专业知识]\n{lines}")
+                    if task_history:
+                        lines = "\n".join(f"  - {m.get('content','')[:300]}" for m in task_history)
+                        parts.append(f"[历史任务记录]\n{lines}")
+                    if parts:
+                        memory_context = "\n\n".join(parts)
+                except Exception:
+                    pass
+
+            system_prompt = profile.identity
+            if memory_context:
+                system_prompt += f"\n\n{memory_context}"
+
             messages = [
-                {"role": "system", "content": identity},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": task},
             ]
-            resp = self.llm.chat(messages)
+            tools = self._build_expert_tools(profile)
+            resp = self.llm.chat(messages, tools=tools)
+
             content = ""
             if isinstance(resp, dict):
-                content = resp.get("content", "")
+                content = resp.get("content", "") or ""
+                tool_text = self._exec_expert_tool_calls(resp)
+                if tool_text:
+                    content = content + "\n\n" + tool_text if content else tool_text
             elif isinstance(resp, str):
                 content = resp
+
+            # ── 专家记忆持久化 ──
+            if memory_label and content:
+                try:
+                    from datetime import datetime as _dt
+                    ts = _dt.now().strftime('%Y%m%d_%H%M%S')
+                    key = f"{memory_label}:task:{ts}"
+                    task_tag = f"{memory_label}:task"
+                    self.memory.store(
+                        content=f"任务: {task[:200]}\n\n结果:\n{content[:500]}",
+                        source=key,
+                        tags=[memory_label, task_tag],
+                    )
+                except Exception:
+                    pass
+
             return {"success": True, "output": content}
         except Exception as e:
             return {"success": False, "output": str(e)}
@@ -1464,6 +1609,15 @@ class AgentLoop:
                     # read_tool_result 本身就是要读数据，不再次 microcompact（防死循环）
                     if fn_name == "read_tool_result":  # pragma: no cover
                         should_microcompact = False  # pragma: no cover
+                    # invoke_expert/expert 的返回是给用户的最终输出，不压缩
+                    if fn_name in ("invoke_expert", "invoke_experts"):
+                        should_microcompact = False
+                    # 大上下文模型（≥100K tokens）提高阈值，只压缩超大结果
+                    if should_microcompact:
+                        ctx = self.llm.get_context_window()
+                        if ctx >= 100000:
+                            # 只压缩超过 10000 chars 的结果
+                            should_microcompact = len(safe_output) > 10000
 
                     if should_microcompact:
                         meta = self.tool_result_store.store(fn_name, safe_output)

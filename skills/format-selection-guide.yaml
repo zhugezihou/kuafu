@@ -1,0 +1,20 @@
+name: format-selection-guide
+description: 从file_operation类任务中自动提取的技能
+task_type: file_operation
+keywords:
+- file_operation
+steps:
+- YAML
+- Markdown
+- 格式对比
+- 配置文件
+- 数据格式
+- 分析用户具体使用场景及核心需求
+- 评估结构化数据定义与层级清晰度
+- 检查编程语言解析库的成熟度
+- 确认机器处理效率与人工阅读体验
+- 对比 YAML 在配置中的优势与 Markdown 的文档优势
+pitfalls: null
+usage_count: 0
+created_at: 1779714417
+source: kuafu_impromptu_evolution

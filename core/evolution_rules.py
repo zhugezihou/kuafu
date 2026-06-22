@@ -303,7 +303,31 @@ class EvolutionRuleManager:
             f"是否成功: {'否' if not result.get('success') else '是'}\n"
             f"错误: {error_text}\n"
             f"交互轮次: {turns}\n"
-            f"结果摘要: {result_snippet}\n\n"
+            f"结果摘要: {result_snippet}\n\n")
+
+        # 检查是否有同名 skill 存在——如果有，规则应作为 skill 的补充
+        existing_skill_info = ""
+        try:
+            from core.evolution_state import EvolutionState
+            evo_state = EvolutionState()
+            all_skills = evo_state.get_all_skills()
+            # 从任务文本中提取可能对应 skill 的关键词
+            task_lower = task.lower()
+            matching_skills = []
+            for s_name in all_skills:
+                s_lower = s_name.lower().replace("-", " ")
+                if any(w in task_lower for w in s_lower.split()):
+                    matching_skills.append(s_name)
+            if matching_skills:
+                existing_skill_info = (
+                    f"\n已有相关技能: {', '.join(matching_skills[:3])}\n"
+                    "如果该规则是对已有技能的补充或修正，请将 category 设为 'fix'。\n"
+                    "如果与已有技能无关或是全新的经验，保持原有 category。\n"
+                )
+        except Exception:
+            pass
+
+        prompt += existing_skill_info + (
             "## 规则输出格式\n"
             "如果发现了可以改进的行为模式，输出一条进化规则。\n"
             "如果没有发现可改进之处，输出 NONE。\n\n"

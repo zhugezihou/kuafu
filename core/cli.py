@@ -852,30 +852,15 @@ def run_skill(args: argparse.Namespace, agent: Any = None) -> int:
 
     # ── sandbox ──
     elif cmd == "sandbox":
-        name = getattr(args, "name", "") or ""
+        name = getattr(args, 'name', '') or ''
         if not name:
-            print("用法: kuafu skill sandbox <skill_name>")
+            print('用法: kuafu skill sandbox <skill_name>  (沙箱功能已移除)')
             return 1
 
-        from core.skill_sandbox import get_sandbox_config, sandbox_for_category
-
-        result = get_sandbox_config(name)
-        if not result:
-            print(f"❌ 未找到技能: {name}")
-            return 1
-
-        print(f"🛡️  技能沙箱: {name}")
-        print(f"   等级: {result['sandbox_level']}")
-        print()
-        print(result["prompt_rules"])
-
-        if result.get("warnings"):
-            print("   ⚠️  警告:")
-            for w in result["warnings"]:
-                print(f"     • {w}")
+        print('\U0001f6e1\ufe0f  技能沙箱功能已移除，安全策略由 SafetyLayer + PolicyManager 统一管理。')
         return 0
 
-    # ── edit ──
+    # ---- edit ----
     elif cmd == "edit":
         name = getattr(args, "name", "") or ""
         if not name:

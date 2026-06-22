@@ -15,7 +15,7 @@
 | **P0** | 4 | Hook→Approval 贯通 | 改 3 个文件 | — | ✅ |
 | **P1** | 5 | Rollout 事件日志 | `core/rollout_log.py` | 19 | ✅ |
 | **P1** | 6 | ExecPolicy 规则文件+降级 | `core/exec_policy.py` | 18 | ✅ |
-| **P1** | 7 | Skill 隐式触发+Metadata | `core/skill_discovery.py` | 10 | ✅ |
+| **P1** | 7 | Skill 隐式触发+Metadata | ~~`core/skill_discovery.py`~~（已删除） | &nbsp; | ❌ |
 | **P2** | 8 | Config 分层堆叠 | `core/config.py` | 9 | ✅ |
 | **P2** | 9 | AGENTS.md 层次发现 | `core/agents_md.py` | 8 | ✅ |
 | **P2** | 10 | 两阶段记忆提取 | `core/memory/two_phase_extract.py` | 7 | ✅ |

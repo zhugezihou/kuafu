@@ -1,0 +1,20 @@
+name: story-framework-design
+description: 从coding类任务中自动提取的技能
+task_type: coding
+keywords:
+- coding
+steps:
+- 构思故事
+- 写小说
+- 情节大纲
+- 角色设定
+- 润色编辑
+- 确认用户偏好的小说类型及具体题材方向。
+- 协助生成核心创意、角色设定及情节大纲。
+- 撰写具体章节内容，包含对话描写与场景刻画。
+- 对现有文本进行优化，改进文笔结构与逻辑。
+- 提供写作技巧建议，辅助情节发展与人物塑造。
+pitfalls: null
+usage_count: 2
+created_at: 1779715166
+source: kuafu_impromptu_evolution

@@ -110,12 +110,13 @@ class EvolutionEngine:
 
     # ── 新管道入口（供 agent_loop 调用） ──
 
-    def run_pipeline(self, observation: Observation, task_type: str) -> dict:
+    def run_pipeline(self, observation: Observation, task_type: str, messages: Optional[list] = None) -> dict:
         """三阶段管道。
 
         Args:
             observation: Observer 产出的 Observation 对象
             task_type: 任务类型（用于更新 EvolutionState）
+            messages: 完整对话历史（可选，传给 Judge 做更准确的判断）
 
         Returns:
             dict: {
@@ -132,7 +133,13 @@ class EvolutionEngine:
             "reason": None,
         }
 
-        # Phase 1: 更新 EvolutionState（零 LLM 成本）
+        # Phase 1: 冷却检查 + 更新 EvolutionState（零 LLM 成本）
+        # 注意：冷却检查必须在 record_result 之前，否则 last_seen 被更新后永远跳不过冷却
+        state_entry = self._get_state_entry(task_type)
+        now = time.time()
+        if state_entry and (now - state_entry.get("last_seen", 0)) < self._cooldown:
+            return result
+
         self.evolution_state.record_result(task_type, observation.success)
         if observation.errors:
             for err in observation.errors:
@@ -144,15 +151,8 @@ class EvolutionEngine:
         if not observation.has_value():
             return result
 
-        # 冷却检查：同类型任务 30 秒内不重复触发
-        state_entry = self._get_state_entry(task_type)
-        now = time.time()
-        if state_entry and (now - state_entry.get("last_seen", 0)) < self._cooldown:
-            return result
-
         # Phase 3: Judge — 单次 LLM 调用
-        state_entry = self._get_state_entry(task_type)
-        decision = self.judge.evaluate(observation, state_entry)
+        decision = self.judge.evaluate(observation, state_entry, messages=messages)
 
         if not decision["worth_learning"]:
             result["reason"] = decision.get("reason", "不值得学习")
@@ -201,6 +201,8 @@ class EvolutionEngine:
                 )
                 result["fitness"] = report["fitness"]
                 result["fitness_report"] = report["summary"]
+                # 首次适应度标记为 provisional（数据不足）
+                result["fitness_provisional"] = True
                 # 记录 fitness 到 evolution_state 的 skill 版本记录中
                 self.evolution_state.record_skill_quality(
                     skill["name"], report["fitness"]
@@ -367,6 +369,28 @@ class EvolutionEngine:
             summary=skill.get("trigger", ""),
             parent=parent_version,
         )
+
+        # 写入 evolution_skill_content 快照（支持回滚恢复）
+        try:
+            import hashlib
+            raw_content = filepath.read_text(encoding="utf-8") if filepath.exists() else content
+            content_hash = hashlib.sha256(raw_content.encode()).hexdigest()
+            self.evolution_state._db._execute(
+                """INSERT INTO evolution_skill_content
+                   (skill_name, version, content, content_hash, file_path, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (name,
+                 self.evolution_state._db._execute(
+                     "SELECT COALESCE(MAX(version), 1) FROM evolution_skills WHERE name = ?",
+                     (name,)
+                 ).fetchone()[0],
+                 raw_content, content_hash,
+                 str(filepath.relative_to(self.root_dir)),
+                 time.time()),
+            )
+            self.evolution_state._db.conn.commit()
+        except Exception as e:
+            logger.debug(f"skill 内容快照写入跳过: {e}")
 
         # 错误关联
         if error_pattern:

@@ -1,0 +1,168 @@
+# 夸父抖音自动发布工作流
+# ═══════════════════════════════════════════════
+# 功能：定时检查视频素材目录，自动发布未发布的视频到抖音
+# 触发方式：cron 定时 + 手动触发
+
+name: douyin-auto-publish
+description: 抖音视频自动发布工作流 - 定时检查素材目录并发布未发布视频
+trigger: "0 10 * * *"
+trigger_type: cron
+
+# ============================================================
+# 输入参数
+# ============================================================
+inputs:
+  - label: 视频素材目录
+    type: text
+    default: douyin/templates
+    description: 存放待发布视频的目录
+
+  - label: 发布模式
+    type: select
+    default: once
+    options:
+      - value: once
+        label: 单次发布（每次只发一个）
+      - value: all
+        label: 全部发布（逐个发布所有待发视频）
+    description: 每次触发时发布一个还是全部
+
+  - label: 标题模板
+    type: text
+    default: "{name}"
+    description: "标题模板，{name}=文件名 {date}=日期"
+
+  - label: 标签
+    type: text
+    default: "日常,生活"
+    description: 逗号分隔的标签
+
+# ============================================================
+# 工作流节点
+# ============================================================
+nodes:
+  # ── 节点 1: 检查待发布视频 ──
+  - id: check_videos
+    type: terminal
+    name: 检查待发布视频
+    description: 扫描素材目录，列出所有未发布的视频
+    command: |
+      python3 -c "
+      import sys, json
+      sys.path.insert(0, '.')
+      from douyin.content_manager import ContentManager
+      mgr = ContentManager()
+      videos = mgr.get_unpublished_videos()
+      if videos:
+          print(f'📹 发现 {len(videos)} 个待发布视频:')
+          for i, v in enumerate(videos, 1):
+              print(f'  [{i}] {v.name}')
+          # 保存到临时文件供后续节点使用
+          import json
+          with open('/tmp/douyin_pending.json', 'w') as f:
+              json.dump([str(v) for v in videos], f)
+      else:
+          print('📭 没有待发布的视频')
+          import json
+          with open('/tmp/douyin_pending.json', 'w') as f:
+              json.dump([], f)
+      "
+
+  # ── 节点 2: 发布视频 ──
+  - id: publish
+    type: terminal
+    name: 发布视频到抖音
+    description: 使用 Playwright 模拟浏览器操作，登录抖音创作者平台并发布视频
+    depends_on: [check_videos]
+    command: |
+      python3 -c "
+      import sys, json
+      sys.path.insert(0, '.')
+      
+      # 读取待发布列表
+      with open('/tmp/douyin_pending.json') as f:
+          pending = json.load(f)
+      
+      if not pending:
+          print('📭 没有视频需要发布')
+          exit(0)
+      
+      mode = '{{input.publish_mode}}'
+      video_path = pending[0]
+      
+      print(f'📹 发布视频: {video_path}')
+      
+      from douyin.publisher import DouyinPublisher
+      publisher = DouyinPublisher()
+      
+      try:
+          publisher.start_browser()
+          publisher.ensure_logged_in()
+          
+          ok = publisher.publish_video(
+              video_path,
+              title='{{input.title_template}}'.replace('{name}', __import__('pathlib').Path(video_path).stem),
+              tags='{{input.tags}}'.split(','),
+          )
+          
+          if ok:
+              print('✅ 发布成功')
+          else:
+              print('❌ 发布失败')
+              exit(1)
+      except Exception as e:
+          print(f'❌ 发布异常: {e}')
+          exit(1)
+      finally:
+          publisher.close_browser()
+      "
+    retry_count: 1
+    retry_delay: 30
+
+  # ── 节点 3: 记录发布结果 ──
+  - id: record_result
+    type: terminal
+    name: 记录发布结果
+    description: 将发布结果记录到日志文件
+    depends_on: [publish]
+    command: |
+      python3 -c "
+      import sys, json
+      from datetime import datetime
+      sys.path.insert(0, '.')
+      from douyin.notifier import PublishNotifier
+      
+      notifier = PublishNotifier()
+      notifier.notify({
+          'success': True,
+          'message': '工作流自动发布完成',
+          'video': '{{nodes.check_videos.output}}',
+      })
+      print('📝 已记录发布日志')
+      "
+
+  # ── 节点 4: 输出状态汇总 ──
+  - id: summary
+    type: terminal
+    name: 发布状态汇总
+    description: 输出当前发布状态统计
+    depends_on: [record_result]
+    command: |
+      python3 -c "
+      import sys
+      sys.path.insert(0, '.')
+      from douyin.content_manager import ContentManager
+      
+      mgr = ContentManager()
+      stats = mgr.get_publish_stats()
+      
+      print()
+      print('=' * 40)
+      print('📊 抖音发布状态')
+      print('=' * 40)
+      print(f'  视频总数:    {stats[\"total\"]}')
+      print(f'  已发布:      {stats[\"published\"]}')
+      print(f'  待发布:      {stats[\"unpublished\"]}')
+      print(f'  素材目录:    {stats[\"source_dir\"]}')
+      print('=' * 40)
+      "

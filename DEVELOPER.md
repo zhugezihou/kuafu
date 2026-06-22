@@ -83,7 +83,6 @@ kuafu/
 │   ├── skill_publisher.py   # 技能发布
 │   ├── skill_repo.py        # 技能仓库
 │   ├── skill_resolver.py    # 技能解析
-│   ├── skill_sandbox.py     # 技能沙箱
 │   ├── subagent.py          # 子 Agent
 │   ├── tool_registry.py     # 工具注册
 │   ├── webhook_server.py    # WebHook

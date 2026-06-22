@@ -595,12 +595,12 @@ def test_safety_classify():
     print(f"    ✅ test_safety_classify")
 
 
-@test("Safety: classify_command 兜底 SAFE")
+@test("Safety: classify_command 兜底 ATTENTION")
 def test_safety_classify_fallback():
     from core.safety import SafetyLayer, CommandLevel
     # 不在任何规则中的命令
     level, _, _ = SafetyLayer.classify_command("custom_tool --flag value")
-    assert level == CommandLevel.SAFE
+    assert level == CommandLevel.ATTENTION
     print(f"    ✅ test_safety_classify_fallback")
 
 

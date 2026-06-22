@@ -25,4 +25,4 @@ examples:
 - 使用 Playwright 打开网页并操作元素
 - 截取网页截图并保存
 - 录制自动化测试过程
-usage_count: 10
+usage_count: 12

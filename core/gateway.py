@@ -275,7 +275,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
         scheduler = getattr(self.agent, '_cron_scheduler', None)
         if not scheduler:
             scheduler = CronScheduler(
-                on_task_run=lambda task: self.agent.run(task.task_text)["result"]
+                on_task_run=lambda task: self.agent.run(task.task_text, skip_approval=True)["result"]
             )
             self.agent._cron_scheduler = scheduler
 
@@ -285,6 +285,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             task_text=body.get("task", ""),
             enabled=True,
             output_mode=body.get("output_mode", "file"),
+            source_channel=body.get("source_channel", ""),
         )
         scheduler.add_task(task)
         if not scheduler._running:
@@ -555,6 +556,8 @@ class GatewayServer:
         self._thread: Optional[threading.Thread] = None
         self._running = False
         self._shutdown_event = threading.Event()
+        self._feishu_bot: Optional[Any] = None
+        self._wechat_bot: Optional[Any] = None
 
         # 通道管理器
         self.channels: Any = None
@@ -633,6 +636,19 @@ class GatewayServer:
             if mgr.list():
                 self.channels = mgr
                 self._gateway_loop = GatewayLoop(self.agent, mgr)
+                # 从 ChannelManager 获取 Bot 实例注入 cron
+                for ch in mgr.list():
+                    ch_name = getattr(ch, 'name', '') or ch.__class__.__name__
+                    if 'feishu' in ch_name.lower() or '飞书' in ch_name:
+                        if hasattr(ch, 'send_text'):
+                            self._feishu_bot = ch
+                    if 'wechat' in ch_name.lower() or '微信' in ch_name or 'ilink' in ch_name.lower():
+                        if hasattr(ch, 'send_text'):
+                            self._wechat_bot = ch
+                if self._feishu_bot:
+                    print("[Gateway] 📱 飞书 Bot 已注入")
+                if self._wechat_bot:
+                    print("[Gateway] 💬 微信 Bot 已注入")
             else:
                 print("[Gateway] 未配置任何消息通道（仅 HTTP API）")
 
@@ -659,9 +675,14 @@ class GatewayServer:
 
             # 创建调度器，加载 schedule.yaml 中的任务
             scheduler = CronScheduler(
-                on_task_run=lambda task: self.agent.run(task.task_text)["result"],
+                on_task_run=lambda task: self.agent.run(task.task_text, skip_approval=True)["result"],
             )
             self.agent._cron_scheduler = scheduler
+            # 注入通道 Bot
+            if hasattr(self, '_feishu_bot') and self._feishu_bot:
+                scheduler.set_feishu_bot(self._feishu_bot)
+            if hasattr(self, '_wechat_bot') and self._wechat_bot:
+                scheduler.set_wechat_bot(self._wechat_bot)
             if scheduler.get_tasks():
                 scheduler.start()
                 print(f"[Gateway] Cron 调度器已启动，{len(scheduler.get_tasks())} 个任务")
@@ -669,6 +690,18 @@ class GatewayServer:
                 print("[Gateway] schedule.yaml 中无有效任务")
         except Exception as e:
             print(f"[Gateway] Cron 调度器启动失败: {e}")
+
+    def _start_workflow_editor(self):
+        """后台启动工作流编辑器 Web 服务。"""
+        try:
+            from workflow_v2_web.server import main as wf_server_main
+            import threading
+            t = threading.Thread(target=wf_server_main, daemon=True,
+                                 name="workflow-editor")
+            t.start()
+            print("[Gateway] 🏗️ 工作流编辑器启动 (http://localhost:8899)")
+        except Exception as e:
+            print(f"[Gateway] 工作流编辑器启动失败: {e}")
 
     # ── 通道管理 API ──
 
@@ -688,6 +721,9 @@ class GatewayServer:
 
             # 自动加载 cron/schedule.yaml 并启动调度器
             self._auto_start_cron()
+
+            # 启动工作流编辑器 API（后台线程）
+            self._start_workflow_editor()
 
             # 设置 Handler 的类变量
             GatewayHandler.agent = self.agent

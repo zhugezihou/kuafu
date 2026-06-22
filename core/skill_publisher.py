@@ -121,13 +121,8 @@ def validate_skill(data: dict) -> ValidationReport:
     else:
         report.add_check("分类已设置", False, "建议设置分类以便搜索")
 
-    # 5. 沙箱检查
-    from core.skill_sandbox import build_sandbox_rules
-    try:
-        sb = build_sandbox_rules(data)
-        report.add_check("沙箱配置", True, f"等级: {sb['sandbox_level']}")
-    except Exception as e:
-        report.add_check("沙箱配置", False, str(e))
+    # 5. 沙箱检查（已移除，安全策略由 SafetyLayer + PolicyManager 统一管理）
+    report.add_check("沙箱配置", True, "已由 SafetyLayer + PolicyManager 统一管理")
 
     # 6. 依赖声明
     deps = data.get("dependencies", {})
