@@ -20,6 +20,7 @@ import time
 import threading
 import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
 from pathlib import Path
 from typing import Any, Optional, Callable
 
@@ -785,7 +786,12 @@ class GatewayServer:
             GatewayHandler.start_time = time.time()
             GatewayHandler.gateway_server = self
 
-            self._server = HTTPServer((self.host, self.port), GatewayHandler)
+            # 用 ThreadingMixIn 实现并发处理，防止长任务阻塞其他 API
+            class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+                allow_reuse_address = True
+                daemon_threads = True
+
+            self._server = ThreadedHTTPServer((self.host, self.port), GatewayHandler)
             self._server.timeout = 1.0  # 1秒超时，便于 shutdown 检查
             self._running = True
 

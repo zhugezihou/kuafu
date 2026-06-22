@@ -198,13 +198,6 @@ class AgentLoop:
         # ── 审批通知回调 ──
         if not hasattr(self, 'on_approval_request') or self.on_approval_request is None:
             self.on_approval_request = None
-            # 尝试从全局审批回调同步（GatewayLoop 可能已注入）
-        try:
-            from core.approval import ON_APPROVAL_REQUEST_CB
-            if ON_APPROVAL_REQUEST_CB and not self.on_approval_request:
-                self.on_approval_request = ON_APPROVAL_REQUEST_CB
-        except ImportError:
-            pass
 
         # ── 实时事件回调 ──
         self.on_llm_start: Optional[Callable[[int], None]] = None

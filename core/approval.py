@@ -35,7 +35,7 @@ import logging
 import sys
 import threading
 from pathlib import Path
-from typing import Optional, Any
+from typing import Optional, Any, ClassVar
 from dataclasses import dataclass, asdict
 
 logger = logging.getLogger("kuafu.approval")
@@ -684,14 +684,16 @@ class ApprovalManager:
     # 审批事件字典：req_id → threading.Event，用于非阻塞通知
     # Event 对象挂 _approved 属性（True=批准, False=拒绝），省去磁盘读取
     _decision_events: dict = {}
+    _decision_lock: ClassVar[threading.Lock] = threading.Lock()
 
     @classmethod
     def _get_event(cls, req_id: str) -> threading.Event:
-        if req_id not in cls._decision_events:
-            ev = threading.Event()
-            ev._approved = None  # 未知
-            cls._decision_events[req_id] = ev
-        return cls._decision_events[req_id]
+        with cls._decision_lock:
+            if req_id not in cls._decision_events:
+                ev = threading.Event()
+                ev._approved = None  # 未知
+                cls._decision_events[req_id] = ev
+            return cls._decision_events[req_id]
 
     @staticmethod
     def approve(req_id: str = "") -> bool:
@@ -711,7 +713,8 @@ class ApprovalManager:
         ev._approved = True
         ev.set()
         # 清理事件对象（等待线程已收到通知，不再需要）
-        ApprovalManager._decision_events.pop(req.id, None)
+        with ApprovalManager._decision_lock:
+            ApprovalManager._decision_events.pop(req.id, None)
         logger.info(f"✅ 审批通过: {req.title}")
         return True
 
@@ -733,7 +736,8 @@ class ApprovalManager:
         ev._approved = False
         ev.set()
         # 清理事件对象（等待线程已收到通知，不再需要）
-        ApprovalManager._decision_events.pop(req.id, None)
+        with ApprovalManager._decision_lock:
+            ApprovalManager._decision_events.pop(req.id, None)
         logger.info(f"❌ 审批拒绝: {req.title}")
         return True
 
