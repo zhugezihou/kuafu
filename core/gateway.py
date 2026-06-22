@@ -339,7 +339,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self.shutdown_event.set()
 
     def _handle_restart(self):
-        import subprocess, os, sys
+        import subprocess, os, sys, time as _time
 
         self._send_json(200, {"status": "restarting"})
 
@@ -352,7 +352,14 @@ class GatewayHandler(BaseHTTPRequestHandler):
         if os.path.exists(venv_python):
             target_python = venv_python
 
-        # 异步拉起新 Gateway 进程（等当前进程退出后接管端口）
+        # 先停止当前 Gateway，释放端口
+        if self.shutdown_event:
+            self.shutdown_event.set()
+
+        # 等待端口释放
+        _time.sleep(1)
+
+        # 再拉起新 Gateway 进程
         subprocess.Popen(
             [target_python, "-c", 
              "import sys, core.cli; sys.argv = ['kuafu', 'gateway', 'start']; sys.exit(core.cli.main())"],
@@ -360,10 +367,6 @@ class GatewayHandler(BaseHTTPRequestHandler):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-
-        # 停止当前 Gateway（释放端口，新进程几秒后接管）
-        if self.shutdown_event:
-            self.shutdown_event.set()
 
     # ── 通道管理 API ──────────────────────────────────────────
 
