@@ -388,11 +388,18 @@ class CronScheduler:
                 channel_bot = self._wechat_bot
 
         if channel_bot:
-            channel_bot.send_text(
-                f"⏰ Cron 任务: {task.name}\n"
-                f"时间: {task.last_run}\n\n"
-                f"{task.last_result[:19000] if task.last_result else '(无输出)'}"
-            )
+            if hasattr(channel_bot, 'send_text'):
+                channel_bot.send_text(
+                    f"⏰ Cron 任务: {task.name}\n"
+                    f"时间: {task.last_run}\n\n"
+                    f"{task.last_result[:19000] if task.last_result else '(无输出)'}"
+                )
+            elif hasattr(channel_bot, 'send'):
+                channel_bot.send(
+                    f"⏰ Cron 任务: {task.name}\n"
+                    f"时间: {task.last_run}\n\n"
+                    f"{task.last_result[:19000] if task.last_result else '(无输出)'}"
+                )
             self._save_to_file(task)
         elif task.output_mode == "file":
             self._save_to_file(task)

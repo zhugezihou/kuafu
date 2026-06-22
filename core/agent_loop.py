@@ -413,12 +413,19 @@ class AgentLoop:
             self._init_orchestrator()
             content = ""
             if isinstance(resp, dict):
+                if not resp.get("success", False):
+                    err_msg = resp.get("error", resp.get("content", "LLM 调用失败"))
+                    return {"success": False, "output": f"专家 {expert_name} LLM 调用失败: {err_msg}"}
                 content = resp.get("content", "") or ""
                 tool_text = self._exec_expert_tool_calls(resp)
                 if tool_text:
                     content = content + "\n\n" + tool_text if content else tool_text
             elif isinstance(resp, str):
                 content = resp
+
+            # ── 空内容 fallback ──
+            if not content:
+                content = f"专家 {expert_name} 已完成分析"
 
             # ── 专家记忆持久化 ──
             if memory_label and content:
@@ -520,12 +527,20 @@ class AgentLoop:
 
             content = ""
             if isinstance(resp, dict):
+                if not resp.get("success", False):
+                    err_msg = resp.get("error", resp.get("content", "LLM 调用失败"))
+                    return {"success": False, "output": f"专家 {profile.name} LLM 调用失败: {err_msg}"}
                 content = resp.get("content", "") or ""
                 tool_text = self._exec_expert_tool_calls(resp)
                 if tool_text:
                     content = content + "\n\n" + tool_text if content else tool_text
             elif isinstance(resp, str):
                 content = resp
+
+            # ── 空内容 fallback ──
+            if not content:
+                name = getattr(profile, 'name', 'unknown')
+                content = f"专家 {name} 已完成分析"
 
             # ── 专家记忆持久化 ──
             if memory_label and content:
