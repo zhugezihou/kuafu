@@ -144,10 +144,11 @@ class ToolOrchestrator:
         if decision == ApprovalDecision.ESCALATE:
             # 审批已提交，等待用户决策（事件通知，不轮询文件）
             if req.req_id:
-                from core.approval import ApprovalManager
+                from core.approval import ApprovalManager, _get_approval_timeout
                 # 获取事件对象，等待被 set
                 ev = ApprovalManager._get_event(req.req_id)
-                waited = ev.wait(timeout=300)
+                timeout = _get_approval_timeout()
+                waited = ev.wait(timeout=timeout)
                 if waited:
                     # 直接从事件对象读取状态，无需再次读磁盘
                     if getattr(ev, '_approved', None) is True:

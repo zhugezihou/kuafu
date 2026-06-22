@@ -33,6 +33,7 @@ class GatewayLoop:
         self.channels = channel_manager
         self.poll_interval = poll_interval
         self._session_map: dict[str, str] = {}
+        self._session_map_lock = threading.Lock()
         self._last_context_tokens: dict[str, str] = {}
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -62,7 +63,8 @@ class GatewayLoop:
             if os.path.exists(map_path):
                 with open(map_path) as f:
                     data = _json.load(f)
-                self._session_map.update(data)
+                with self._session_map_lock:
+                    self._session_map.update(data)
                 self._log(f"会话映射已恢复: {len(data)} 条")
         except Exception:
             pass
@@ -277,7 +279,8 @@ class GatewayLoop:
 
         # 跨 session 上下文关联：同一用户/频道的连续消息关联到上一个 session
         chat_key = f"{msg.platform}:{msg.chat_id}"
-        resume_from = self._session_map.get(chat_key)
+        with self._session_map_lock:
+            resume_from = self._session_map.get(chat_key)
 
         # 审批决策检测：批准/拒绝 + req_id
         from core.approval import check_approval_decision as _check_dec, handle_approval_decision as _handle_dec
@@ -342,16 +345,17 @@ class GatewayLoop:
             # 保存 session_id 供后续消息关联上下文
             session_id = result.get("session_id", "")
             if session_id:
-                self._session_map[chat_key] = session_id
-                # 持久化到磁盘，防止 Gateway 重启后丢失
-                try:
-                    import json as _json
-                    map_path = os.path.join(os.path.dirname(os.path.dirname(
-                        os.path.abspath(__file__))), "memory", "session_map.json")
-                    with open(map_path, "w") as f:
-                        _json.dump(self._session_map, f, ensure_ascii=False)
-                except Exception:
-                    pass
+                with self._session_map_lock:
+                    self._session_map[chat_key] = session_id
+                    # 持久化到磁盘，防止 Gateway 重启后丢失
+                    try:
+                        import json as _json
+                        map_path = os.path.join(os.path.dirname(os.path.dirname(
+                            os.path.abspath(__file__))), "memory", "session_map.json")
+                        with open(map_path, "w") as f:
+                            _json.dump(self._session_map, f, ensure_ascii=False)
+                    except Exception:
+                        pass
 
             # 回消息到来源通道
             channel = self.channels.get(msg.platform)

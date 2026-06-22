@@ -480,13 +480,14 @@ class AgentLoop:
                 except Exception as e:
                     results[name] = {"success": False, "output": str(e)}
 
+        output_parts = [
+            f"【{name}】\n{r.get('output', r.get('result', ''))[:1000]}"
+            for name, r in results.items()
+            if r.get("success")
+        ]
         return {
-            "success": True,
-            "output": "\n\n".join(
-                f"【{name}】\n{r.get('output', r.get('result', ''))[:1000]}"
-                for name, r in results.items()
-                if r.get("success")
-            ),
+            "success": bool(output_parts),
+            "output": "\n\n".join(output_parts) if output_parts else "所有专家均失败",
             "results": results,
         }
 

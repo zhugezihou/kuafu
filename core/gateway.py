@@ -134,6 +134,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self._handle_cron_stop()
         elif path == "/api/shutdown":
             self._handle_shutdown()
+        elif path == "/api/health":
+            self._send_json(200, {"status": "ok", "mode": "gateway"})
         elif path == "/api/restart":
             self._handle_restart()
         # ── 通道管理 API ──
@@ -340,6 +342,25 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
     def _handle_restart(self):
         import subprocess, os, sys, time as _time
+
+        # ── 检查待审批 ──
+        try:
+            from core.approval import ApprovalManager
+            pending = ApprovalManager.list_pending()
+            if pending:
+                cnt = len(pending)
+                self._send_json(200, {
+                    "status": "waiting_approvals",
+                    "pending": cnt,
+                    "message": f"等待 {cnt} 个待审批完成 (最多30s)",
+                })
+                # 等待待审批完成或超时
+                for _ in range(30):
+                    if not ApprovalManager.list_pending():
+                        break
+                    _time.sleep(1)
+        except Exception:
+            pass
 
         self._send_json(200, {"status": "restarting"})
 
