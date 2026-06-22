@@ -608,6 +608,34 @@ class FeishuWebSocketChannel(MessageChannel):
         self._card_approval_state.pop(approval_id, None)
         return result_holder[0]
 
+    # ── 待审批恢复（WS 重连后恢复） ─────────────────────────
+
+    def _recover_pending_approvals(self) -> None:
+        """WS 重连后扫描磁盘审批记录，恢复内存中的等待事件。
+
+        WS 断开期间用户点击的审批卡片回调会丢失（新 WS 连接收不到）。
+        通过重新扫描 memory/approvals/ 中 status=pending 的记录，
+        为每一条重新注册 threading.Event。
+
+        注意：不会重发审批卡片（已经发过），只是恢复监听。
+        重连前已点过卡片的用户需要重新点一次（飞书卡片状态仍有效）。
+        """
+        try:
+            from core.approval import ApprovalManager
+            pending = ApprovalManager.list_pending()
+            if not pending:
+                return
+            count = 0
+            for req in pending:
+                if req.id not in self._card_approval_state:
+                    ev = threading.Event()
+                    self._card_approval_state[req.id] = ev
+                    count += 1
+            if count:
+                print(f"[FeishuWS] ♻️ 恢复 {count} 个待审批监听", flush=True)
+        except Exception as e:
+            print(f"[FeishuWS] ⚠️ 恢复待审批失败: {e}", flush=True)
+
     # ── WS 启动（lark-oapi SDK） ──────────────────────────────
 
     def start(self) -> None:
@@ -814,6 +842,10 @@ class FeishuWebSocketChannel(MessageChannel):
                 reconnect_count = 0
                 # 更新 WS 连接时间，用于过滤重连后飞书重放的历史消息
                 self._ws_start_time = time.time()
+
+                # ── 恢复待审批卡片的状态监听 ──
+                self._recover_pending_approvals()
+
                 cli.start()  # 阻塞直到断开
 
             except Exception as e:
