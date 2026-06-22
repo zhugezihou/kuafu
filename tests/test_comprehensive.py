@@ -67,11 +67,12 @@ def test_sandbox():
 # 3. memory_api — 记忆系统
 # ============================================================
 def test_memory_api():
+    """memory_api 已被重构为 core.memory。此测试用 MemoryManager 替代。"""
     print("\n【3/21】memory_api 记忆系统")
-    from core.memory_api import MemoryAPI
-    api = MemoryAPI()
-    check("MemoryAPI初始化", api is not None)
-    r = api.remember("test_key", {"test": "data"})
+    from core.memory.memory_manager import MemoryManager
+    api = MemoryManager()
+    check("MemoryManager初始化", api is not None)
+    r = api.remember("test_key", "test_data")
     check("remember()返回记忆ID", isinstance(r, str) and len(r) > 0)
     try:
         recall = api.recall("test", limit=3)
