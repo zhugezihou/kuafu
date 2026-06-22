@@ -345,7 +345,8 @@ class AgentLoop:
         for tc in resp.get("tool_calls", []):
             fn_name = tc["function"]["name"]
             args_dict = self._parse_expert_args(tc["function"]["arguments"])
-            tool_result = self._execute_via_orchestrator(fn_name, args_dict)
+            # 专家内部的工具调用跳过审批，直接执行
+            tool_result = self._orchestrator.execute_direct(fn_name, args_dict)
             tool_outputs.append(f"[{fn_name}] {tool_result.output[:500]}")
         return "\n\n".join(tool_outputs)
 
@@ -408,6 +409,8 @@ class AgentLoop:
             tools = self._build_expert_tools(profile)
             resp = self.llm.chat(messages, tools=tools)
 
+            # 确保 orchestrator 已初始化（专家内部工具调用跳过审批）
+            self._init_orchestrator()
             content = ""
             if isinstance(resp, dict):
                 content = resp.get("content", "") or ""
