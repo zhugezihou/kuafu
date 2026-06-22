@@ -340,19 +340,30 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
     def _handle_restart(self):
         import subprocess, os, sys
-        restart_script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "restart.sh")
-        # 方案一：如果 restart.sh 存在，异步执行（不阻塞响应）
-        if os.path.exists(restart_script):
-            self._send_json(200, {"status": "restarting", "method": "script"})
-            subprocess.Popen(["bash", restart_script, "gateway"],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return
 
-        # 方案二：直接 exec 重新启动自己（无脚本时的兜底）
-        self._send_json(200, {"status": "restarting", "method": "exec"})
+        self._send_json(200, {"status": "restarting"})
+
+        kuafu_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         python = sys.executable
-        cli_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "core", "cli.py")
-        os.execv(python, [python, cli_path, "gateway", "start"])
+        venv_python = os.path.join(kuafu_dir, "venv", "bin", "python")
+
+        # 优先用 venv 的 python
+        target_python = python
+        if os.path.exists(venv_python):
+            target_python = venv_python
+
+        # 异步拉起新 Gateway 进程（等当前进程退出后接管端口）
+        subprocess.Popen(
+            [target_python, "-c", 
+             "import sys, core.cli; sys.argv = ['kuafu', 'gateway', 'start']; sys.exit(core.cli.main())"],
+            cwd=kuafu_dir,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        # 停止当前 Gateway（释放端口，新进程几秒后接管）
+        if self.shutdown_event:
+            self.shutdown_event.set()
 
     # ── 通道管理 API ──────────────────────────────────────────
 
