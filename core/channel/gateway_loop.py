@@ -16,6 +16,7 @@ from typing import Any, Optional
 
 from core.channel.base import MessageChannel, Message, SendResult
 from core.channel.manager import ChannelManager
+from core.approval import check_approval_decision as _check_dec, handle_approval_decision as _handle_dec
 
 logger = logging.getLogger("kuafu.gateway")
 
@@ -37,6 +38,7 @@ class GatewayLoop:
         self._last_context_tokens: dict[str, str] = {}
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._worker_pool: list[threading.Thread] = []
 
         # 从 sessions.db 恢复最近 50 条 session 的平台映射
         self._restore_session_map()
@@ -253,37 +255,35 @@ class GatewayLoop:
         return {"action": action, "req_id": req_id}
 
     def _handle_message(self, msg: Message):
-        """处理单条消息。"""
+        """处理单条消息——放到工作线程执行，不阻塞主循环。"""
         if not msg.text.strip():
             return
 
         text = msg.text.strip()
         self._log(f"📩 {msg.platform}/{msg.chat_id}: {text[:60]}")
 
-        # 记录最近消息的来源通道（用于审批推送通道选择）
+        # 记录最近消息的来源通道
         self._last_message_source = msg.platform
 
-        # 设置环境变量，供 send_file_to_user 等工具读取触发通道
+        # 设置环境变量
         os.environ["KUAFU_CURRENT_PLATFORM"] = msg.platform
         if msg.chat_id:
             os.environ["KUAFU_CURRENT_CHAT_ID"] = msg.chat_id
 
-        # 记录最近消息的来源（用于审批推送） — 按通道分别保存
+        # 按通道记录 chat_id
         if not hasattr(self, '_last_chat_ids'):
             self._last_chat_ids = {}
         self._last_chat_ids[msg.platform] = msg.chat_id
-        self._last_chat_id = msg.chat_id  # 保留向后兼容
-        # 记录 context_token（微信发送需要）
+        self._last_chat_id = msg.chat_id
         if hasattr(msg, 'raw') and msg.raw and "context_token" in msg.raw:
             self._last_context_tokens[msg.platform] = msg.raw["context_token"]
 
-        # 跨 session 上下文关联：同一用户/频道的连续消息关联到上一个 session
+        # 跨 session 上下文关联
         chat_key = f"{msg.platform}:{msg.chat_id}"
         with self._session_map_lock:
             resume_from = self._session_map.get(chat_key)
 
-        # 审批决策检测：批准/拒绝 + req_id
-        from core.approval import check_approval_decision as _check_dec, handle_approval_decision as _handle_dec
+        # 审批决策检测
         decision = _check_dec(text)
         if decision:
             channel = self.channels.get(msg.platform)
@@ -291,7 +291,7 @@ class GatewayLoop:
             self._log(f"审批决策已处理: {reply}")
             return
 
-        # 飞书消息：添加 👀 reaction 表示已收到
+        # 飞书消息：添加 👀 reaction
         if msg.platform == "feishu" and msg.msg_id:
             feishu_ch = self.channels.get("feishu")
             if hasattr(feishu_ch, 'add_reaction'):
@@ -299,30 +299,40 @@ class GatewayLoop:
                 if not ok:
                     self._log(f"⚠️ 飞书 reaction 失败: msg_id={msg.msg_id}")
 
+        # 放到工作线程执行——不阻塞 gateway-loop
+        worker = threading.Thread(
+            target=self._execute_task,
+            args=(msg, chat_key),
+            daemon=True,
+            name=f"worker-{msg.platform[:4]}-{msg.chat_id[:8]}",
+        )
+        worker.start()
+        self._worker_pool = [w for w in self._worker_pool if w.is_alive()] + [worker]
+
+    def _noop(self, *args, **kwargs):
+        pass
+
+    def _make_on_phase(self, msg: Message, channel):
+        """构造阶段性总结推送回调。"""
+        def _on_phase(summary: str):
+            try:
+                if channel:
+                    kwargs = {"chat_id": msg.chat_id}
+                    if msg.raw and "context_token" in msg.raw:
+                        kwargs["context_token"] = msg.raw["context_token"]
+                    result = channel.send(f"\n{summary}\n", **kwargs)
+                    if not result.success:
+                        self._log(f"⚠️ 阶段总结推送失败: {result.error}")
+            except Exception as e:
+                self._log(f"⚠️ 阶段总结推送异常: {e}")
+        return _on_phase
+
+    def _execute_task(self, msg: Message, chat_key: str):
+        """在工作线程中执行 agent.run。"""
         try:
-            # 实时进度推送：每步都通过消息通道发送
             channel = self.channels.get(msg.platform)
 
-            import time as _time
-
-            def _on_step(step_text: str):
-                """每步进度仅打印终端，不推送消息"""
-                pass
-
-            def _on_phase(summary: str):
-                """阶段性总结推送到消息通道（不节流、不过滤）"""
-                try:
-                    if channel:
-                        kwargs = {"chat_id": msg.chat_id}
-                        if msg.raw and "context_token" in msg.raw:
-                            kwargs["context_token"] = msg.raw["context_token"]
-                        result = channel.send(f"\n{summary}\n", **kwargs)
-                        if not result.success:
-                            self._log(f"⚠️ 阶段总结推送失败: {result.error}")
-                except Exception as e:
-                    self._log(f"⚠️ 阶段总结推送异常: {e}")
-
-            # 注入当前消息的通道信息，供 finish 工具发文件时使用
+            # 注入平台上下文
             self.agent._current_platform = msg.platform
             self.agent._current_chat_id = msg.chat_id
             if msg.raw and "context_token" in msg.raw:
@@ -330,11 +340,19 @@ class GatewayLoop:
             else:
                 self.agent._current_context_token = ""
 
-            result = self.agent.run(text, on_step=_on_step, on_phase=_on_phase, resume_from=resume_from)
+            with self._session_map_lock:
+                resume_from = self._session_map.get(chat_key)
+
+            on_phase = self._make_on_phase(msg, channel)
+
+            result = self.agent.run(
+                msg.text,
+                on_step=self._noop,
+                on_phase=on_phase,
+                resume_from=resume_from,
+            )
             reply = result.get("result", "")
             if not reply:
-                # 结果为空时也推一条提示，不让用户觉得系统没反应
-                channel = self.channels.get(msg.platform)
                 if channel:
                     kwargs = {"chat_id": msg.chat_id}
                     if msg.raw and "context_token" in msg.raw:
@@ -342,12 +360,11 @@ class GatewayLoop:
                     channel.send("🤔 正在处理中，请稍候…", **kwargs)
                 return
 
-            # 保存 session_id 供后续消息关联上下文
+            # 保存 session_id
             session_id = result.get("session_id", "")
             if session_id:
                 with self._session_map_lock:
                     self._session_map[chat_key] = session_id
-                    # 持久化到磁盘，防止 Gateway 重启后丢失
                     try:
                         import json as _json
                         map_path = os.path.join(os.path.dirname(os.path.dirname(
@@ -358,9 +375,7 @@ class GatewayLoop:
                         pass
 
             # 回消息到来源通道
-            channel = self.channels.get(msg.platform)
             if channel:
-                # 传递 raw 中的 context_token 给 send（微信 iLink 需要）
                 kwargs = {"chat_id": msg.chat_id}
                 if msg.raw and "context_token" in msg.raw:
                     kwargs["context_token"] = msg.raw["context_token"]
