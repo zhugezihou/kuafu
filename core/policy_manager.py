@@ -130,6 +130,23 @@ def _is_safe_terminal(cmd: str) -> bool:
 
     lower = stripped.lower()
 
+    # 拆解 && 组合命令：每个子命令都必须安全
+    if " && " in lower:
+        parts = lower.split(" && ")
+        for part in parts:
+            if not _is_safe_terminal(part):
+                return False
+        return True
+
+    # 拆解 | 管道命令：每个子命令都必须安全
+    if " | " in lower or " |" in lower:
+        parts = lower.split(" |")
+        for part in parts:
+            part = part.lstrip("| ")
+            if not _is_safe_terminal(part):
+                return False
+        return True
+
     # ── 明确安全的 kuafu 管理命令（不触发审批） ──
     # 这些命令是夸父自身的管理 CL，只读或受控操作，无需人工审批
     KUAFU_SAFE_PREFIXES = (

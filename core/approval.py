@@ -256,7 +256,7 @@ class AutoMode:
         # 高风险（不可逆操作，需要人工确认）
         "delete_file": "high",
         "mcp_*": "high",       # MCP 操作默认高风险
-        "terminal": "high",     # terminal 操作默认高风险（走审批推送）
+        "terminal": "high",     # terminal 默认高风险，安全命令由 _is_safe_terminal 豁免
 
         # 中风险（可逆操作，但需谨慎）
         "write_file": "medium",

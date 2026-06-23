@@ -140,9 +140,12 @@ class Platform:
         base = (
             "ls ", "cat ", "curl ", "echo ", "pwd", "whoami", "date",
             "head ", "tail ", "wc ", "sort ", "grep ", "find ", "which ",
-            "pip list", "pip show", "python3 --version", "git status",
-            "git log", "git diff", "git branch", "free ", "df ", "du ",
-            "ps ", "top ", "env", "printenv", "uname", "id",
+            "pip list", "pip show", "pip3 list", "pip3 show",
+            "python3 --version", "python --version",
+            "node --version", "npm --version", "npx --version",
+            "git status", "git log", "git diff", "git branch",
+            "free ", "df ", "du ", "ps ", "top ", "env", "printenv",
+            "uname", "id", "hostname", "uptime",
         )
         if cls.is_windows():
             return base + (
