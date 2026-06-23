@@ -117,6 +117,10 @@ def ask_backend() -> str:
     print_info("夸父支持两种运行模式：")
     print_info("  cloud  — 云端模式（DeepSeek API），需要 API Key，免 GPU")
     print_info("  local  — 本地模式（Qwen3.5-9B），需要 NVIDIA GPU 8GB+")
+    print_info("")
+    print_info("也可同时配置两者，通过 KUAFU_PROVIDERS 设置降级顺序：")
+    print_info("  KUAFU_PROVIDERS=deepseek,qwen  # DeepSeek 为主，本地为备")
+    print_info("  云端不可用时自动降级到本地，不中断工作流")
 
     if RICH_AVAILABLE:
         backend = Prompt.ask(
@@ -377,7 +381,7 @@ def test_connection(backend: str, api_key: str) -> bool:
 # ─── 运行测试验证 ────────────────────────────────────────────────────────────
 def run_tests() -> bool:
     print_step(7, "运行测试验证")
-    print_info("夸父自带 300+ 测试用例，运行确认代码完整性。")
+    print_info("夸父自带 1900+ 测试用例，运行确认代码完整性。")
     print()
 
     if RICH_AVAILABLE:
@@ -448,6 +452,10 @@ def save_config(backend: str, api_key: str,
     if backend == "cloud":
         set_var("KUAFFU_BASE_URL", "https://api.deepseek.com")
         set_var("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+        set_var("KUAFU_PROVIDERS", "deepseek")
+    elif backend == "local":
+        set_var("KUAFU_PROVIDERS", "qwen")
+        set_var("QWEN_BASE_URL", "http://localhost:8080")
 
     # 通道配置
     for k, v in feishu.items():

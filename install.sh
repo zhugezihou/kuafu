@@ -14,7 +14,7 @@ INSTALL_DIR="${KUAFFU_DIR:-$HOME/kuafu}"
 PYTHON="${PYTHON:-python3}"
 
 echo "============================================"
-echo "  夸父 (Kuafu) v1.0 — 安装脚本"
+echo "  夸父 (Kuafu) v1.1 — 安装脚本"
 echo "============================================"
 echo ""
 
