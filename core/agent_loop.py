@@ -1157,8 +1157,9 @@ class AgentLoop:
         from core.tool_orchestrator import ToolExecutionRequest
         self._init_orchestrator()
 
-        # 强制 gateway 模式：审批走通道推送不阻塞
-        os.environ["KUAFU_GATEWAY_RUNNING"] = "1"
+        # 不强制设 KUAFU_GATEWAY_RUNNING — 调用者决定审批模式
+        # Gateway 模式的调用者（gateway_loop.py）会在 agent.run() 前设好
+        # 交互模式则由 main.py 设 KUAFU_INTERACTIVE=1
 
         req = ToolExecutionRequest(
             tool_name=fn_name,

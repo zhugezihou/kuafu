@@ -733,6 +733,7 @@ def main():
 
     # 交互模式（多轮对话）— 使用 readline 支持行编辑
     import readline
+    os.environ["KUAFU_INTERACTIVE"] = "1"
     print("\n夸父交互模式 (输入 exit 退出，new 重置对话)\n")
     while True:
         try:

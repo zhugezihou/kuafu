@@ -14,6 +14,8 @@ import json
 import time
 import logging
 import threading
+import os
+import sys
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import Optional
@@ -23,6 +25,18 @@ from core.safety import SafetyLayer, CommandLevel, classify_tool_operation
 from core.hooks import trigger_sync
 
 logger = logging.getLogger("kuafu.orchestrator")
+
+
+def _format_approval_detail(tool_name: str, args: dict) -> str:
+    """格式化审批详情为人类可读的文本。"""
+    if tool_name == "terminal":
+        cmd = args.get("command", "")
+        return f"命令: {cmd[:200]}"
+    try:
+        return json.dumps(args, ensure_ascii=False, indent=2)[:300]
+    except Exception:
+        return str(args)[:300]
+
 
 # =========================================================================
 # 类型定义
@@ -204,9 +218,28 @@ class ToolOrchestrator:
         if policy_decision.req_id:
             # 保存 req_id 到请求对象，供 execute 等待时使用
             req.req_id = policy_decision.req_id
-            # 通过 ToolOrchestrator 的审批回调通知通道推送
-            # 仅在首次创建审批时推送通知（合并审批不重复推送）
-            print(f"[ToolOrchestrator] 审批推送检查: _approval_callback={'有' if hasattr(self, '_approval_callback') and self._approval_callback else '无'}")
+            # 交互模式：直接终端审批，不走回调
+            if os.environ.get("KUAFU_INTERACTIVE") == "1" or (sys.stdin.isatty() and sys.stdout.isatty()):
+                from core.approval import ApprovalManager
+                ok = ApprovalManager.terminal_prompt(
+                    title=f"🧰 {req.tool_name}",
+                    detail=_format_approval_detail(req.tool_name, req.args),
+                    risk="medium" if req.tool_name != "terminal" else "high",
+                    timeout=300,
+                )
+                if ok:
+                    ev = ApprovalManager._get_event(req.req_id)
+                    ev.set()
+                    self.policy.clear_merge_state()
+                    from core.approval import AutoMode
+                    fp = AutoMode._get_content_fingerprint(req.tool_name, req.args)
+                    if fp:
+                        AutoMode._recent_auto_approvals[fp] = time.time()
+                    return ApprovalDecision.ALLOW
+                else:
+                    self.policy.clear_merge_state()
+                    return ApprovalDecision.DENY
+            # 非交互模式（Gateway）：通过通道推送通知
             if hasattr(self, '_approval_callback') and self._approval_callback:
                 # 检查是否合并审批的首次推送
                 if self.policy._merge_req_id == policy_decision.req_id and self.policy._merge_notified:
