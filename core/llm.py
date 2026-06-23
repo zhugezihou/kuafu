@@ -73,6 +73,14 @@ PROVIDER_CONFIGS: dict[str, dict] = {
         "max_tokens": 4096,
         "temperature": 0.7,
     },
+    "qwen": {
+        "name": "本地 Qwen（llama-server）",
+        "base_url": os.environ.get("QWEN_BASE_URL", "http://localhost:8080"),
+        "api_key_env": [],
+        "model": os.environ.get("QWEN_MODEL", "Qwen3.5-9B-DeepSeek-V4-Flash-IQ4_XS.gguf"),
+        "max_tokens": 4096,
+        "temperature": 0.7,
+    },
     "openrouter": {
         "name": "OpenRouter",
         "base_url": os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
@@ -305,10 +313,12 @@ class LLMClient:
                       tools: Optional[list[dict]] = None,
                       stream: bool = False) -> dict:
         """向单个后端发送请求。"""
+        # 无工具调用场景允许更大输出（基金定投/架构介绍等纯文本）
+        effective_max = max(self.max_tokens, 8192) if not tools else self.max_tokens
         payload = {
             "model": backend.model,
             "messages": _clean_surrogates(messages),
-            "max_tokens": self.max_tokens,
+            "max_tokens": effective_max,
             "temperature": self.temperature,
             "stream": stream,
         }
@@ -501,6 +511,8 @@ class LLMClient:
             return 160000  # 200K 的 80%
         elif "claude" in model_lower:
             return 160000
+        elif "qwen" in model_lower:
+            return 25000  # 32K 的 80%（本地模型）
         elif "gpt-4" in model_lower:
             return 100000  # 128K 的 80%
         elif "gpt" in model_lower:

@@ -486,8 +486,9 @@ def _summarize_result(text: str, max_chars: int = 800) -> str:
     """对子 Agent 的输出做摘要。
 
     优先级：
-      1. 本地 LLM（llama-server）智能摘要
-      2. 内置关键字提取（回退方案）
+      1. 本地模型（LocalHelper，零成本）
+      2. 本地 LLM（llama-server）智能摘要
+      3. 内置关键字提取（回退方案）
 
     Args:
         text: 输入文本
@@ -502,6 +503,17 @@ def _summarize_result(text: str, max_chars: int = 800) -> str:
     # 如果文本很短，直接返回
     if len(text) <= max_chars:
         return text
+
+    # 尝试 LocalHelper（全新本地辅助层）
+    try:
+        from core.local_helper import LocalHelper
+        helper = LocalHelper()
+        if helper.available():
+            summary = helper.refine(text, style="summary")
+            if summary and len(summary) > 10:
+                return summary[:max_chars] + ("..." if len(summary) > max_chars else "")
+    except Exception:
+        pass
 
     # 尝试本地 LLM 摘要
     summarizer = _get_summarizer()

@@ -112,6 +112,14 @@ class MemoryManager:
         # LLM 萃取（可选）
         self._llm_chat = llm_chat_fn
 
+        # 本地模型辅助（可选，缺失不抛异常）
+        self._local: Optional["LocalHelper"] = None
+        try:
+            from core.local_helper import LocalHelper
+            self._local = LocalHelper()
+        except Exception:
+            self._local = None
+
         # NMM 引擎（可选，v4）
         self._nmm = None
         self._enable_nmm = enable_nmm
@@ -277,12 +285,26 @@ class MemoryManager:
 
     def _detect_or_classify(self, content: str, context: str = "",
                             source: str = "") -> str:
-        """检测事实类型。先用 LLM（如有），降级到 rule-based。"""
+        """检测事实类型。先用本地模型，再降级到云端 LLM，最后 rule-based。"""
         # 明确 source 的偏好/决策/教训直接走 Opinion
         if source in ("preference", "decision", "lesson", "opinion"):
             return NETWORK_OPINION
 
-        # 有 LLM 时尝试萃取
+        # 本地模型优先（零成本、低延迟）
+        if self._local and self._local.available():
+            try:
+                result = self._local.classify(content)
+                if result:
+                    r = result.strip().lower()
+                    if "opinion" in r:
+                        return NETWORK_OPINION
+                    if "experience" in r:
+                        return NETWORK_EXPERIENCE
+                    return NETWORK_WORLD
+            except Exception:
+                pass
+
+        # 有云端 LLM 时尝试萃取
         if self._llm_chat:
             try:
                 return self._llm_classify(content)
@@ -490,6 +512,11 @@ class MemoryManager:
                 nmm_assoc = self._nmm.search(include_search, k=3)
                 nmm_lines = []
                 for na in nmm_assoc:
+                    # 🔒 分数过滤：低于 0.6 的联想跳过，避免虚假关联
+                    score = na.get("score", 0)
+                    if score < 0.6:
+                        continue
+
                     text_id = na.get("text_id", "")
                     content = ""
 
@@ -503,10 +530,10 @@ class MemoryManager:
 
                     if content and content[:200] not in seen:
                         seen.add(content[:200])
-                        nmm_lines.append(f"  ~ {content[:200]}")
+                        nmm_lines.append(f"  ~ (score={score:.2f}) {content[:200]}")
 
                 if nmm_lines:
-                    parts.append("=== 弱联想（NMM，可能不相关）===\n" + nmm_lines[0])
+                    parts.append("=== 弱联想（NMM，可能不相关）===\n" + "\n".join(nmm_lines[:2]))
             except Exception:
                 pass
 

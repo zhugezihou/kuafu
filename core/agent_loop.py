@@ -186,6 +186,16 @@ class AgentLoop:
             except Exception as e:  # pragma: no cover
                 self._log(f"⚠️ Hook 系统初始化失败: {e}")
 
+        # ── 本地模型辅助（可选，缺失不阻塞） ──
+        self._local = None
+        try:
+            from core.local_helper import LocalHelper
+            self._local = LocalHelper()
+            if self._local.available():
+                self._log("🧠 本地模型辅助就绪")
+        except Exception:
+            self._local = None
+
     def _lazy_init(self):
         """惰性初始化（run() 第一次调用时才创建的组件）。"""
         if self.compressor is not None:
@@ -213,7 +223,7 @@ class AgentLoop:
         self.compressor = ContextCompressor(
             max_context_tokens=self._ctx_threshold,
             keep_recent_rounds=90,
-            summarizer=LLMSummarizer(),
+            summarizer=LLMSummarizer(llm_chat=self._get_local_summarizer()),
         )
 
         # Budget Allocator: Token 预算分配器
@@ -229,7 +239,7 @@ class AgentLoop:
 
         # ContextCollapse: 非破坏性上下文投影
         self.collapser = ContextCollapse(
-            summarizer=LLMSummarizer(),
+            summarizer=LLMSummarizer(llm_chat=self._get_local_summarizer()),
             keep_recent_rounds=90,
         )
 
@@ -247,6 +257,25 @@ class AgentLoop:
         self.on_llm_end: Optional[Callable[[int, str], None]] = None
         self.on_tool_start: Optional[Callable[[str, dict, float], None]] = None
         self.on_tool_end: Optional[Callable[[str, dict, float, str], None]] = None
+
+    # ── 本地模型辅助接口 ─────────────────────────────────────────
+
+    def _get_local_summarizer(self) -> Optional[callable]:
+        """返回本地模型的 chat 函数，供 LLMSummarizer 使用。
+
+        如果本地模型可用，返回一个兼容 (messages) → dict 的函数。
+        不可用时返回 None（LLMSummarizer 会用截断兜底）。
+        """
+        local = getattr(self, '_local', None)
+        if local is not None and local.available():
+            def _local_chat(messages: list) -> dict:
+                prompt = messages[-1]["content"] if messages else ""
+                result = local.summarize(prompt, max_chars=600)
+                if result:
+                    return {"content": result, "success": True}
+                return {"content": "", "success": False}
+            return _local_chat
+        return None
 
     def _register_delegate_tool(self):
         """注册专家工具（invoke_expert + invoke_experts）。
@@ -836,6 +865,7 @@ class AgentLoop:
         format_content += "- 可检索的信息用查找工具（search_files、web_search、read_file 等）获取\n"
         format_content += "- 只有在工具确实无法获取的信息时，才问用户\n"
         format_content += "- 如果必须基于不完整信息执行，显式标注假设\n"
+        format_content += "- **对用户指令理解不清晰时（如简短模糊指代），简要列出你的理解让用户确认再执行**\n"
         format_content += "</missing_context>"
 
         pm.add_section(
@@ -2400,7 +2430,19 @@ class AgentLoop:
         if not user_facts:
             return
 
-        # 用轻量 LLM 提取事实
+        # 用本地模型或云端 LLM 提取事实
+        if self._local and self._local.available():
+            extracted = self._local.extract_facts(user_facts[-6:])
+            if extracted:
+                for line in extracted:
+                    self.memory.store(
+                        content=line[:500],
+                        source="conversation",
+                        tags=["user_fact"],
+                        bypass_gate=True,
+                    )
+                self._log(f"💾 本地提取 {len(extracted)} 条用户事实")
+                return  # 本地完成，跳过云端路径
         fact_prompt = (
             "从以下用户消息中提取可复用的**用户事实**（偏好、项目信息、决策、重要上下文）。\n"
             "不要提取：技术经验、错误日志、命令用法。\n"
@@ -2465,6 +2507,7 @@ class AgentLoop:
         """
         start = time.time()
         errors = []
+        final_result = ""
 
         # 1. 创建白板实例
         whiteboard = getattr(self, 'whiteboard', None) or Whiteboard()
