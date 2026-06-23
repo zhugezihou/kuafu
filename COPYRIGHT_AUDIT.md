@@ -80,14 +80,14 @@
 
 ### 3. 对比 Hermes Agent (Python, MIT)
 
-**关系：运行环境，非引用关系**
+**关系：无关的独立项目**
 
-Hermes Agent 是夸父的**运行容器**（Hermes 在 WSL 上执行夸父），不是夸父的代码来源。
+Hermes Agent 是另一个独立的 AI Agent 项目，与夸父无关。
 
-- Hermes Agent 是 gateway + agent 架构，夸父是单 Agent Loop
-- Hermes 使用 SQLite FTS5、8 种记忆后端；夸父使用 MemoryManager + NMM
-- Hermes 使用 delegate_task 工具；夸父使用 invoke_expert 专家系统
-- 完全不同的代码库
+- 夸父是自包含的 Python 包，可独立运行（`pip install kuafu-agent`、`docker compose up`、`bash kuafu.sh`）
+- Hermes Agent 是 Nous Research 开发的独立项目，与夸父无代码依赖
+- 夸父的入口是 `core/main.py`，运行环境是用户自己的命令行或飞书/微信 Gateway
+- 两个项目架构不同、代码库不同、设计理念不同
 
 **抄袭无证据。** ✅
 
