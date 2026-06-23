@@ -130,52 +130,44 @@ class ToolOrchestrator:
 
     def execute(self, req: ToolExecutionRequest) -> ToolExecutionResult:
         with self._lock:
-            return self._execute_impl(req)
+            t0 = time.monotonic()
 
-    def _execute_impl(self, req: ToolExecutionRequest) -> ToolExecutionResult:
-        """带锁的实际执行逻辑。"""
-        t0 = time.monotonic()
+            # Safety 在前
+            safety = self._phase_safety(req)
+            if safety == SafetyDecision.BLOCK:
+                return self._result(req, success=False,
+                                    output="🛡️ 被安全系统拦截", decision=ApprovalDecision.DENY)
 
-        # Safety 在前：危险命令在审批之前拦截，避免用户批准了却被拦
-        safety = self._phase_safety(req)
-        if safety == SafetyDecision.BLOCK:
-            return self._result(req, success=False,
-                                output="🛡️ 被安全系统拦截", decision=ApprovalDecision.DENY)
-        # Safety ESCALATE 和 ALLOW 都继续走审批——ATTENTION 交给用户决策
-
-        decision = self._phase_approval(req)
-        if decision == ApprovalDecision.DENY:
-            return self._result(req, success=False,
-                                output="🔒 被审批系统拒绝", decision=ApprovalDecision.DENY)
-        if decision == ApprovalDecision.ESCALATE:
-            # 审批已提交，等待用户决策（事件通知，不轮询文件）
-            if req.req_id:
-                from core.approval import ApprovalManager, _get_approval_timeout
-                # 获取事件对象，等待被 set
-                ev = ApprovalManager._get_event(req.req_id)
-                timeout = _get_approval_timeout()
-                waited = ev.wait(timeout=timeout)
-                if waited:
-                    # 直接从事件对象读取状态，无需再次读磁盘
-                    if getattr(ev, '_approved', None) is True:
-                        logger.info(f"✅ 审批通过: {req.req_id}")
-                        # 记录到短时重复抑制缓存（后续相同命令自动放行）
-                        from core.approval import AutoMode
-                        fp = AutoMode._get_content_fingerprint(req.tool_name, req.args)
-                        if fp:
-                            AutoMode._recent_auto_approvals[fp] = time.time()
-                        self.policy.clear_merge_state()
+            decision = self._phase_approval(req)
+            if decision == ApprovalDecision.DENY:
+                return self._result(req, success=False,
+                                    output="🔒 被审批系统拒绝", decision=ApprovalDecision.DENY)
+            if decision == ApprovalDecision.ESCALATE:
+                if req.req_id:
+                    from core.approval import ApprovalManager, _get_approval_timeout
+                    ev = ApprovalManager._get_event(req.req_id)
+                    timeout = _get_approval_timeout()
+                    waited = ev.wait(timeout=timeout)
+                    if waited:
+                        if getattr(ev, '_approved', None) is True:
+                            logger.info(f"✅ 审批通过: {req.req_id}")
+                            from core.approval import AutoMode
+                            fp = AutoMode._get_content_fingerprint(req.tool_name, req.args)
+                            if fp:
+                                AutoMode._recent_auto_approvals[fp] = time.time()
+                            self.policy.clear_merge_state()
+                        else:
+                            logger.info(f"❌ 审批拒绝: {req.req_id}")
+                            self.policy.clear_merge_state()
+                            return self._result(req, success=False,
+                                                output="🔒 审批被拒绝", decision=ApprovalDecision.DENY)
                     else:
-                        logger.info(f"❌ 审批拒绝: {req.req_id}")
+                        logger.info(f"⏰ 审批超时: {req.req_id}")
                         self.policy.clear_merge_state()
                         return self._result(req, success=False,
-                                            output="🔒 审批被拒绝", decision=ApprovalDecision.DENY)
-                else:
-                    logger.info(f"⏰ 审批超时: {req.req_id}")
-                    self.policy.clear_merge_state()
-                    return self._result(req, success=False,
-                                        output="⏰ 审批超时", decision=ApprovalDecision.DENY)
+                                            output="⏰ 审批超时", decision=ApprovalDecision.DENY)
 
+        # 执行阶段在锁外——llm.chat 等耗时调用不阻塞其他工具
         result = self._phase_execute_with_retry(req)
         result.duration_ms = (time.monotonic() - t0) * 1000
         return result
@@ -183,8 +175,8 @@ class ToolOrchestrator:
     def execute_direct(self, tool_name: str, args: dict) -> ToolExecutionResult:
         """直接执行（跳过审批和安全检查）。用于内部调用。"""
         req = ToolExecutionRequest(tool_name=tool_name, args=args, source="internal")
-        with self._lock:
-            return self._phase_execute_with_retry(req)
+        # 直接执行——跳过锁，避免阻塞其他工具
+        return self._phase_execute_with_retry(req)
 
     # ── Phase 1: Approval（委托 PolicyManager）──
 
