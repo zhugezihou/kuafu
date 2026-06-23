@@ -1710,53 +1710,12 @@ class AgentLoop:
                         tool_result_for_obs,
                     )
 
-                    # ── 工具结果过滤：让 LLM 快速判断结果是否有贡献 ──
-                    # 条件：结果超过 200 字符 且 工具调用成功 且 非错误
-                    should_keep = True
-                    needs_filter = (
-                        len(safe_output) > 500  # 只有大结果才判，小结果直接保留
-                        and tool_result["success"]
-                        and fn_name not in ("web_search", "web_extract", "web_crawl", "read_file", "read_tool_result", "invoke_expert", "invoke_experts", "terminal", "memory_search")  # 搜索/提取/读文件/读工具结果/终端/记忆/专家输出默认保留
-                    )
-                    if needs_filter:  # pragma: no cover
-                        filter_prompt = (  # pragma: no cover
-                            "你是一个结果过滤器。用户正在做一个任务，下面是一个工具调用的返回结果。\\n"  # pragma: no cover
-                            "判断这个结果对当前任务是否有实质贡献（有帮助的信息/数据/代码片段），\\n"  # pragma: no cover
-                            "还是只是过程性/噪音内容。\\n\\n"  # pragma: no cover
-                            f"当前任务：{task[:100]}\\n"  # pragma: no cover
-                            f"工具名称：{fn_name}\\n"  # pragma: no cover
-                            f"结果预览（前500字）：\\n{safe_output[:500]}\\n\\n"  # pragma: no cover
-                            "只回复 'keep' 或 'discard'，不要其他内容。"  # pragma: no cover
-                        )  # pragma: no cover
-                        try:  # pragma: no cover
-                            filter_resp = self.llm.chat([{  # pragma: no cover
-                                "role": "system",  # pragma: no cover
-                                "content": "你是一个简洁的结果过滤器。只回复 keep 或 discard。"  # pragma: no cover
-                            }, {  # pragma: no cover
-                                "role": "user",  # pragma: no cover
-                                "content": filter_prompt,  # pragma: no cover
-                            }], tools=None)  # pragma: no cover
-                            if filter_resp["success"]:  # pragma: no cover
-                                decision = filter_resp["content"].strip().lower()  # pragma: no cover
-                                if decision.startswith("discard"):  # pragma: no cover
-                                    should_keep = False  # pragma: no cover
-                                    self._log(f"🗑️ 过滤掉 {fn_name} 结果 ({len(safe_output)} chars) — 判定无贡献")  # pragma: no cover
-                        except Exception:  # pragma: no cover
-                            pass  # 过滤失败则保留结果（保守策略）
-
-                    if should_keep:
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tc["id"],
-                            "content": safe_output_for_context,
-                        })
-                    else:  # pragma: no cover
-                        # 丢弃但留一个简短的占位
-                        messages.append({  # pragma: no cover
-                            "role": "tool",  # pragma: no cover
-                            "tool_call_id": tc["id"],  # pragma: no cover
-                            "content": f"[工具 {fn_name} 的结果被过滤（判定无贡献），原长 {len(safe_output)} 字符]",  # pragma: no cover
-                        })  # pragma: no cover
+                    # 工具结果直接保留（移除 LLM 过滤机制——弊大于利）
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": safe_output_for_context,
+                    })
 
                     # ── P0-2: 渐进式 PostToolUse 压缩管线 ────────────────────────
                     # Claude Code 参考：5-stage 渐进管线，从零成本到高成本
