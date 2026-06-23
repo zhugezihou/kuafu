@@ -1263,6 +1263,7 @@ class AgentLoop:
         self._lazy_init()
         final_result = ""
         final_summary = ""
+        _direct_reply_done = False  # 专家直接回复标记
 
         # ── 触发 on_task_start 钩子（异步） ──
         if self.hooks_enabled:
@@ -1662,8 +1663,10 @@ class AgentLoop:
 
                     # ── 直接回复标记：如果工具标记了 _direct_reply，提示 LLM 这是要给用户的最终内容 ──
                     if tool_result.get("_direct_reply"):
+                        # 强提示：这些内容不是工具结果，而是直接可以回复给用户的答案
                         safe_output = (
-                            f"[专家回复 - 这是直接给用户的最终内容，请将其整合到你的回复中输出给用户]\n\n"
+                            f"[以下是专家给出的最终回复内容，你已经完成了任务，"
+                            f"请直接将这些内容原样输出给用户，不要添加额外说明]\n\n"
                             f"{safe_output}"
                         )
 
@@ -1736,6 +1739,14 @@ class AgentLoop:
                         "tool_call_id": tc["id"],
                         "content": safe_output_for_context,
                     })
+
+                    # ── _direct_reply 标记：专家输出直接作为 final_result，跳过 LLM 下一轮 ──
+                    if tool_result.get("_direct_reply"):
+                        final_result = raw_output
+                        final_summary = raw_output[:200]
+                        self._log(f"📢 专家回复已就绪，直接返回给用户 ({len(raw_output)} chars)")
+                        _direct_reply_done = True
+                        break
 
                     # ── P0-2: 渐进式 PostToolUse 压缩管线 ────────────────────────
                     # Claude Code 参考：5-stage 渐进管线，从零成本到高成本
@@ -1845,6 +1856,10 @@ class AgentLoop:
                         ensure_ascii=False,
                     ),
                 })
+                break
+
+            # _direct_reply 标记：专家回复已就绪，跳出主循环
+            if _direct_reply_done:
                 break
 
         # 准备任务结果
