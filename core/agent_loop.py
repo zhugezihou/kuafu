@@ -739,17 +739,19 @@ class AgentLoop:
             budget_tag="system",
         )
 
-        # ── 2. 当前日期与时间 ──
+        # ── 2. 当前日期 ──
+        # 注意：不使用 `%H:%M` 时间，因为时间变化会使 KV-Cache 前缀失效
+        # 当前时间通过 System Reminder 在每轮 user 消息前注入（见 run() 中 build_reminders）
         from datetime import datetime
         now = datetime.now()
         date_cn = f"{now.year}年{now.month}月{now.day}日"
-        time_str = now.strftime("%H:%M")
         dow = ['一','二','三','四','五','六','日'][now.weekday()]
         pm.add_section(
             section_id="current_datetime",
             title="",
-            content=f"当前日期: {date_cn} 星期{dow} {time_str}\n"
-                    f"【重要】纯时间计算（如\"X小时后是几点\"）直接在脑中推理即可，无需调用任何工具。",
+            content=f"当前日期: {date_cn} 星期{dow}\n"
+                    f"【重要】纯时间计算（如\"X小时后是几点\"）直接在脑中推理即可，无需调用任何工具。\n"
+                    f"当前具体时间在每轮对话开始时会自动注入。",
             order=1,
             budget_tag="system",
         )

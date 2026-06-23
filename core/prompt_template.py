@@ -396,7 +396,10 @@ def build_reminders(
 ) -> str:
     """构建短提醒列表，每次用户消息前注入。
 
-    Claude Code 设计启示（Section 7.1 ）:
+    第一轮（turn_count=0）额外注入当前时间，以维持 system prompt 前缀稳定
+    （时间不混入 L1 缓存区，放在这里的 L3 区不影响 KV-Cache 命中）。
+
+    Claude Code 设计启示（Section 7.1）:
     - 每次用户消息前注入 1-3 条简短、聚焦的「系统提醒」
     - 比完整 system prompt 刷新更轻量，更精准
     - 可承载：当前进度提示、工具使用约定、记忆线索
@@ -414,6 +417,14 @@ def build_reminders(
         单条提醒不超过 80 字符，不超过 3 条。
     """
     reminders: list[str] = []
+
+    # ── 第一轮：注入当前时间（维持 system prompt 前缀稳定） ──
+    if turn_count == 1:
+        from datetime import datetime
+        _now = datetime.now()
+        reminders.append(
+            f"当前时间: {_now.strftime('%H:%M')}"
+        )
 
     # ── 轮次提醒：高轮次时提示聚焦 ──
     if turn_count > 5:
