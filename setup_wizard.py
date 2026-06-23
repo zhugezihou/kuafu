@@ -112,68 +112,141 @@ def show_banner():
 
 
 # ─── LLM 配置 ────────────────────────────────────────────────────────────────
-def ask_backend() -> str:
+# 第三方模型提供商列表（显示名, provider_id, 需要 base_url）
+THIRD_PARTY_PROVIDERS = [
+    ("OpenRouter", "openrouter", False),
+    ("Anthropic Claude（OpenAI 兼容）", "claude", False),
+    ("自定义（OpenAI 兼容 API）", "custom", True),
+]
+
+def ask_backend() -> tuple[str, str]:
+    """选择后端模式 + 具体模型提供商。
+    Returns:
+        (backend_type, provider_id)
+        backend_type: "cloud" | "local"
+        provider_id: "deepseek" | "openrouter" | "claude" | "custom" | "qwen"
+    """
     print_step(1, "选择 LLM 后端")
-    print_info("夸父支持两种运行模式：")
-    print_info("  cloud  — 云端模式（DeepSeek API），需要 API Key，免 GPU")
-    print_info("  local  — 本地模式（Qwen3.5-9B），需要 NVIDIA GPU 8GB+")
+    print_info("夸父支持以下运行模式：")
+    print_info("  cloud   — 云端模式，需要 API Key，免 GPU")
+    print_info("  local   — 本地模式（Qwen），需要 NVIDIA GPU 8GB+")
     print_info("")
-    print_info("也可同时配置两者，通过 KUAFU_PROVIDERS 设置降级顺序：")
-    print_info("  KUAFU_PROVIDERS=deepseek,qwen  # DeepSeek 为主，本地为备")
-    print_info("  云端不可用时自动降级到本地，不中断工作流")
+    print_info("云端模式下可选择多种模型提供商：")
 
     if RICH_AVAILABLE:
         backend = Prompt.ask(
-            "\n  选择后端",
+            "\\n  选择后端",
             choices=["cloud", "local"],
             default="cloud",
         )
     else:
-        print("\n  输入后端类型 [cloud/local] (默认: cloud): ", end="")
+        print("\\n  输入后端类型 [cloud/local] (默认: cloud): ", end="")
         backend = input().strip().lower() or "cloud"
 
-    if backend == "local":
-        print_info("本地模式需要安装 llama.cpp 并下载模型文件")
+    provider_id = ""
+    if backend == "cloud":
+        print_info("")
+        print_info("选择云端模型提供商：")
+        print_info("  1. DeepSeek Chat（默认）— 性价比高，中文优秀")
+        for i, (name, pid, _) in enumerate(THIRD_PARTY_PROVIDERS, 2):
+            print_info(f"  {i}. {name}")
+
+        if RICH_AVAILABLE:
+            choice = Prompt.ask(
+                "\\n  选择",
+                choices=[str(i) for i in range(1, len(THIRD_PARTY_PROVIDERS) + 2)],
+                default="1",
+            )
+        else:
+            choice = input(f"\\n  选择 (1-{len(THIRD_PARTY_PROVIDERS) + 1}, 默认1): ").strip() or "1"
+
+        idx = int(choice) - 1
+        if idx == 0:
+            provider_id = "deepseek"
+        else:
+            provider_id = THIRD_PARTY_PROVIDERS[idx - 1][1]
+            print_info(f"已选择: {THIRD_PARTY_PROVIDERS[idx - 1][0]}")
+    else:
+        provider_id = "qwen"
+        print_info("本地模式使用 llama-server + Qwen 模型")
         print_info("请参考项目 README 中的本地部署章节")
 
-    return backend
+    return backend, provider_id
 
 
-def ask_api_key(backend: str) -> str:
+def ask_api_key(backend: str, provider_id: str) -> tuple[str, str]:
+    """配置 API Key 和可选的 Base URL。
+    Returns:
+        (api_key, base_url)
+    """
     print_step(2, "配置 API Key")
     if backend == "local":
         print_info("本地模式下 API Key 不需要（llama-server 不验证 token）")
-        return ""
+        return "", ""
 
-    print_info("夸父使用 DeepSeek Chat API（兼容 OpenAI 格式）")
-    print_info("注册: https://platform.deepseek.com/")
+    # 各提供商的信息
+    provider_info = {
+        "deepseek": ("DeepSeek Chat", "https://api.deepseek.com", "https://platform.deepseek.com/", "DEEPSEEK_API_KEY"),
+        "openrouter": ("OpenRouter", "https://openrouter.ai/api/v1", "https://openrouter.ai/keys", "OPENROUTER_API_KEY"),
+        "claude": ("Anthropic Claude", "https://api.anthropic.com", "https://console.anthropic.com/", "ANTHROPIC_API_KEY"),
+        "custom": ("自定义", "", "", "CUSTOM_API_KEY"),
+    }
 
-    existing = ""
+    info = provider_info.get(provider_id, provider_info["deepseek"])
+    name, default_url, register_url, env_key = info
+    api_key = ""
+    base_url = ""
+
+    print_info(f"夸父使用 {name} API（兼容 OpenAI 格式）")
+    if register_url:
+        print_info(f"注册: {register_url}")
+    print()
+
+    # 查找已有 API Key
+    existing_key = ""
     if DOT_ENV.exists():
         with open(DOT_ENV, encoding="utf-8") as f:
             for line in f:
-                if line.startswith("DEEPSEEK_API_KEY=") or line.startswith("KUAFFU_API_KEY="):
-                    existing = line.split("=", 1)[1].strip()
+                key_prefix = f"{env_key}="
+                if line.startswith(key_prefix):
+                    existing_key = line.split("=", 1)[1].strip()
                     break
 
-    if existing and existing != "***" and len(existing) > 3:
-        masked = existing[:4] + "****" + existing[-4:]
+    if existing_key and existing_key != "***" and len(existing_key) > 3:
+        masked = existing_key[:4] + "****" + existing_key[-4:]
         if RICH_AVAILABLE:
-            use_existing = Confirm.ask(f"\n  检测到已有 Key ({masked})，继续使用?", default=True)
+            use_existing = Confirm.ask(f"\\n  检测到已有 Key ({masked})，继续使用?", default=True)
         else:
-            print(f"\n  检测到已有 Key: {masked}")
+            print(f"\\n  检测到已有 Key: {masked}")
             resp = input("  继续使用? (Y/n): ").strip().lower()
             use_existing = resp != "n"
         if use_existing:
-            return existing
+            api_key = existing_key
 
-    if RICH_AVAILABLE:
-        api_key = Prompt.ask("\n  请输入 DeepSeek API Key", password=True)
+    if not api_key:
+        if RICH_AVAILABLE:
+            api_key = Prompt.ask(f"\\n  请输入 {name} API Key", password=True)
+        else:
+            print(f"\\n  请输入 {name} API Key: ", end="")
+            api_key = input().strip()
+
+    # Base URL（可由用户自定义）
+    if provider_id in ("custom",):
+        if RICH_AVAILABLE:
+            default_show = default_url or "（必填）"
+            base_url = Prompt.ask(f"\\n  请输入 API Base URL", default=default_show)
+        else:
+            prompt = f"\\n  请输入 API Base URL [{default_show}]: "
+            base_url = input(prompt).strip() or default_url
+    elif provider_id == "claude":
+        # Anthropic 的 API 格式需要加 /v1
+        base_url = default_url
+    elif provider_id == "openrouter":
+        base_url = default_url
     else:
-        print("\n  请输入 DeepSeek API Key: ", end="")
-        api_key = input().strip()
+        base_url = default_url
 
-    return api_key
+    return api_key, base_url
 
 
 # ─── 飞书通道配置 ────────────────────────────────────────────────────────────
@@ -349,17 +422,22 @@ def ask_multimedia() -> dict:
 
 
 # ─── 测试连接 ────────────────────────────────────────────────────────────────
-def test_connection(backend: str, api_key: str) -> bool:
+def test_connection(backend: str, provider_id: str, api_key: str, base_url: str = "") -> bool:
     print_step(6, "测试 LLM 连接")
     try:
         from core.llm import LLMClient
         if backend == "local":
-            client = LLMClient(backend="local", timeout=300)
+            client = LLMClient(providers=["qwen"], timeout=300)
         else:
             if not api_key:
                 print_err("API Key 不能为空")
                 return False
-            client = LLMClient(backend="cloud", api_key=api_key, timeout=300)
+            client = LLMClient(
+                providers=[provider_id],
+                api_key=api_key,
+                base_url=base_url or None,
+                timeout=300,
+            )
 
         print_info("发送测试请求...")
         result = client.chat([
@@ -424,8 +502,10 @@ def run_tests() -> bool:
 
 
 # ─── 保存配置 ────────────────────────────────────────────────────────────────
-def save_config(backend: str, api_key: str,
-                feishu: dict, wechat: dict, multimedia: dict = None):
+def save_config(backend: str, provider_id: str, api_key: str, base_url: str = "",
+                feishu: dict = None, wechat: dict = None, multimedia: dict = None):
+    if feishu is None: feishu = {}
+    if wechat is None: wechat = {}
     print_step(8, "保存配置")
 
     config_lines = []
@@ -445,17 +525,42 @@ def save_config(backend: str, api_key: str,
             config_lines.append(f"{key}={value}")
 
     # LLM 配置
-    if api_key:
-        set_var("DEEPSEEK_API_KEY", api_key)
-        set_var("KUAFFU_API_KEY", api_key)
     set_var("KUAFFU_BACKEND", backend)
-    if backend == "cloud":
-        set_var("KUAFFU_BASE_URL", "https://api.deepseek.com")
-        set_var("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-        set_var("KUAFU_PROVIDERS", "deepseek")
-    elif backend == "local":
+
+    if backend == "local":
         set_var("KUAFU_PROVIDERS", "qwen")
-        set_var("QWEN_BASE_URL", "http://localhost:8080")
+        set_var("QWEN_BASE_URL", base_url or "http://localhost:8080")
+    elif provider_id == "deepseek":
+        if api_key:
+            set_var("DEEPSEEK_API_KEY", api_key)
+            set_var("KUAFFU_API_KEY", api_key)
+        set_var("DEEPSEEK_BASE_URL", base_url or "https://api.deepseek.com")
+        set_var("KUAFU_PROVIDERS", "deepseek,qwen" if backend != "local" else "qwen")
+    elif provider_id == "openrouter":
+        if api_key:
+            set_var("OPENROUTER_API_KEY", api_key)
+        set_var("OPENROUTER_BASE_URL", base_url or "https://openrouter.ai/api/v1")
+        openrouter_model = os.environ.get("OPENROUTER_MODEL", "")
+        if not openrouter_model:
+            openrouter_model = input("  OpenRouter 模型名 (默认 qwen/qwen3.5-9b): ").strip() or "qwen/qwen3.5-9b"
+        set_var("OPENROUTER_MODEL", openrouter_model)
+        set_var("KUAFU_PROVIDERS", "openrouter,qwen")
+    elif provider_id == "claude":
+        if api_key:
+            set_var("ANTHROPIC_API_KEY", api_key)
+            set_var("CLAUDE_API_KEY", api_key)
+        set_var("CLAUDE_BASE_URL", base_url or "https://api.anthropic.com")
+        set_var("KUAFU_PROVIDERS", "claude,qwen")
+    elif provider_id == "custom":
+        if api_key:
+            set_var("CUSTOM_API_KEY", api_key)
+        if base_url:
+            set_var("CUSTOM_BASE_URL", base_url)
+        custom_model = os.environ.get("CUSTOM_MODEL", "")
+        if not custom_model:
+            custom_model = input("  自定义模型名 (必填): ").strip()
+            set_var("CUSTOM_MODEL", custom_model)
+        set_var("KUAFU_PROVIDERS", "custom,qwen")
 
     # 通道配置
     for k, v in feishu.items():
@@ -542,8 +647,8 @@ def main():
 
     try:
         # 1-2. LLM 配置
-        backend = ask_backend()
-        api_key = ask_api_key(backend)
+        backend, provider_id = ask_backend()
+        api_key, base_url = ask_api_key(backend, provider_id)
 
         # 3. 飞书通道（可选）
         feishu_config = ask_feishu()
@@ -555,7 +660,7 @@ def main():
         multimedia_config = ask_multimedia()
 
         # 6. 测试连接
-        test_ok = test_connection(backend, api_key)
+        test_ok = test_connection(backend, provider_id, api_key, base_url)
 
         if not test_ok:
             print_warn("连接测试未通过，配置仍会保存")
@@ -573,7 +678,8 @@ def main():
             print_warn("测试未全部通过，请检查代码")
 
         # 8. 保存
-        save_config(backend, api_key, feishu_config, wechat_config, multimedia_config)
+        save_config(backend, provider_id, api_key, base_url,
+                    feishu_config, wechat_config, multimedia_config)
 
         # 9. 本地模式额外检查
         if backend == "local":
