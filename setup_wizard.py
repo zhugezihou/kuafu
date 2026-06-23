@@ -421,6 +421,58 @@ def ask_multimedia() -> dict:
     return result
 
 
+# ─── Tavily 搜索配置 ─────────────────────────────────────────────────────────
+def ask_tavily() -> str:
+    """配置 Tavily Search API Key（可选）。"""
+    print_step(6, "Tavily 搜索（可选）")
+    print_info("Tavily 是专业的 AI 搜索引擎，比传统搜索更稳定、质量更高。")
+    print_info("配置后专家系统（金融、研究等）可以使用 Tavily 搜索实时信息。")
+    print_info("注册: https://tavily.com/")
+    print()
+
+    if RICH_AVAILABLE:
+        enable = Confirm.ask("  是否配置 Tavily Search?", default=False)
+    else:
+        resp = input("  是否配置 Tavily Search? (y/N): ").strip().lower()
+        enable = resp == "y"
+
+    if not enable:
+        print_info("跳过 Tavily 配置，搜索工具会回退到内置搜索引擎")
+        return ""
+
+    existing = ""
+    if DOT_ENV.exists():
+        with open(DOT_ENV) as f:
+            for line in f:
+                if line.startswith("TAVILY_API_KEY="):
+                    existing = line.split("=", 1)[1].strip()
+                    break
+
+    if existing and existing != "***" and len(existing) > 3:
+        masked = existing[:4] + "****" + existing[-4:]
+        if RICH_AVAILABLE:
+            use = Confirm.ask(f"  检测到已有 Key ({masked})，继续使用?", default=True)
+        else:
+            print(f"  检测到已有 Key: {masked}")
+            use = input("  继续使用? (Y/n): ").strip().lower() != "n"
+        if use:
+            print_ok("Tavily 配置完成")
+            return existing
+
+    if RICH_AVAILABLE:
+        api_key = Prompt.ask("  请输入 Tavily API Key", password=True)
+    else:
+        print("  请输入 Tavily API Key: ", end="")
+        api_key = input().strip()
+
+    if api_key:
+        print_ok("Tavily 配置完成")
+    else:
+        print_info("已跳过 Tavily 配置")
+
+    return api_key
+
+
 # ─── 测试连接 ────────────────────────────────────────────────────────────────
 def test_connection(backend: str, provider_id: str, api_key: str, base_url: str = "") -> bool:
     print_step(6, "测试 LLM 连接")
@@ -503,7 +555,8 @@ def run_tests() -> bool:
 
 # ─── 保存配置 ────────────────────────────────────────────────────────────────
 def save_config(backend: str, provider_id: str, api_key: str, base_url: str = "",
-                feishu: dict = None, wechat: dict = None, multimedia: dict = None):
+                feishu: dict = None, wechat: dict = None, multimedia: dict = None,
+                tavily_api_key: str = ""):
     if feishu is None: feishu = {}
     if wechat is None: wechat = {}
     print_step(8, "保存配置")
@@ -581,10 +634,191 @@ def save_config(backend: str, provider_id: str, api_key: str, base_url: str = ""
             if api_key_val:
                 set_var(f"{category.upper()}_API_KEY", api_key_val)
 
+    if tavily_api_key:
+        set_var("TAVILY_API_KEY", tavily_api_key)
+
     with open(DOT_ENV, "w", encoding="utf-8") as f:
         f.write("\n".join(config_lines) + "\n")
 
     print_ok(f"配置文件已保存: {DOT_ENV}")
+
+
+# ─── 修复 ─────────────────────────────────────────────────────────────────────
+def repair():
+    """修复夸父安装：检查依赖、配置、关键文件。"""
+    print_step(0, "夸父修复工具")
+    print_info("检查安装完整性...\n")
+
+    issues = 0
+
+    # 1. 检查 .env
+    if not DOT_ENV.exists():
+        print_warn(".env 配置文件不存在，运行 python setup_wizard.py 创建")
+        issues += 1
+    else:
+        print_ok(".env 配置文件存在")
+
+    # 2. 检查关键目录
+    for d in ["core", "experts", "tests"]:
+        p = ROOT_DIR / d
+        if p.exists() and p.is_dir():
+            print_ok(f"  {d}/ 目录存在")
+        else:
+            print_err(f"  {d}/ 目录缺失——请重新安装夸父")
+            issues += 1
+
+    # 3. 检查 Python 依赖
+    deps = ["pyyaml"]
+    for dep in deps:
+        try:
+            __import__(dep.replace("-", "_"))
+            print_ok(f"  {dep} 已安装")
+        except ImportError:
+            print_warn(f"  {dep} 未安装，尝试安装...")
+            import subprocess
+            r = subprocess.run(
+                [sys.executable, "-m", "pip", "install", dep, "--break-system-packages"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if r.returncode == 0:
+                print_ok(f"  {dep} 已安装")
+            else:
+                print_err(f"  {dep} 安装失败: {r.stderr[:100]}")
+                issues += 1
+
+    # 4. 检查专家配置
+    expert_dir = ROOT_DIR / "experts"
+    if expert_dir.exists():
+        yamls = list(expert_dir.glob("*.yaml"))
+        if yamls:
+            print_ok(f"  {len(yamls)} 个专家配置")
+        else:
+            print_warn("  专家目录为空")
+            issues += 1
+
+    # 5. 测试核心模块导入
+    try:
+        from core.llm import LLMClient
+        from core.memory import MemoryManager
+        from core.session_store import SessionStore
+        print_ok("  核心模块导入正常")
+    except Exception as e:
+        print_err(f"  核心模块导入失败: {e}")
+        issues += 1
+
+    # 6. 测试运行
+    print_info("\n运行核心测试...")
+    import subprocess
+    r = subprocess.run(
+        [sys.executable, "-m", "pytest",
+         "tests/test_bulk_gateway_loop.py",
+         "--tb=short", "-q"],
+        cwd=str(ROOT_DIR),
+        capture_output=True, text=True, timeout=60,
+    )
+    if r.returncode == 0:
+        print_ok("  核心测试通过")
+    else:
+        print_warn(f"  测试失败 ({r.returncode})，部分模块可能异常")
+        print(f"    {r.stderr[:200]}")
+        issues += 1
+
+    print()
+    if issues == 0:
+        print_ok("夸父安装完好，无需修复！")
+    else:
+        print_warn(f"发现 {issues} 个问题，请手动检查。")
+        print_info("如需完全重装，运行: python setup_wizard.py uninstall")
+
+    return 0
+
+
+# ─── 卸载 ─────────────────────────────────────────────────────────────────────
+def uninstall():
+    """卸载夸父：清理配置文件、数据库、缓存。"""
+    print_step(0, "夸父卸载工具")
+    print_warn("这将删除夸父的所有配置、记忆数据和缓存。")
+    print_warn("代码目录本身不会删除（手动删除: rm -rf kuafu）\n")
+
+    if RICH_AVAILABLE:
+        confirm = Confirm.ask("  确认卸载?", default=False)
+    else:
+        confirm = input("  确认卸载? (y/N): ").strip().lower() == "y"
+
+    if not confirm:
+        print_info("卸载已取消")
+        return 1
+
+    # 删除内容
+    targets = []
+
+    # .env
+    if DOT_ENV.exists():
+        targets.append(str(DOT_ENV))
+
+    # memory 目录下的 db/wal/shm
+    memory_dir = ROOT_DIR / "memory"
+    if memory_dir.exists():
+        for p in memory_dir.glob("*.db"):
+            targets.append(str(p))
+        for p in memory_dir.glob("*.db-wal"):
+            targets.append(str(p))
+        for p in memory_dir.glob("*.db-shm"):
+            targets.append(str(p))
+        for p in memory_dir.glob("*.json"):
+            targets.append(str(p))
+
+    # cron 输出
+    cron_out = ROOT_DIR / "cron" / "output"
+    if cron_out.exists():
+        for p in cron_out.iterdir():
+            targets.append(str(p))
+
+    # 工具结果缓存
+    tool_dir = ROOT_DIR / ".config" / "kuafu" / "tool_results"
+    if tool_dir.exists():
+        for p in tool_dir.rglob("*"):
+            if p.is_file():
+                targets.append(str(p))
+
+    # 会话映射
+    map_file = ROOT_DIR / "core" / "memory" / "session_map.json"
+    if map_file.exists():
+        targets.append(str(map_file))
+
+    if not targets:
+        print_info("未发现夸父的配置文件，似乎已经清理过了。")
+        return 0
+
+    print_info(f"将删除 {len(targets)} 个文件/目录:\n")
+    for t in targets[:10]:
+        print_info(f"  rm {t}")
+    if len(targets) > 10:
+        print_info(f"  ...及其他 {len(targets) - 10} 个文件")
+
+    print()
+    if RICH_AVAILABLE:
+        confirm2 = Confirm.ask("  确认执行删除?", default=False)
+    else:
+        confirm2 = input("  确认执行删除? (y/N): ").strip().lower() == "y"
+
+    if not confirm2:
+        print_info("卸载已取消")
+        return 1
+
+    import shutil
+    for t in targets:
+        p = Path(t)
+        try:
+            if p.is_dir():
+                shutil.rmtree(p)
+            else:
+                p.unlink(missing_ok=True)
+        except Exception as e:
+            print_err(f"  删除失败: {t} ({e})")
+
+    print_ok("夸父配置已清除。如需完全删除代码，执行: rm -rf kuafu")
+    return 0
 
 
 # ─── 本地模式前置检查 ────────────────────────────────────────────────────────
@@ -646,6 +880,22 @@ def main():
     print_info("全程约 3 分钟，配置项可随时修改 .env 文件。")
 
     try:
+        # 解析命令行参数
+        import sys as _sys
+        _args = [a for a in _sys.argv[1:] if not a.startswith("-")]
+        _mode = _args[0] if _args else "setup"
+
+        if _mode == "uninstall":
+            return uninstall()
+        elif _mode == "repair":
+            return repair()
+
+        show_banner()
+        print_info("欢迎！让我帮你完成夸父的初始配置。")
+        print_info("全程约 3 分钟，配置项可随时修改 .env 文件。")
+        print_info("其他模式: python setup_wizard.py repair | uninstall")
+        print()
+
         # 1-2. LLM 配置
         backend, provider_id = ask_backend()
         api_key, base_url = ask_api_key(backend, provider_id)
@@ -659,7 +909,10 @@ def main():
         # 5. 多媒体服务（可选）
         multimedia_config = ask_multimedia()
 
-        # 6. 测试连接
+        # 6. Tavily 搜索（可选）
+        tavily_api_key = ask_tavily()
+
+        # 7. 测试连接
         test_ok = test_connection(backend, provider_id, api_key, base_url)
 
         if not test_ok:
@@ -679,7 +932,7 @@ def main():
 
         # 8. 保存
         save_config(backend, provider_id, api_key, base_url,
-                    feishu_config, wechat_config, multimedia_config)
+                    feishu_config, wechat_config, multimedia_config, tavily_api_key)
 
         # 9. 本地模式额外检查
         if backend == "local":

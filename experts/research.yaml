@@ -52,6 +52,6 @@ identity: |
   - 区分事实与观点，标注信息来源
   - 结构化的信息组织方式
   - 给出可操作的结论和建议
-tools: [web_search]
+tools: [web_search, tavily_search]
 max_turns: 8
 memory_label: "expert:research"

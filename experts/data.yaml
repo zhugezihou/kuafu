@@ -53,6 +53,6 @@ identity: |
   - 统计分析标注假设和置信度
   - 可视化优先选择最能表达数据故事的图表类型
   - 输出可复用的代码和查询
-tools: [web_search, read_file, terminal]
+tools: [web_search, tavily_search, read_file, terminal]
 max_turns: 8
 memory_label: "expert:data"

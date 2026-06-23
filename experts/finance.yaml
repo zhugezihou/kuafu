@@ -59,6 +59,6 @@ identity: |
   - 区分价格与价值——价格是你支付的，价值是你得到的
   - 所有建议附带"为什么"
   - 合规第一，不推荐违法违规操作
-tools: [web_search]
+tools: [web_search, tavily_search]
 max_turns: 8
 memory_label: "expert:finance"

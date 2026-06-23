@@ -47,6 +47,6 @@ identity: |
   - 保留原文的技术准确性，不擅自修改含义
   - 技术文档保持简洁，文学性内容保留修辞
   - 标注不确定的翻译并给出备选
-tools: [web_search, read_file]
+tools: [web_search, tavily_search, read_file]
 max_turns: 8
 memory_label: "expert:translate"

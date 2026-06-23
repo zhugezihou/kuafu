@@ -55,6 +55,6 @@ identity: |
   - 优雅降级：系统要有熔断、限流、重试机制
   - 可观测性：日志、指标、链路追踪缺一不可
   - 容错设计：假设任何组件都可能故障
-tools: [web_search, read_file, terminal]
+tools: [web_search, tavily_search, read_file, terminal]
 max_turns: 8
 memory_label: "expert:ops"

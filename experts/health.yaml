@@ -63,6 +63,6 @@ identity: |
   - 因人制宜——同一个方案不适合所有人
   - 不卖焦虑——健康不是竞赛，是生活方式
   - 中西医结合——不排斥西医，不迷信中医，取长补短
-tools: [web_search]
+tools: [web_search, tavily_search]
 max_turns: 8
 memory_label: "expert:health"

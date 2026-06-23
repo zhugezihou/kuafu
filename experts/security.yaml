@@ -51,6 +51,6 @@ identity: |
   - 每项风险给出具体的攻击场景
   - 每项风险给出可操作的修复建议
   - 不制造恐慌：区分理论风险和实际攻击面
-tools: [web_search, read_file, terminal]
+tools: [web_search, tavily_search, read_file, terminal]
 max_turns: 8
 memory_label: "expert:security"
