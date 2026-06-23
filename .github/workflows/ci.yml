@@ -65,14 +65,17 @@ jobs:
             tests/test_whiteboard.py \
             tests/test_decomposer.py \
             tests/test_executor.py \
+            tests/test_coverage_additions.py \
             --tb=short -q; echo "TEST_EXIT_CODE=$?"
 
       - name: Agent Loop 测试（单独跑，避免 timeout 冲突）
         env:
           COVERAGE_FILE: .coverage.ci
+          KUAFU_PROVIDERS: "deepseek"
         run: |
           coverage run --source=core --parallel-mode -m pytest \
             tests/test_agent_loop_helpers.py \
+            tests/test_agent_loop_run.py \
             tests/test_bulk.py -k "TestAgentLoop" \
             --tb=short -q
 
@@ -95,7 +98,7 @@ jobs:
 
       - name: 集成测试（端到端）
         env:
-          KUAFFU_API_KEY: test-dummy-key
+          KUAFU_PROVIDERS: "deepseek"
         run: |
           python -m pytest \
             tests/test_all.py \
@@ -153,6 +156,8 @@ jobs:
             tests/test_decomposer.py \
             tests/test_executor.py \
             tests/test_agent_loop_helpers.py \
+            tests/test_agent_loop_run.py \
+            tests/test_coverage_additions.py \
             tests/test_bulk.py -k "TestAgentLoop" \
             --tb=short -q && \
           coverage report --include="core/*.py" --sort=Cover

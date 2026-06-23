@@ -51,12 +51,12 @@ def test_sandbox():
 
 def test_memory_api():
     """测试记忆系统"""
-    from core.memory_api import MemoryAPI
+    from core.memory.memory_manager import MemoryManager
     import tempfile
     from pathlib import Path
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        api = MemoryAPI(mode="file", memory_dir=Path(tmpdir))
+        api = MemoryManager(db_path=Path(tmpdir) / "memory.db")
 
         # 写入
         assert api.remember("test:hello", "这是一个测试记忆", tags=["test"])
@@ -120,7 +120,7 @@ def test_agent_repr():
     agent = KuafuAgent()
     assert "KuafuAgent" in repr(agent)
     assert "夸父" in agent.name
-    assert "0.2" in agent.version
+    assert "1.1" in agent.version
 
     print("✅ main: Agent 初始化正常")
 
@@ -158,10 +158,10 @@ def test_agent_prompt():
 
 def test_full_flow():
     """端到端流程：直接测试 memory + evolution 配合"""
-    from core.memory_api import MemoryAPI
+    from core.memory.memory_manager import MemoryManager
     from core.evolution import EvolutionEngine
 
-    memory = MemoryAPI()
+    memory = MemoryManager()
     evolution = EvolutionEngine()
     
     # 记忆 + 进化联合测试
@@ -203,7 +203,7 @@ def test_core_charter():
     assert (root / "CORE_CHARTER.md").exists(), "CORE_CHARTER.md 必须存在"
     assert (root / "IDENTITY.md").exists(), "IDENTITY.md 必须存在"
     # 确认 core/ 下所有模块（V0.2 新增 agent_loop + llm）
-    core_files = ["identity.py", "safety.py", "memory_api.py", "evolution.py",
+    core_files = ["identity.py", "safety.py", "memory/__init__.py", "evolution.py",
                   "main.py", "agent_loop.py", "llm.py"]
     for f in core_files:
         assert (root / "core" / f).exists(), f"core/{f} 必须存在"
