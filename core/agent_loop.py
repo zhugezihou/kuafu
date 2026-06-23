@@ -335,6 +335,36 @@ class AgentLoop:
     # ── 专家执行（在父 Agent 内完成，不创建子 Agent） ──
 
     @staticmethod
+    def _expert_llm_call_with_timeout(
+        llm, messages: list[dict], tools, expert_name: str,
+        timeout: int = 180
+    ) -> dict:
+        """带 watchdog 超时的专家 LLM 调用。
+
+        主线线程直接调 llm.chat 在 Gateway 多线程环境下可能
+        因 Python GIL + SSL 竞争导致 urlopen 超时不触发。
+        用独立线程 + Event.wait() 兜底。
+        """
+        import threading
+        resp = [None]
+        exc = [None]
+        done = threading.Event()
+        def _call():
+            try:
+                resp[0] = llm.chat(messages, tools=tools)
+            except Exception as e:
+                exc[0] = e
+            finally:
+                done.set()
+        t = threading.Thread(target=_call, daemon=True, name=f"expert-{expert_name}")
+        t.start()
+        if not done.wait(timeout=timeout):
+            return {"success": False, "content": "", "error": f"专家 {expert_name} LLM 调用超时（{timeout}s）"}
+        if exc[0]:
+            raise exc[0]  # 在外层 except 中统一处理
+        return resp[0]
+
+    @staticmethod
     def _parse_expert_args(raw_args) -> dict:
         """解析专家工具调用的 arguments（兼容 JSON 字符串和 dict）。"""
         import json as _j
@@ -445,7 +475,7 @@ class AgentLoop:
                 {"role": "user", "content": task},
             ]
             tools = self._build_expert_tools(profile)
-            resp = self.llm.chat(messages, tools=tools)
+            resp = self._expert_llm_call_with_timeout(self.llm, messages, tools, expert_name)
 
             # 确保 orchestrator 已初始化（专家内部工具调用跳过审批）
             self._init_orchestrator()
@@ -562,7 +592,7 @@ class AgentLoop:
                 {"role": "user", "content": task},
             ]
             tools = self._build_expert_tools(profile)
-            resp = self.llm.chat(messages, tools=tools)
+            resp = self._expert_llm_call_with_timeout(self.llm, messages, tools, profile.name)
 
             content = ""
             if isinstance(resp, dict):
