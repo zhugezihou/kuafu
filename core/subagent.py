@@ -663,7 +663,7 @@ def get_invoke_expert_schema() -> dict:
         expert_desc = "暂无可用专家"
 
     return {
-        "description": "调用一个专业领域的专家 Agent 来分析问题。专家有独立的身份、工具和记忆。适合需要专业领域知识的任务。如果任务需要多个角度分析，请使用 invoke_experts。",
+        "description": "调用一个专业领域的专家 Agent 来分析问题。专家有独立的身份、工具和记忆。适合需要专业领域知识的任务。**重要：专家的输出就是你直接回复给用户的最终答案，必须将专家输出的内容整合或转述给用户，不能只告诉用户'已调用专家'或'让专家去做'而不输出专家结果。** 如果任务需要多个角度分析，请使用 invoke_experts。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -692,7 +692,7 @@ def get_invoke_experts_schema() -> dict:
         expert_desc = "暂无可用专家"
 
     return {
-        "description": "并行调用多个专业领域的专家 Agent 从不同角度分析同一个问题。所有专家并行执行，完成后自动汇总结果。适合需要多维度分析的任务。",
+        "description": "并行调用多个专业领域的专家 Agent 从不同角度分析同一个问题。所有专家并行执行，完成后自动汇总结果。适合需要多维度分析的任务。**重要：专家的输出就是你直接回复给用户的最终答案，必须将各专家的输出整合后输出给用户，不能只告诉用户'已调用专家'而不输出专家结果。**",
         "parameters": {
             "type": "object",
             "properties": {

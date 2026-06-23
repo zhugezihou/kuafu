@@ -481,7 +481,7 @@ class AgentLoop:
                 except Exception:
                     pass
 
-            return {"success": True, "output": content, "expert": expert_name}
+            return {"success": True, "output": content, "expert": expert_name, "_direct_reply": True}
         except Exception as e:
             return {"success": False, "output": f"专家执行异常: {e}"}
 
@@ -1651,6 +1651,13 @@ class AgentLoop:
                     # ── 安全脱敏：对终端输出中的 API key、token 等脱敏
                     raw_output = str(tool_result.get("output", "(无输出)"))
                     safe_output = SafetyLayer.sanitize_text(raw_output)
+
+                    # ── 直接回复标记：如果工具标记了 _direct_reply，提示 LLM 这是要给用户的最终内容 ──
+                    if tool_result.get("_direct_reply"):
+                        safe_output = (
+                            f"[专家回复 - 这是直接给用户的最终内容，请将其整合到你的回复中输出给用户]\n\n"
+                            f"{safe_output}"
+                        )
 
                     # ── Microcompact：大工具结果 → 磁盘摘要 ──
                     # Budget Aware：如果 TOOLS 预算超限，降低 microcompact 阈值
