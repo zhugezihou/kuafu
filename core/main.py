@@ -759,7 +759,10 @@ def main():
                     print(f"   结果: {result.get('result', '(空)')[:200]}")
             if result.get("evolution"):
                 evo = result["evolution"]
-                print(f"   🧬 进化: L{evo.level} — {evo.action}")
+                evo_level = evo.get("level", "info") if isinstance(evo, dict) else getattr(evo, "level", "info")
+                evo_action = evo.get("action", "") if isinstance(evo, dict) else getattr(evo, "action", "")
+                if evo_action:
+                    print(f"   🧬 进化: L{evo_level} — {evo_action}")
             turn_label = "多轮" if result.get("is_followup") else "单次"
             print(f"   ⏱ {result['duration']}s | {turn_label} | {result.get('turns', 0)} turns")
             quality = result.get("quality")
