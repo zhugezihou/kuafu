@@ -311,6 +311,46 @@ def ask_feishu() -> dict:
     return config
 
 
+# ─── 通道高级配置 ──────────────────────────────────────────────────────────────
+def ask_channel_advanced(feishu_config: dict) -> dict:
+    """飞书通道高级配置（Bot 名称、管理员等）。"""
+    if not feishu_config:
+        return feishu_config
+
+    print_step(4, "飞书通道高级配置（可选）")
+    print_info("配置 Bot 名称、管理员、回复行为等。")
+    print()
+
+    if RICH_AVAILABLE:
+        enable = Confirm.ask("  配置飞书高级选项?", default=False)
+    else:
+        resp = input("  配置飞书高级选项? (y/N): ").strip().lower()
+        enable = resp == "y"
+
+    if not enable:
+        print_info("跳过高级配置，使用默认值")
+        return feishu_config
+
+    bot_name = ""
+    if DOT_ENV.exists():
+        with open(DOT_ENV) as f:
+            for line in f:
+                if line.startswith("FEISHU_BOT_NAME="):
+                    bot_name = line.split("=", 1)[1].strip()
+                    break
+    if RICH_AVAILABLE:
+        feishu_config["FEISHU_BOT_NAME"] = Prompt.ask("  Bot 显示名称", default=bot_name or "夸父")
+    else:
+        inp = input(f"  Bot 显示名称 [{bot_name or '夸父'}]: ").strip()
+        feishu_config["FEISHU_BOT_NAME"] = inp or bot_name or "夸父"
+
+    feishu_config["FEISHU_REPLY_PRIVATE"] = "true"
+    feishu_config["FEISHU_ENABLE_PREVIEW"] = "true"
+
+    print_ok("飞书高级配置完成")
+    return feishu_config
+
+
 # ─── 微信 iLink 通道配置 ─────────────────────────────────────────────────────
 def ask_wechat() -> dict:
     print_step(4, "个人微信通道（可选）")
@@ -473,6 +513,81 @@ def ask_tavily() -> str:
     return api_key
 
 
+# ─── GitHub Token 配置 ────────────────────────────────────────────────────────
+def ask_github_token() -> str:
+    """配置 GitHub Personal Access Token（可选）。"""
+    print_step(7, "GitHub 集成（可选）")
+    print_info("GitHub Token 让夸父可以搜索代码、创建 Issue、管理仓库。")
+    print_info("注册: https://github.com/settings/tokens （需要 repo 和 read:org 权限）")
+    print()
+
+    if RICH_AVAILABLE:
+        enable = Confirm.ask("  是否配置 GitHub Token?", default=False)
+    else:
+        resp = input("  是否配置 GitHub Token? (y/N): ").strip().lower()
+        enable = resp == "y"
+
+    if not enable:
+        print_info("跳过 GitHub 配置，代码搜索工具不可用")
+        return ""
+
+    existing = ""
+    if DOT_ENV.exists():
+        with open(DOT_ENV) as f:
+            for line in f:
+                if line.startswith("GITHUB_TOKEN="):
+                    existing = line.split("=", 1)[1].strip()
+                    break
+
+    if existing and existing != "***" and len(existing) > 3:
+        masked = existing[:4] + "****" + existing[-4:]
+        if RICH_AVAILABLE:
+            use = Confirm.ask(f"  检测到已有 Token ({masked})，继续使用?", default=True)
+        else:
+            print(f"  检测到已有 Token: {masked}")
+            use = input("  继续使用? (Y/n): ").strip().lower() != "n"
+        if use:
+            print_ok("GitHub 配置完成")
+            return existing
+
+    if RICH_AVAILABLE:
+        token = Prompt.ask("  请输入 GitHub Personal Access Token", password=True)
+    else:
+        print("  请输入 GitHub Personal Access Token: ", end="")
+        token = input().strip()
+
+    if token:
+        print_ok("GitHub 配置完成")
+    else:
+        print_info("已跳过 GitHub 配置")
+
+    return token
+
+
+# ─── PyPI 升级检查 ────────────────────────────────────────────────────────────
+def check_upgrade():
+    """检查 PyPI 上夸父的最新版本。"""
+    print_step(9, "版本升级检查")
+    try:
+        import urllib.request, json
+        req = urllib.request.Request(
+            "https://pypi.org/pypi/kuafu-agent/json",
+            headers={"Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+            latest = data.get("info", {}).get("version", "")
+        if latest:
+            current = "1.1.1"
+            if latest > current:
+                print_warn(f"有新版本可用: {latest} (当前: {current})")
+                print_info(f"升级: pip install --upgrade kuafu-agent")
+            else:
+                print_ok(f"夸父 v{current} 已是最新版本")
+    except Exception:
+        print_info("无法检查更新（网络不可用）")
+
+
 # ─── 测试连接 ────────────────────────────────────────────────────────────────
 def test_connection(backend: str, provider_id: str, api_key: str, base_url: str = "") -> bool:
     print_step(6, "测试 LLM 连接")
@@ -556,7 +671,7 @@ def run_tests() -> bool:
 # ─── 保存配置 ────────────────────────────────────────────────────────────────
 def save_config(backend: str, provider_id: str, api_key: str, base_url: str = "",
                 feishu: dict = None, wechat: dict = None, multimedia: dict = None,
-                tavily_api_key: str = ""):
+                tavily_api_key: str = "", github_token: str = ""):
     if feishu is None: feishu = {}
     if wechat is None: wechat = {}
     print_step(8, "保存配置")
@@ -636,6 +751,9 @@ def save_config(backend: str, provider_id: str, api_key: str, base_url: str = ""
 
     if tavily_api_key:
         set_var("TAVILY_API_KEY", tavily_api_key)
+
+    if github_token:
+        set_var("GITHUB_TOKEN", github_token)
 
     with open(DOT_ENV, "w", encoding="utf-8") as f:
         f.write("\n".join(config_lines) + "\n")
@@ -903,16 +1021,25 @@ def main():
         # 3. 飞书通道（可选）
         feishu_config = ask_feishu()
 
-        # 4. 微信通道（可选）
+        # 4. 飞书高级配置（可选）
+        feishu_config = ask_channel_advanced(feishu_config)
+
+        # 5. 微信通道（可选）
         wechat_config = ask_wechat()
 
-        # 5. 多媒体服务（可选）
+        # 6. 多媒体服务（可选）
         multimedia_config = ask_multimedia()
 
-        # 6. Tavily 搜索（可选）
+        # 7. Tavily 搜索（可选）
         tavily_api_key = ask_tavily()
 
-        # 7. 测试连接
+        # 8. GitHub Token（可选）
+        github_token = ask_github_token()
+
+        # 9. 升级检查
+        check_upgrade()
+
+        # 10. 测试连接
         test_ok = test_connection(backend, provider_id, api_key, base_url)
 
         if not test_ok:
@@ -930,9 +1057,10 @@ def main():
         if not tests_ok:
             print_warn("测试未全部通过，请检查代码")
 
-        # 8. 保存
+        # 11. 保存
         save_config(backend, provider_id, api_key, base_url,
-                    feishu_config, wechat_config, multimedia_config, tavily_api_key)
+                    feishu_config, wechat_config, multimedia_config,
+                    tavily_api_key, github_token)
 
         # 9. 本地模式额外检查
         if backend == "local":
