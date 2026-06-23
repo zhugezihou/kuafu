@@ -4,6 +4,8 @@ core/policy_manager.py — 统一策略管理器
 将 DenyRules + AutoMode + ApprovalManager + 安全命令白名单
 合并为一个统一的 PolicyManager，对外暴露三个清晰的方法：
 
+设计模式源自 Codex CLI 的 PolicyManager 概念，结合夸父现有的审批体系。
+
   - decide(tool, args, context) → PolicyDecision  # 三阶段决策（供 orchestrator 使用）
   - submit_approval(title, ...) → str              # 非阻塞提交审批
   - resolve_approval(req_id, action) → bool        # 审批决策
@@ -13,6 +15,22 @@ core/policy_manager.py — 统一策略管理器
   - ApprovalManager 保留，作为 PolicyManager 的内部组件
   - 现有 import 不受影响
 """
+
+# 
+# Copyright (c) 2026 zhugezihou
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 
 import json
 import time

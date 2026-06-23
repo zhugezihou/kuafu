@@ -1,5 +1,4 @@
 """
-夸父 LLM 客户端 v2 — N 后端 + 自动降级。
 
 v2 相对 v1 的改进：
   1. 从双后端（cloud/local）扩展为 N 后端
@@ -21,6 +20,22 @@ v2 相对 v1 的改进：
 """
 
 from __future__ import annotations
+#
+# Copyright (c) 2026 zhugezihou
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
 
 import json
 import logging
