@@ -339,30 +339,71 @@ class AgentLoop:
         llm, messages: list[dict], tools, expert_name: str,
         timeout: int = 180
     ) -> dict:
-        """带 watchdog 超时的专家 LLM 调用。
+        """带 watchdog 超时的专家 LLM 调用（子进程方式）。
 
-        主线线程直接调 llm.chat 在 Gateway 多线程环境下可能
-        因 Python GIL + SSL 竞争导致 urlopen 超时不触发。
-        用独立线程 + Event.wait() 兜底。
+        Gateway 多线程环境下 Python GIL + SSL 竞争可能导致
+        urllib 调用的 socket 超时不触发。用 subprocess 隔离执行。
         """
-        import threading
-        resp = [None]
-        exc = [None]
-        done = threading.Event()
-        def _call():
-            try:
-                resp[0] = llm.chat(messages, tools=tools)
-            except Exception as e:
-                exc[0] = e
-            finally:
-                done.set()
-        t = threading.Thread(target=_call, daemon=True, name=f"expert-{expert_name}")
-        t.start()
-        if not done.wait(timeout=timeout):
+        import json as _json
+        import subprocess as _sp
+        import sys as _sys
+
+        # 构造 payload
+        effective_max = max(getattr(llm, 'max_tokens', 4096), 8192) if not tools else getattr(llm, 'max_tokens', 4096)
+        payload = {
+            "model": llm.model if hasattr(llm, 'model') else "deepseek-chat",
+            "messages": messages,
+            "max_tokens": effective_max,
+            "temperature": getattr(llm, 'temperature', 0.7),
+        }
+        if tools:
+            payload["tools"] = tools
+
+        # 获取后端连接信息
+        backend = getattr(llm, 'backends', [None])[0] if hasattr(llm, 'backends') else None
+        base_url = getattr(backend, 'base_url', 'https://api.deepseek.com')
+        api_key = getattr(backend, 'api_key', '')
+        model = getattr(backend, 'model', 'deepseek-chat')
+        payload["model"] = model
+
+        url = f"{base_url.rstrip('/')}/v1/chat/completions"
+        body = _json.dumps(payload, ensure_ascii=False)
+        if len(body) > 100000:
+            return {"success": False, "content": "", "error": "payload 超过 100KB，放弃调用"}
+
+        # 子进程脚本：纯 urllib 调用，无任何 Gateway 上下文污染
+        script_path = Path(__file__).parent / "_expert_llm_subprocess.py"
+        # 通过 stdin 传参，避免 API key 出现在进程列表
+        input_data = _json.dumps({
+            "url": url,
+            "body": body,
+            "key": api_key,
+            "t": timeout,
+        })
+
+        try:
+            proc = _sp.run(
+                [_sys.executable, str(script_path)],
+                input=input_data,
+                capture_output=True, text=True,
+                timeout=timeout + 10,
+            )
+            if proc.returncode != 0:
+                err = proc.stderr[:200] if proc.stderr else f"exit code {proc.returncode}"
+                return {"success": False, "content": "", "error": err}
+            data = _json.loads(proc.stdout)
+            choice = data.get("choices", [{}])[0]
+            message = choice.get("message", {})
+            return {
+                "success": True,
+                "content": message.get("content", ""),
+                "tool_calls": message.get("tool_calls"),
+                "usage": data.get("usage"),
+            }
+        except _sp.TimeoutExpired:
             return {"success": False, "content": "", "error": f"专家 {expert_name} LLM 调用超时（{timeout}s）"}
-        if exc[0]:
-            raise exc[0]  # 在外层 except 中统一处理
-        return resp[0]
+        except Exception as e:
+            return {"success": False, "content": "", "error": str(e)}
 
     @staticmethod
     def _parse_expert_args(raw_args) -> dict:
