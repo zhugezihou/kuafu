@@ -1670,6 +1670,9 @@ class AgentLoop:
                     # invoke_expert/expert 的返回是给用户的最终输出，不压缩
                     if fn_name in ("invoke_expert", "invoke_experts"):
                         should_microcompact = False
+                    # read_file/memory_search 的结果是 LLM 主动请求的核心内容，不应压缩
+                    if fn_name in ("read_file", "memory_search"):
+                        should_microcompact = False
                     # 大上下文模型（≥100K tokens）提高阈值，只压缩超大结果
                     if should_microcompact:
                         ctx = self.llm.get_context_window()
@@ -2596,6 +2599,9 @@ class AgentLoop:
                         safe_output = str(tool_result.get("output", "(无输出)"))
                         # ── Microcompact ──
                         should_mcompact = ToolResultStore.should_compact(safe_output)
+                        # read_file 在白板中也是读内容，不压缩
+                        if fn_name in ("read_file",):
+                            should_mcompact = False
                         if should_mcompact:  # pragma: no cover
                             meta = self.tool_result_store.store(fn_name, safe_output)  # pragma: no cover
                             context_output = meta["compact"]  # pragma: no cover
