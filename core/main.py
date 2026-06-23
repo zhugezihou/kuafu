@@ -733,46 +733,42 @@ def main():
 
     # 交互模式（多轮对话）— 使用 readline 支持行编辑
     import readline
-    from core.input_bottom import FixedBottomUI
-    ui = FixedBottomUI()
-    ui.print_above("夸父交互模式 (输入 'exit' 退出，'new' 重置对话)")
+    print("\n夸父交互模式 (输入 exit 退出，new 重置对话)\n")
     while True:
         try:
-            task = ui.input_bottom("\n> ").strip()
+            task = input("\n> ").strip()
             if task.lower() in ("exit", "quit", "q"):
                 break
             if task.lower() in ("new", "reset", "r"):
-                ui.separator()
-                ui.print_above("🔄 对话已重置")
+                print("\n🔄 对话已重置\n")
                 continue
             if not task:
                 continue
             result = agent.converse(task)
             status_icon = "✅" if result["success"] else "❌"
+            print()
             if result["success"]:
-                ui.separator()
                 for line in result.get("result", "(无结果)").split("\n"):
-                    ui.print_above(f"{status_icon} {line}")
+                    print(f"{status_icon} {line}")
                     status_icon = "  "
             else:
                 errs = result.get("errors", [])
                 err_detail = f" — {'; '.join(errs[:3])}" if errs else ""
-                ui.print_above(f"{status_icon} 执行失败{err_detail}")
+                print(f"{status_icon} 执行失败{err_detail}")
                 if not errs:
-                    ui.print_above(f"   结果: {result.get('result', '(空)')[:200]}")
+                    print(f"   结果: {result.get('result', '(空)')[:200]}")
             if result.get("evolution"):
                 evo = result["evolution"]
-                ui.print_above(f"   🧬 进化: L{evo.level} — {evo.action}")
+                print(f"   🧬 进化: L{evo.level} — {evo.action}")
             turn_label = "多轮" if result.get("is_followup") else "单次"
-            ui.print_above(f"   ⏱ {result['duration']}s | {turn_label} | {result.get('turns', 0)} turns")
-            # 质量评分
+            print(f"   ⏱ {result['duration']}s | {turn_label} | {result.get('turns', 0)} turns")
             quality = result.get("quality")
             if quality:
                 bar = "🟩" * int(quality["score"]) + "⬜" * (10 - int(quality["score"]))
-                ui.print_above(f"   📊 质量: {quality['score']}/10 {bar}")
+                print(f"   📊 质量: {quality['score']}/10 {bar}")
                 if quality.get("suggestions") and not result.get("success"):
                     for s in quality["suggestions"][:2]:
-                        ui.print_above(f"   💡 {s}")
+                        print(f"   💡 {s}")
         except KeyboardInterrupt:
             print("\n再见！")
             break
