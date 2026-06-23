@@ -81,7 +81,7 @@ class KuafuAgent:
 
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.name = "夸父"
-        self.version = "1.1.0"
+        self.version = "1.1.1"
         self.llm = llm_client or LLMClient()
         self.memory = MemoryAPI(enable_nmm=True, llm_chat_fn=self.llm.chat)
         self.evolution = EvolutionEngine(memory=self.memory)

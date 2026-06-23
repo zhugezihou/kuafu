@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kuafu-agent"
-version = "1.1.0"
+version = "1.1.1"
 description = "夸父 (Kuafu) — 一个自我进化的 AI Agent 框架"
 readme = "README.md"
 license = {text = "Apache-2.0"}
