@@ -184,7 +184,7 @@ class LLMClient:
     def __init__(self, providers: str | list[str] | None = None,
                  api_key: str | None = None, base_url: str | None = None,
                  model: str | None = None, max_tokens: int = 4096,
-                 temperature: float = 0.7, timeout: int = 60):
+                 temperature: float = 0.7, timeout: int = 120):
         # 构建后端列表
         if providers is None:
             providers = os.environ.get("KUAFU_PROVIDERS", "deepseek").split(",")
@@ -291,6 +291,8 @@ class LLMClient:
         """
         last_error = None
 
+        # 逐后端尝试，远端（deepseek/openai）只试 1 次，本地可重试
+        # 用 _select_backend 做后端切换，以自省方式判断是否远端
         for attempt in range(max_retries * len(self.backends)):
             backend = self._select_backend()
             if not backend:
