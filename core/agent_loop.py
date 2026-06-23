@@ -151,6 +151,7 @@ class AgentLoop:
 
     MAX_CONTEXT_TOKENS = 14000  # 上下文窗口安全上限
     SYSTEM_PROMPT_RESERVE = 2000  # system prompt 预留
+    _init_logged = False  # 类级标志：初始化日志只打印一次
 
     def __init__(
         self,
@@ -173,6 +174,13 @@ class AgentLoop:
 
         # ── 只在新实例（非子 Agent）时打印引导日志 ──
         self._is_top_level = max_turns > 10  # 子 Agent 的 max_turns 通常很小
+
+        # 类级标志：首次初始化的日志只打印一次到终端
+        if not AgentLoop._init_logged:
+            self._log_to_terminal = True
+            AgentLoop._init_logged = True
+        else:
+            self._log_to_terminal = False
 
         # ── 以下全部惰性初始化（_lazy_init 中创建） ──
         self.prompt_cache = None  # PromptCache()
@@ -1113,6 +1121,12 @@ class AgentLoop:
         """记录步骤（或通过回调通知）。"""
         if self.on_step:
             self.on_step(text)
+            # 有 on_step 回调时，由回调负责输出，不再重复 print
+            return
+
+        # 首次初始化后才不重复打印终端
+        if not getattr(self, '_log_to_terminal', True):
+            return
 
         # 安全打印：替换无法编码的字符而非抛异常
         try:
