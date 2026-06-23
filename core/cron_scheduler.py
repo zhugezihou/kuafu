@@ -64,15 +64,16 @@ def parse_schedule(expr: str) -> tuple[float, str]:
         return (val * multipliers[unit], "interval")
 
     # ISO 时间格式
-    try:
-        dt = datetime.fromisoformat(expr)
-        interval = (dt - datetime.now()).total_seconds()
-        if interval < 0:
-            interval = 0
-        return (interval, "once")
-    except ValueError:
-        print(f"[CronScheduler] ⚠️ ISO时间解析失败: '{expr}', 回退到默认间隔", flush=True)
-        pass
+    if 'T' in expr:
+        try:
+            dt = datetime.fromisoformat(expr)
+            interval = (dt - datetime.now()).total_seconds()
+            if interval < 0:
+                interval = 0
+            return (interval, "once")
+        except ValueError:
+            print(f"[CronScheduler] ⚠️ ISO时间解析失败: '{expr}', 回退到默认间隔", flush=True)
+            pass
 
     # 简易 cron 表达式（只支持标准 5 字段）
     # 这里只解析小时和分钟
@@ -137,6 +138,7 @@ class CronTask:
         self.last_result = last_result
 
         self.interval, self.schedule_type = parse_schedule(schedule)
+        self.schedule_expr = schedule if self.schedule_type == "cron" else ""
         self.next_run = time.time() + self.interval
 
     def to_dict(self) -> dict:
@@ -344,6 +346,9 @@ class CronScheduler:
                     for task in self._tasks:
                         if task.enabled and now >= task.next_run:
                             due_tasks.append(task)
+                            # Cron 表达式：每次执行后重新计算时隔（而非固定间隔）
+                            if task.schedule_type == "cron" and task.schedule_expr:
+                                task.interval, _ = parse_schedule(task.schedule_expr)
                             task.next_run = now + task.interval
 
                 # 执行到期的任务
