@@ -1078,12 +1078,17 @@ class JSONCompatibleTracker(EvolutionTracker):
     MAX_KNOWN_ERRORS = 200
 
     def health_check(self) -> Optional[str]:
-        """运行自检，返回问题描述或 None。"""
+        """运行自检，返回问题描述或 None。
+        
+        过滤掉 generic 类型（兜底分类，大量非失败场景也会归入）。
+        """
         warnings = []
         rows = self._execute(
             "SELECT task_type, consecutive_fail FROM evolution_task_types WHERE consecutive_fail >= 3"
         ).fetchall()
         for r in rows:
+            if r["task_type"] == "generic":
+                continue
             warnings.append(f"[{r['task_type']}] 连续失败 {r['consecutive_fail']} 次")
         return "; ".join(warnings) if warnings else None
 
