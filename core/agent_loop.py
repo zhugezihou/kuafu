@@ -816,7 +816,8 @@ class AgentLoop:
         }
 
         def _handle_cron_list(args: dict) -> dict:
-            scheduler = getattr(self, '_cron_scheduler', None)
+            from core.cron_scheduler import _global_scheduler
+            scheduler = getattr(self, '_cron_scheduler', None) or _global_scheduler
             if scheduler:
                 tasks = scheduler.get_tasks()
                 lines = ["📋 Cron 任务列表:"]
@@ -830,8 +831,8 @@ class AgentLoop:
                         f"运行: {t.run_count} 次 | "
                         f"输出: {t.output_mode}"
                     )
-                return {"success": True, "output": "\n".join(lines) if len(lines) > 1 else "暂无 cron 任务（CronScheduler 正常运行中，无需心跳任务）"}
-            return {"success": True, "output": "暂无 cron 任务（CronScheduler 正常运行中，无需心跳任务。scheduler 空跑是正常状态，不需要创建心跳任务来保持它运行。）"}
+                return {"success": True, "output": "\n".join(lines) if len(lines) > 1 else "暂无 cron 任务"}
+            return {"success": False, "output": "CronScheduler 未运行（Gateway 未启动时无法访问 cron 任务）"}
 
         self.tools.register("cron_list", cron_list_schema, _handle_cron_list)
 
@@ -850,7 +851,8 @@ class AgentLoop:
 
         def _handle_cron_remove(args: dict) -> dict:
             name = args.get("name", "")
-            scheduler = getattr(self, '_cron_scheduler', None)
+            from core.cron_scheduler import _global_scheduler
+            scheduler = getattr(self, '_cron_scheduler', None) or _global_scheduler
             if scheduler:
                 ok = scheduler.remove_task(name)
                 if ok:
@@ -871,7 +873,7 @@ class AgentLoop:
                         pass
                     return {"success": True, "output": f"✅ 已删除 cron 任务: {name}"}
                 return {"success": False, "output": f"❌ 未找到任务: {name}"}
-            return {"success": True, "output": "暂无 cron 任务可删除"}
+            return {"success": False, "output": "CronScheduler 未运行（Gateway 未启动时无法操作 cron 任务）"}
 
         self.tools.register("cron_remove", cron_remove_schema, _handle_cron_remove)
 

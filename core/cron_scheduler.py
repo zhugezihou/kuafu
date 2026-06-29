@@ -30,6 +30,10 @@ import os
 import re
 import threading
 import time
+
+# 模块级 CronScheduler 引用（供 AgentLoop 的 cron_list/cron_remove 工具读取）
+# Gateway 启动时设此值，AgentLoop 创建的新实例通过此共享变量获取 scheduler
+_global_scheduler: Optional["CronScheduler"] = None
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -126,6 +130,7 @@ class CronTask:
         run_count: int = 0,
         last_run: Optional[str] = None,
         last_result: str = "",
+        chat_id: str = "",      # 来源用户/群的 chat_id，推送时使用
     ):
         self.name = name
         self.schedule_raw = schedule
@@ -136,6 +141,7 @@ class CronTask:
         self.run_count = run_count
         self.last_run = last_run
         self.last_result = last_result
+        self.chat_id = chat_id
 
         self.interval, self.schedule_type = parse_schedule(schedule)
         self.schedule_expr = schedule if self.schedule_type == "cron" else ""
@@ -149,6 +155,7 @@ class CronTask:
             "enabled": self.enabled,
             "output_mode": self.output_mode,
             "source_channel": self.source_channel,
+            "chat_id": self.chat_id,
             "run_count": self.run_count,
             "last_run": self.last_run or "",
             "last_result": self.last_result[:200] if self.last_result else "",
@@ -207,7 +214,7 @@ class CronScheduler:
             # 夸父允许 pyyaml 依赖，但这里用简单行解析保持零依赖
             import yaml
             config = yaml.safe_load(text)
-            if not config or "tasks" not in config:
+            if not config or "tasks" not in config or not config["tasks"]:
                 print(f"[CronScheduler] 配置中无任务: {path}")
                 return
 
@@ -219,6 +226,7 @@ class CronScheduler:
                     enabled=item.get("enabled", True),
                     output_mode=item.get("output_mode", "file"),
                     source_channel=item.get("source_channel", ""),
+                    chat_id=item.get("chat_id", ""),
                 )
                 self._tasks.append(task)
 
@@ -280,6 +288,8 @@ class CronScheduler:
                         task.run_count = ts.get("run_count", 0)
                         task.last_run = ts.get("last_run", "")
                         task.last_result = ts.get("last_result", "")
+                        if ts.get("chat_id"):
+                            task.chat_id = ts.get("chat_id", "")
                 print(f"[CronScheduler] 已恢复 {len(task_states)} 个任务状态")
         except Exception as e:
             print(f"[CronScheduler] 状态恢复失败: {e}")
@@ -294,6 +304,7 @@ class CronScheduler:
                     "run_count": task.run_count,
                     "last_run": task.last_run or "",
                     "last_result": task.last_result[:200],
+                    "chat_id": task.chat_id,
                 }
             self._state_path.write_text(
                 json.dumps({"tasks": states, "updated_at": datetime.now().isoformat()}),
@@ -301,6 +312,64 @@ class CronScheduler:
             )
         except Exception as e:
             print(f"[CronScheduler] 状态保存失败: {e}")
+
+    def _catch_up_missed(self):
+        """启动时补做：仅补做上次运行在24小时内且超过一个周期的任务。
+
+        当天最多补做 3 次（所有任务合计），单次失败重试最多 3 次。
+        """
+        now = datetime.now()
+        caught_up = 0
+        max_catch = 3
+
+        for task in self._tasks:
+            if not task.enabled:
+                continue
+            if not task.last_run:
+                continue
+
+            try:
+                last_dt = datetime.fromisoformat(task.last_run)
+            except (ValueError, TypeError):
+                continue
+
+            elapsed = (now - last_dt).total_seconds()
+
+            # 只补上次运行在 24 小时内的任务
+            if elapsed > 86400:
+                continue
+            # 不足一个周期不补
+            if elapsed < task.interval:
+                continue
+            # 一次性任务不补
+            if task.schedule_type == "once":
+                continue
+
+            if caught_up >= max_catch:
+                print(f"[CronScheduler] ⏸ 已达当天补做上限({max_catch})，跳过 [{task.name}]")
+                continue
+
+            # 补 1~3 次，但不超过当天上限
+            budget = max_catch - caught_up
+            count = min(budget, int(elapsed // task.interval))
+            if count > 0:
+                print(f"[CronScheduler] 🔄 补做 [{task.name}]: 补 {count} 次 (周期 {task.interval:.0f}s, 已过 {elapsed:.0f}s)")
+                for i in range(count):
+                    print(f"[CronScheduler] 🔄 [{task.name}] 补做 #{i + 1}/{count}")
+                    # 执行 + 重试（最多 3 次）
+                    for attempt in range(3):
+                        self._execute_task(task)
+                        if task.last_result and not task.last_result.startswith("错误:"):
+                            print(f"[CronScheduler] ✅ [{task.name}] 补做 #{i + 1} 成功")
+                            break
+                        else:
+                            print(f"[CronScheduler] ⚠️ [{task.name}] 补做 #{i + 1} 失败 (尝试 {attempt + 1}/3)")
+                    caught_up += 1
+
+        if caught_up:
+            print(f"[CronScheduler] ✅ 共补做 {caught_up} 次任务")
+        else:
+            print(f"[CronScheduler] 无错过任务需要补做")
 
     # ── 任务管理 ────────────────────────────────────────────────
 
@@ -356,6 +425,9 @@ class CronScheduler:
                     if not self._running:
                         break
                     self._execute_task(task)
+                    # 一次性任务执行后自动禁用
+                    if task.schedule_type == "once":
+                        task.enabled = False
 
                 # 状态持久化
                 if due_tasks:
@@ -390,61 +462,44 @@ class CronScheduler:
             task.last_result = "(无回调)"
 
         # 输出模式: file / feishu / wechat / all
-        # 优先按 source_channel 推送
-        channel_bot = None
-        if task.source_channel:
-            if 'feishu' in task.source_channel.lower() and self._feishu_bot is not None:
-                channel_bot = self._feishu_bot
-            elif 'wechat' in task.source_channel.lower() and self._wechat_bot is not None:
-                channel_bot = self._wechat_bot
+        # 如果 source_channel 和 output_mode 都有值，output_mode 决定发哪里
+        content = task.last_result[:19000] if task.last_result else "(无输出)"
 
-        if channel_bot:
+        print(f"[CronScheduler] 📤 推送 [{task.name}]: output_mode={task.output_mode}, feishu_bot={'有' if self._feishu_bot else '无'}, wechat_bot={'有' if self._wechat_bot else '无'}, content={content[:60]}...")
+
+        # 按 output_mode 推送
+        if task.output_mode in ("feishu", "all") and self._feishu_bot is not None:
             try:
-                if hasattr(channel_bot, 'send_text'):
-                    channel_bot.send_text(
-                        f"⏰ Cron 任务: {task.name}\n"
-                        f"时间: {task.last_run}\n\n"
-                        f"{task.last_result[:19000] if task.last_result else '(无输出)'}"
-                    )
-                elif hasattr(channel_bot, 'send'):
-                    channel_bot.send(
-                        f"⏰ Cron 任务: {task.name}\n"
-                        f"时间: {task.last_run}\n\n"
-                        f"{task.last_result[:19000] if task.last_result else '(无输出)'}"
-                    )
-            except Exception as e:
-                print(f"[CronScheduler] ⚠️ 源通道推送失败 ({task.source_channel}): {e}")
-            self._save_to_file(task)
-        elif task.output_mode == "file":
-            self._save_to_file(task)
-        elif task.output_mode in ("feishu", "all") and self._feishu_bot is not None:
-            try:
-                msg = (
-                    f"⏰ Cron 任务: {task.name}\n"
-                    f"时间: {task.last_run}\n\n"
-                    f"{task.last_result[:19000] if task.last_result else '(无输出)'}"
-                )
                 if hasattr(self._feishu_bot, 'send_text'):
-                    self._feishu_bot.send_text(msg)
+                    r = self._feishu_bot.send_text(content, chat_id=task.chat_id or None)
                 elif hasattr(self._feishu_bot, 'send'):
-                    self._feishu_bot.send(msg)
+                    r = self._feishu_bot.send(content, chat_id=task.chat_id or None)
+                else:
+                    r = None
+                _ok = getattr(r, 'success', True)
+                _err = getattr(r, 'error', '') or ''
+                if not _ok:
+                    print(f"[CronScheduler] ⚠️ 飞书发送返回失败: {_err}")
             except Exception as e:
                 print(f"[CronScheduler] ⚠️ 飞书推送失败: {e}")
-            self._save_to_file(task)
-        elif task.output_mode in ("wechat", "all") and hasattr(self, '_wechat_bot'):
+
+        if task.output_mode in ("wechat", "all") and self._wechat_bot is not None:
             try:
-                msg = (
-                    f"⏰ Cron 任务: {task.name}\n"
-                    f"时间: {task.last_run}\n\n"
-                    f"{task.last_result[:19000] if task.last_result else '(无输出)'}"
-                )
                 if hasattr(self._wechat_bot, 'send_text'):
-                    self._wechat_bot.send_text(msg)
+                    r = self._wechat_bot.send_text(content, chat_id=task.chat_id or None)
                 elif hasattr(self._wechat_bot, 'send'):
-                    self._wechat_bot.send(msg)
+                    r = self._wechat_bot.send(content, chat_id=task.chat_id or None)
+                else:
+                    r = None
+                _ok = getattr(r, 'success', True)
+                _err = getattr(r, 'error', '') or ''
+                if not _ok:
+                    print(f"[CronScheduler] ⚠️ 微信发送返回失败: {_err}")
             except Exception as e:
                 print(f"[CronScheduler] ⚠️ 微信推送失败: {e}")
-            self._save_to_file(task)
+
+        # 总是保存到文件
+        self._save_to_file(task)
 
     def _save_to_file(self, task: CronTask):
         """将任务结果保存到文件。"""
@@ -473,11 +528,33 @@ class CronScheduler:
 
     # ── 启动 / 停止 ─────────────────────────────────────────────
 
-    def start(self):
-        """启动调度器（异步线程）。"""
-        if self._running:
+    def start(self, reload: bool = False):
+        """启动调度器（异步线程）。
+        
+        Args:
+            reload: 是否重新加载 YAML 配置（会清空当前任务并重载）
+        """
+        if self._running and not reload:
             print("[CronScheduler] 已在运行中")
             return
+
+        if reload:
+            # 停止运行中的调度器
+            if self._running:
+                self._running = False
+                if self._thread:
+                    self._thread.join(timeout=3)
+                self._running = False
+            # 清空并重新加载任务
+            with self._lock:
+                self._tasks.clear()
+                if self._config_path and self._config_path.exists():
+                    self._load_config(self._config_path)
+                self._load_state()
+            print(f"[CronScheduler] 🔄 已重新加载 {len(self._tasks)} 个任务")
+
+        # ── 补做逻辑：夸父关闭期间错过的任务 ──
+        self._catch_up_missed()
 
         self._running = True
         self._thread = threading.Thread(target=self._run_loop, daemon=True)

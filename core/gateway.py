@@ -736,6 +736,9 @@ class GatewayServer:
                 on_task_run=lambda task: self.agent.run(task.task_text, skip_approval=True)["result"],
             )
             self.agent._cron_scheduler = scheduler
+            # 同步到模块级全局变量，供 AgentLoop 的 cron_list/cron_remove 读取
+            from core.cron_scheduler import _global_scheduler
+            _global_scheduler = scheduler
             # 注入通道 Bot
             if hasattr(self, '_feishu_bot') and self._feishu_bot:
                 scheduler.set_feishu_bot(self._feishu_bot)
