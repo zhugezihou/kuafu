@@ -291,6 +291,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             enabled=True,
             output_mode=body.get("output_mode", "file"),
             source_channel=body.get("source_channel", ""),
+            chat_id=body.get("chat_id", ""),
         )
         scheduler.add_task(task)
         if not scheduler._running:
@@ -691,8 +692,10 @@ class GatewayServer:
                 self.channels = mgr
                 self._gateway_loop = GatewayLoop(self.agent, mgr)
                 # 从 ChannelManager 获取 Bot 实例注入 cron
-                for ch in mgr.list():
-                    ch_name = getattr(ch, 'name', '') or ch.__class__.__name__
+                for ch_name in mgr.list():
+                    ch = mgr.get(ch_name)
+                    if not ch:
+                        continue
                     if 'feishu' in ch_name.lower() or '飞书' in ch_name:
                         if hasattr(ch, 'send') or hasattr(ch, 'send_text'):
                             self._feishu_bot = ch
@@ -720,6 +723,7 @@ class GatewayServer:
                 # 已有调度器，确保它在运行
                 if not scheduler._running:
                     scheduler.start()
+                    print("[Gateway] Cron 调度器已恢复运行")
                 return
 
             schedule_path = ROOT_DIR / "cron" / "schedule.yaml"
@@ -742,6 +746,9 @@ class GatewayServer:
                 print(f"[Gateway] Cron 调度器已启动，{len(scheduler.get_tasks())} 个任务")
             else:
                 print("[Gateway] schedule.yaml 中无有效任务")
+                # 仍然启动调度器（空状态），等待后续通过 API 添加的任务
+                scheduler.start()
+                print("[Gateway] Cron 调度器已启动（空状态，等待 API 添加任务）")
         except Exception as e:
             print(f"[Gateway] Cron 调度器启动失败: {e}")
 
