@@ -527,12 +527,18 @@ class MemoryManager:
                 nmm_assoc = self._nmm.search(include_search, k=3)
                 nmm_lines = []
                 for na in nmm_assoc:
-                    # 🔒 分数过滤：低于 0.6 的联想跳过，避免虚假关联
+                    # 🔒 分数过滤：低于 0.3 的联想跳过，避免虚假关联
+                    # v2: 从 0.6 降低到 0.3（NMM 初始积累阶段分数较低，逐步提升）
                     score = na.get("score", 0)
-                    if score < 0.6:
+                    if score < 0.3:
                         continue
 
                     text_id = na.get("text_id", "")
+
+                    # 空 text_id 跳过（NMM 空槽残影）
+                    if not text_id:
+                        continue
+
                     content = ""
 
                     # 优先从 text_id 回查 SQLite（memories 表）

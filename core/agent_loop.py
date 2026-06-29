@@ -43,6 +43,7 @@ from core.subagent import get_invoke_expert_schema, get_invoke_experts_schema
 from core.context_compress import ContextCompressor, LLMSummarizer, ToolResultStore, ContextCollapse, CollapseResult, budget_reduce_output
 from core.budget_allocator import BudgetAllocator, BudgetSnapshot, BudgetPolicy
 from core.prompt_template import PromptManager, PromptCache, Section, build_reminders
+from core.episodic_memory import EpisodicMemory, EpisodicEvent, has_backtrack_signal, extract_focus_from_input, extract_user_intent, extract_decisions
 from core.safety import SafetyLayer
 from core.skill_resolver import discover_skills, match_skills, increment_usage, record_usage
 from core.whiteboard import Whiteboard, Decomposer, Step, WhiteboardExecutor
@@ -226,7 +227,9 @@ class AgentLoop:
             return  # 已初始化
 
         # ── Permission System ──
-        self.permission_enabled = os.environ.get("KUAFU_DISABLE_APPROVAL", "") != "1"
+        self.permission_enabled = getattr(self, '_permission_override', None)
+        if self.permission_enabled is None:
+            self.permission_enabled = os.environ.get("KUAFU_DISABLE_APPROVAL", "") != "1"
         self._pretooluse_cache: dict = {}
 
         # ── 审批通知回调 ──
@@ -281,6 +284,12 @@ class AgentLoop:
         self.on_llm_end: Optional[Callable[[int, str], None]] = None
         self.on_tool_start: Optional[Callable[[str, dict, float], None]] = None
         self.on_tool_end: Optional[Callable[[str, dict, float, str], None]] = None
+
+        # ── Cron 任务管理工具（顶层 Agent 才有） ──
+        if self._is_top_level:
+            # 从 self 上获取 CronScheduler（可能由 Gateway 注入到 agent 实例）
+            self._cron_scheduler = getattr(self, '_cron_scheduler', None)
+            self._register_cron_tools()
 
     # ── 本地模型辅助接口 ─────────────────────────────────────────
 
@@ -686,6 +695,182 @@ class AgentLoop:
                 self._log(f"🧠 记忆工具就绪: {', '.join(s['name'] for s in schemas)}")  # pragma: no cover
         except Exception as e:  # pragma: no cover
             self._log(f"⚠️ 记忆工具注册失败: {e}")  # pragma: no cover
+
+    # ── Cron 任务管理工具 ──────────────────────────────────────────────
+    def _register_cron_tools(self):
+        """注册 cron 任务管理工具：创建/列出/删除定时任务。
+
+        让 LLM 可以直接创建 cron 任务（如"1分钟后提醒我喝水"），
+        而不是手动去探索系统 API。
+        """
+        import json as _json
+        from datetime import datetime as _dt
+
+        # ── cron_create ──
+        cron_create_schema = {
+            "type": "object",
+            "description": "创建一个定时 cron 任务。schedule 支持自然语言如'2分钟后'、'30分钟一次'、'明天8点'、'每天8点'，工具会自动解析。任务会定时自动执行，结果通过 output_mode 推送。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "任务名称，简短描述即可，如'提醒喝水'"},
+                    "schedule": {"type": "string", "description": "调度时间。支持自然语言：'2分钟后'（一次性）、'30分钟一次'（重复间隔）、'明天8点'、'每天8点'、'0 8 * * *'（cron表达式）"},
+                    "task": {"type": "string", "description": "任务内容：要 cron 定时执行的具体指令。例如'提醒我喝水'会在执行时直接输出提醒文本"},
+                    "output_mode": {"type": "string", "description": "输出方式：'feishu'（飞书）、'wechat'（微信）、'file'（本地文件）、'all'（全部）。不填则自动根据当前对话通道设置"},
+                },
+                "required": ["name", "schedule", "task"],
+            },
+        }
+
+        def _handle_cron_create(args: dict) -> dict:
+            name = args.get("name", f"cron_{int(time.time())}")
+            schedule = args.get("schedule", "30m")
+            task_text = args.get("task", "")
+            output_mode = args.get("output_mode", "")
+
+            # 自动检测来源通道：如果调用时来自微信/飞书对话，自动设为对应通道
+            if not output_mode:
+                platform = os.environ.get("KUAFU_CURRENT_PLATFORM", "")
+                if platform == "wechat":
+                    output_mode = "wechat"
+                elif platform == "feishu":
+                    output_mode = "feishu"
+                else:
+                    output_mode = "file"
+
+            # 如果是提醒类短任务，把原始提醒内容注入到 task_text 中，让 cron 直接输出
+            # 防止 LLM 在 cron 执行时输出"我创建了一个任务"等无关内容
+            if not task_text.startswith("请直接输出"):
+                task_text = f"请直接输出以下提醒内容：{task_text}"
+
+            # 统一走 Gateway HTTP API（Gateway 持有 bot 实例，能正确推送）
+            try:
+                chat_id = os.environ.get("KUAFU_CURRENT_CHAT_ID", "")
+                import urllib.request
+                from datetime import datetime as _dt, timedelta as _td
+                import re as _re
+
+                # 解析自然语言时间
+                schedule_raw = schedule
+                schedule_parsed = schedule
+
+                # "X分钟后" → ISO时间
+                m = _re.match(r"^(\d+)\s*分(钟)?后$", schedule_raw)
+                if m:
+                    minutes = int(m.group(1))
+                    target = _dt.now() + _td(minutes=minutes)
+                    schedule_parsed = target.strftime("%Y-%m-%dT%H:%M:%S")
+
+                # "X分钟一次" / "X分钟间隔" → 间隔格式
+                m = _re.match(r"^(\d+)\s*分(钟)?(一次|间隔|重复)$", schedule_raw)
+                if m:
+                    schedule_parsed = f"{m.group(1)}m"
+
+                # "每天X点" → cron表达式
+                m = _re.match(r"^每天\s*(\d+)(:(\d+))?$", schedule_raw)
+                if m:
+                    hour = m.group(1)
+                    minute = m.group(3) or "0"
+                    schedule_parsed = f"{minute} {hour} * * *"
+
+                body = _json.dumps({
+                    "name": name, "schedule": schedule_parsed,
+                    "task": task_text, "output_mode": output_mode,
+                    "chat_id": chat_id,
+                }).encode()
+                req = urllib.request.Request(
+                    "http://localhost:8765/api/cron/create",
+                    data=body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    result = _json.loads(resp.read())
+                    channel_name = "微信" if output_mode == "wechat" else "飞书" if output_mode == "feishu" else "文件"
+                    return {
+                        "success": True,
+                        "output": (
+                            f"✅ Cron 任务已创建: 「{name}」\n"
+                            f"  调度: {schedule}\n"
+                            f"  输出: {channel_name}\n"
+                            f"  提示：该任务会通过 {channel_name} 推送执行结果。"
+                        ),
+                    }
+            except Exception as e:
+                return {"success": False, "output": f"❌ 创建失败: {e}（Gateway 未运行？请先启动 Gateway）"}
+
+        self.tools.register("cron_create", cron_create_schema, _handle_cron_create)
+
+        # ── cron_list ──
+        cron_list_schema = {
+            "type": "object",
+            "description": "列出所有 cron 定时任务及其状态（下次运行时间、运行次数等）。",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        }
+
+        def _handle_cron_list(args: dict) -> dict:
+            scheduler = getattr(self, '_cron_scheduler', None)
+            if scheduler:
+                tasks = scheduler.get_tasks()
+                lines = ["📋 Cron 任务列表:"]
+                for t in tasks:
+                    from core.cron_scheduler import format_next_run
+                    next_str = format_next_run(t.interval, t.schedule_type)
+                    status = "🟢" if t.enabled else "🔴"
+                    lines.append(
+                        f"  {status} {t.name}\n"
+                        f"     调度: {t.schedule_raw} ({next_str}) | "
+                        f"运行: {t.run_count} 次 | "
+                        f"输出: {t.output_mode}"
+                    )
+                return {"success": True, "output": "\n".join(lines) if len(lines) > 1 else "暂无 cron 任务"}
+            return {"success": False, "output": "CronScheduler 未运行"}
+
+        self.tools.register("cron_list", cron_list_schema, _handle_cron_list)
+
+        # ── cron_remove ──
+        cron_remove_schema = {
+            "type": "object",
+            "description": "删除一个 cron 定时任务。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "要删除的任务名称"},
+                },
+                "required": ["name"],
+            },
+        }
+
+        def _handle_cron_remove(args: dict) -> dict:
+            name = args.get("name", "")
+            scheduler = getattr(self, '_cron_scheduler', None)
+            if scheduler:
+                ok = scheduler.remove_task(name)
+                if ok:
+                    # 也从 schedule.yaml 移除
+                    try:
+                        yaml_path = ROOT_DIR / "cron" / "schedule.yaml"
+                        if yaml_path.exists():
+                            import re
+                            content = yaml_path.read_text(encoding="utf-8")
+                            # 按 name 匹配删除任务块
+                            pattern = re.compile(
+                                r"\n  - name: \"" + re.escape(name) + r"\"\n(?:    .+\n)*",
+                                re.MULTILINE,
+                            )
+                            content = pattern.sub("", content)
+                            yaml_path.write_text(content, encoding="utf-8")
+                    except Exception:
+                        pass
+                    return {"success": True, "output": f"✅ 已删除 cron 任务: {name}"}
+                return {"success": False, "output": f"❌ 未找到任务: {name}"}
+            return {"success": False, "output": "CronScheduler 未运行"}
+
+        self.tools.register("cron_remove", cron_remove_schema, _handle_cron_remove)
 
     def _init_mcp(self):  # pragma: no cover
         """初始化 MCP 桥接，加载配置并注册工具。"""
@@ -1315,6 +1500,10 @@ class AgentLoop:
         # System prompt（含技能注入）
         system_prompt = self.build_system_prompt(task)
 
+        # ── 审批已跳过时注入提示 ──
+        if not self.permission_enabled:
+            system_prompt += "\n\n**重要**: 当前运行在自动模式，所有工具调用已跳过审批，不需要检查审批状态，直接执行任务即可。"
+
         # ── Resume brief 模式：在 system prompt 尾部注入上下文简报 ──
         if resume_from and resume_mode == "brief":
             brief = self.sessions.resume_context(resume_from, max_tokens=resume_max_tokens)
@@ -1335,16 +1524,50 @@ class AgentLoop:
         last_tool_results: list[str] = []
         _phase_tools_run = []  # 工具执行记录
         _phase_contexts: list[str] = []  # 本阶段的 LLM 回复/关键发现
+
+        # ── Episodic Memory 初始化 ──
+        self._episodic_memory: EpisodicMemory = getattr(self, '_episodic_memory', None)
+        if self._episodic_memory is None:
+            self._episodic_memory = EpisodicMemory()
+        _session_events_extracted = 0  # 本任务中共提取了多少事件
+
         for turn in range(self.max_turns):
             turn_count = turn + 1
 
             # ── System Reminders: 第 2 轮起，每次用户消息前注入 1-3 条提醒 ──
             if turn > 0:
+                # ── 回溯历史检索：检测用户输入是否在引用之前轮次 ──
+                _episodic_reminder = ""
+                # 从 messages 中找最后一条 user 消息（当前用户输入）
+                _user_msg = task  # 兜底
+                for _m in reversed(messages):
+                    if _m.get("role") == "user":
+                        _user_msg = _m.get("content", task)
+                        break
+                if has_backtrack_signal(_user_msg) and self.current_session_id:
+                    _query = extract_focus_from_input(_user_msg)
+                    _matched = self._episodic_memory.search(
+                        session_id=self.current_session_id,
+                        query=_query,
+                        max_results=2,
+                    )
+                    if _matched:
+                        _episodic_parts = ["📖 历史回顾（用户引用了之前轮次的内容）:"]
+                        for _ev in _matched:
+                            _episodic_parts.append(f"  • {_ev.to_summary(max_chars=250)}")
+                        _episodic_reminder = "\n".join(_episodic_parts)
+                        self._log(f"🔍 Episodic Memory 命中 {len(_matched)} 条事件")
+
                 reminders = build_reminders(
                     task=task,
                     turn_count=turn,
                     last_tool_results=last_tool_results if last_tool_results else None,
                 )
+                if _episodic_reminder:
+                    if reminders:
+                        reminders += "\n\n" + _episodic_reminder
+                    else:
+                        reminders = _episodic_reminder
                 if reminders:
                     # 插入为 system 消息（不占用 user/assistant 位置）
                     messages.append({
@@ -1859,6 +2082,49 @@ class AgentLoop:
                                 "task": task[:100],
                                 "turn": turn_count,
                             })
+            # ── Episodic Event 提取：本轮工具执行后提取关键信息存入 ──
+            if self.current_session_id and response.get("tool_calls"):
+                _tools_for_event = []
+                _all_errors = []
+                _has_error = False
+                for _tc in response.get("tool_calls", []):
+                    _name = _tc["function"]["name"]
+                    _args = _tc["function"].get("arguments", {})
+                    _args_str = json.dumps(_args, ensure_ascii=False)[:100] if isinstance(_args, dict) else str(_args)[:100]
+                    _tools_for_event.append((_name, _args_str))
+                for _err in errors[-5:]:
+                    _all_errors.append(_err)
+                    _has_error = True
+                # 取本轮 LLM content 作为 focus
+                _llm_content = response.get("content", "") or ""
+                _focus = _llm_content.strip()[:80] if _llm_content.strip() else f"调用 {_tools_for_event[0][0] if _tools_for_event else '?'}"
+                # 取用户本轮输入作为 intent
+                _user_msg_content = messages[-2].get("content", "") if len(messages) >= 2 else ""
+                _intent = extract_user_intent(_user_msg_content) if _user_msg_content else ""
+                # 取决策
+                _decisions = extract_decisions(_tools_for_event, [])
+                # 取关键结果：用最后一个成功工具的输出
+                _key_result = ""
+                for _tc in reversed(response.get("tool_calls", [])):
+                    _tn = _tc["function"]["name"]
+                    if _tn != "finish":
+                        _key_result = f"调用 {_tn}"
+                        break
+                _event = EpisodicEvent(
+                    session_id=self.current_session_id,
+                    turn=turn_count,
+                    focus=_focus,
+                    user_intent=_intent,
+                    tools_called=_tools_for_event[:5],
+                    key_result=_key_result,
+                    decisions=_decisions,
+                    errors="; ".join(_all_errors[-2:]) if _all_errors else "",
+                    has_error=_has_error,
+                    timestamp=time.time(),
+                )
+                self._episodic_memory.append(_event)
+                _session_events_extracted += 1
+
             if not response.get("tool_calls"):
                 # 没有 tool_calls — LLM 直接回复了文本
                 final_result = response["content"]
@@ -1894,6 +2160,11 @@ class AgentLoop:
             session = self.sessions.get_session(self.current_session_id)
             if session and session.message_count > 10:
                 self.sessions.archive_session(self.current_session_id)
+
+        # Flush Episodic Memory（写磁盘）
+        if _session_events_extracted > 0:
+            self._episodic_memory.flush_all()
+            self._log(f"📖 Episodic Memory: 已记录 {_session_events_extracted} 轮事件")
 
         # 反思：记录任务到记忆
         self.memory.remember(

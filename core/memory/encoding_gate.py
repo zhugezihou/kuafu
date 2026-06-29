@@ -29,7 +29,8 @@ class EncodingGate:
             "prediction_error": 0.30,
         }
         # 默认阈值 0.55（三信号加权平均超过此值才写入）
-        self.threshold = 0.55
+        # v2: 降低到 0.35 让 NMM 有足够数据积累（NMM 自身有惊喜度过滤，不怕噪声）
+        self.threshold = 0.35
         # 强制写入门控：如果任一信号 > 0.9，强制写入
         self.force_threshold = 0.90
         # 冷却期：同一 context 在 N 秒内不重复记

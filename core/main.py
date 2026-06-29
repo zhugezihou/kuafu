@@ -326,9 +326,9 @@ class KuafuAgent:
         # 审批回调：KuafuAgent 上的 on_approval_request → AgentLoop 实例
         if getattr(self, 'on_approval_request', None):
             loop.on_approval_request = self.on_approval_request
-        # Cron 任务跳过审批
+        # Cron 任务跳过审批（必须在 loop.run() 之前设，因为 _lazy_init 在 run() 第一行就触发了）
         if skip_approval:
-            loop.permission_enabled = False
+            loop._permission_override = False
         # 注入阶段性总结回调
         if on_phase:
             loop.on_phase = on_phase
