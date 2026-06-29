@@ -408,7 +408,8 @@ class AgentLoop:
     def _exec_expert_tool_calls(self, resp: dict) -> str:
         """执行专家 LLM 返回的工具调用，拼接工具结果。"""
         tool_outputs = []
-        for tc in resp.get("tool_calls", []):
+        raw_calls = resp.get("tool_calls") or []
+        for tc in raw_calls:
             fn_name = tc["function"]["name"]
             args_dict = self._parse_expert_args(tc["function"]["arguments"])
             # 专家内部的工具调用跳过审批，直接执行
@@ -488,6 +489,8 @@ class AgentLoop:
                     content = content + "\n\n" + tool_text if content else tool_text
             elif isinstance(resp, str):
                 content = resp
+            else:
+                content = f"专家 {expert_name} 返回了无法识别的响应: {type(resp).__name__}"
 
             # ── 空内容 fallback ──
             if not content:
