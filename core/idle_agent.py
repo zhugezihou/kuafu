@@ -432,8 +432,8 @@ class IdleAgent:
             "- report: 生成自主活动报告",
             "",
             "## 输出格式（只输出 JSON，不要思考过程）",
-            '```',
-            '[',
+            "```",
+            "[",
             '  {',
             '    "priority": 8,',
             '    "category": "analyze",',
@@ -441,10 +441,12 @@ class IdleAgent:
             '    "expected_impact": "high",',
             '    "risk": "low",',
             '    "reasoning": "为什么选这个"',
-            '  }',
-            ']',
-            '```',
+            "  }",
+            "]",
+            "```",
             "",
+            "=== 重要：无论有没有值得做的事，都必须输出 JSON 数组 ===",
+            "如果当前没有值得做的事，输出空数组：[]",
             "只输出 JSON 数组。不要思考过程，不要解释，不要 markdown。",
         ]
         return "\n".join(sections)
@@ -512,7 +514,75 @@ class IdleAgent:
         except json.JSONDecodeError:
             # 日志输出完整 response 以便调试
             logger.warning(f"[IdleAgent] 决策解析失败，完整响应 ({len(response)} chars):\n{response[:500]}")
-            return []
+
+        # 5. 全兜底：LLM 完全没输出 JSON 时，基于感知数据用规则生成行动
+        return self._fallback_actions()
+
+    def _fallback_actions(self) -> list[IdleAction]:
+        """LLM 决策失败时的降级方案：基于当前感知数据用规则生成行动。"""
+        actions = []
+        
+        # 检查是否有连续失败的任务
+        if self._evolution:
+            try:
+                failing = self._evolution.health_check()
+                if failing:
+                    actions.append(IdleAction(
+                        category=ActionCategory.ANALYZE,
+                        description=f"分析任务失败: {failing[:100]}",
+                        priority=7,
+                        expected_impact="高",
+                        reasoning="连续失败的任务需要分析根因",
+                    ))
+            except Exception:
+                pass
+
+        # 检查技能库是否有弱技能
+        skills_dir = self._project_root / "skills"
+        if skills_dir.exists():
+            weak = []
+            for sf in list(skills_dir.glob("*.yaml"))[:10]:
+                content = sf.read_text(encoding="utf-8")
+                steps = content.count("### ") or content.count("- name:")
+                if steps < 3:
+                    weak.append(sf.stem)
+            if weak:
+                actions.append(IdleAction(
+                    category=ActionCategory.WRITE_SKILL,
+                    description=f"优化弱技能: {', '.join(weak[:3])}",
+                    priority=5,
+                    expected_impact="中",
+                    reasoning="技能步骤数少，需要丰富内容",
+                ))
+
+        # 检查记忆量是否过大
+        if self._memory:
+            try:
+                if hasattr(self._memory, 'get_stats'):
+                    stats = self._memory.get_stats()
+                    total = stats.get("total_stored", 0)
+                    if total > 1000:
+                        actions.append(IdleAction(
+                            category=ActionCategory.ORGANIZE_MEMORY,
+                            description=f"记忆数量较大({total}条)，检查是否需要整理",
+                            priority=4,
+                            expected_impact="中",
+                            reasoning="大量记忆可能包含过期或重复内容",
+                        ))
+            except Exception:
+                pass
+
+        # 搜索外部信息补充知识（如果没其他事做）
+        if not actions:
+            actions.append(IdleAction(
+                category=ActionCategory.EXTERNAL_API,
+                description="搜索 AI agent 进化系统最新进展",
+                priority=3,
+                expected_impact="低",
+                reasoning="空闲时补充外部知识",
+            ))
+
+        return actions
 
     @staticmethod
     def _py2json(text: str) -> str:
