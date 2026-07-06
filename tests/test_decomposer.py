@@ -290,8 +290,8 @@ class TestSaveTemplates:
     def test_with_path(self):
         from core.whiteboard.decomposer import Decomposer
         dc = Decomposer()
-        with patch.object(Path, 'write_text') as mock_w:
-            with patch.object(Path, 'mkdir'):
+        with patch("pathlib.Path.write_text") as mock_w:
+            with patch("pathlib.Path.mkdir"):
                 dc.save_templates(path=Path("/tmp/templates.json"))
                 mock_w.assert_called_once()
                 args = mock_w.call_args[0][0]

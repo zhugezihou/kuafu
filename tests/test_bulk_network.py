@@ -379,8 +379,8 @@ class TestFeishuWebSocketChannel:
 
         def fire():
             import core.channel.feishu_ws as _mod
-            if _mod.ON_CARD_APPROVAL_CB:
-                _mod.ON_CARD_APPROVAL_CB("req_005", "approve")
+            for _cb in list(_mod.ON_CARD_APPROVAL_CBS):
+                _cb("req_005", "approve")
 
         ch._card_approval_state["req_005"] = ev
         # Fire callback after short delay
@@ -691,7 +691,7 @@ class TestFeishuWebSocketChannel:
             callback_results.append((aid, action))
 
         import core.channel.feishu_ws as feishu_mod
-        feishu_mod.ON_CARD_APPROVAL_CB = my_callback
+        feishu_mod.register_card_approval_cb(my_callback)
 
         import sys
         mock_lark = MagicMock()
@@ -766,7 +766,7 @@ class TestFeishuWebSocketChannel:
                         card_fn(MockWithMsgId())
                         assert callback_results[-1] == ('card_msg_1', 'approve')
         finally:
-            feishu_mod.ON_CARD_APPROVAL_CB = ON_CARD_APPROVAL_CB
+            feishu_mod.unregister_card_approval_cb(my_callback)
 """
 Core test for WeChatILinkChannel — init, start, stop, send, poll, _handle_message, QR code.
 """
@@ -1749,27 +1749,39 @@ class TestGatewayLoop:
         assert "oc_fallback" in str(feishu_ch.send_approval_card.call_args)
 
     def test_on_card_approval_approve(self):
-        """The card approval callback registered via feishu_mod.ON_CARD_APPROVAL_CB."""
+        """The card approval callback registered via feishu_mod.ON_CARD_APPROVAL_CBS."""
         from core.channel.gateway_loop import GatewayLoop
         import core.channel.feishu_ws as feishu_mod
+        captured = []
+        feishu_mod.register_card_approval_cb(lambda aid, act: captured.append((aid, act)))
         with patch('core.approval.ApprovalManager') as MockAM:
             MockAM.approve.return_value = True
-            feishu_mod.ON_CARD_APPROVAL_CB("req_005", "approve")
+            for _cb in list(feishu_mod.ON_CARD_APPROVAL_CBS):
+                _cb("req_005", "approve")
             MockAM.approve.assert_called_with("req_005")
+        feishu_mod.ON_CARD_APPROVAL_CBS.clear()
 
     def test_on_card_approval_reject(self):
         import core.channel.feishu_ws as feishu_mod
+        captured = []
+        feishu_mod.register_card_approval_cb(lambda aid, act: captured.append((aid, act)))
         with patch('core.approval.ApprovalManager') as MockAM:
             MockAM.reject.return_value = True
-            feishu_mod.ON_CARD_APPROVAL_CB("req_006", "reject")
+            for _cb in list(feishu_mod.ON_CARD_APPROVAL_CBS):
+                _cb("req_006", "reject")
             MockAM.reject.assert_called_with("req_006")
+        feishu_mod.ON_CARD_APPROVAL_CBS.clear()
 
     def test_on_card_approval_approve_fail(self):
         import core.channel.feishu_ws as feishu_mod
+        captured = []
+        feishu_mod.register_card_approval_cb(lambda aid, act: captured.append((aid, act)))
         with patch('core.approval.ApprovalManager') as MockAM:
             MockAM.approve.return_value = False
             # Should not raise
-            feishu_mod.ON_CARD_APPROVAL_CB("req_007", "approve")
+            for _cb in list(feishu_mod.ON_CARD_APPROVAL_CBS):
+                _cb("req_007", "approve")
+        feishu_mod.ON_CARD_APPROVAL_CBS.clear()
 """
 Core test for HookRegistry — init, register, unregister, get, trigger, _execute_shell, _execute_webhook, template.
 """

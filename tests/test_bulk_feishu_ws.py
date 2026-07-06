@@ -393,8 +393,8 @@ class TestFeishuWebSocket:
 
         def fire():
             import core.channel.feishu_ws as _mod
-            if _mod.ON_CARD_APPROVAL_CB:
-                _mod.ON_CARD_APPROVAL_CB("req_005", "approve")
+            for _cb in list(_mod.ON_CARD_APPROVAL_CBS):
+                _cb("req_005", "approve")
 
         ch._card_approval_state["req_005"] = ev
         # Fire callback after short delay
@@ -659,7 +659,7 @@ class TestFeishuWebSocket:
             callback_results.append((aid, action))
 
         import core.channel.feishu_ws as feishu_mod
-        feishu_mod.ON_CARD_APPROVAL_CB = my_callback
+        feishu_mod.register_card_approval_cb(my_callback)
 
         try:
             with patch.object(ch, '_get_tenant_token', return_value="tok"):
@@ -732,4 +732,4 @@ class TestFeishuWebSocket:
                     card_fn(MockWithMsgId())
                     assert callback_results[-1] == ('card_msg_1', 'approve')
         finally:
-            feishu_mod.ON_CARD_APPROVAL_CB = ON_CARD_APPROVAL_CB
+            feishu_mod.unregister_card_approval_cb(my_callback)

@@ -152,7 +152,7 @@ class TestWhiteboard:
         """初始化时不存在分区文件则写入空数据。"""
         with patch("pathlib.Path.mkdir"):
             with patch("pathlib.Path.exists", return_value=False):
-                with patch.object(Path, 'write_text'):
+                with patch("pathlib.Path.write_text"):
                     from core.whiteboard.whiteboard import Whiteboard
                     wb = Whiteboard(work_dir=Path("/tmp/wb_init"))
                     assert len(wb._partitions) > 0
@@ -166,7 +166,7 @@ class TestWhiteboard:
     def test_write_partition_updates_cache(self):
         wb = self._make_wb()
         data = [{"_id": "1"}]
-        with patch.object(Path, 'write_text'):
+        with patch("pathlib.Path.write_text"):
             wb._write_partition("current_state", data)
             assert wb._cache["current_state"] == data
 

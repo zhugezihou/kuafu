@@ -2394,10 +2394,10 @@ def test_gl_card_callback():
     gl.channels = cm
     gl._register_approval_callback()
     import core.channel.feishu_ws as feishu_mod
-    # 检查 ON_CARD_APPROVAL_CB 被设置
-    assert feishu_mod.ON_CARD_APPROVAL_CB is not None
+    # 检查 ON_CARD_APPROVAL_CBS 被设置
+    assert len(feishu_mod.ON_CARD_APPROVAL_CBS) > 0
     # 恢复
-    feishu_mod.ON_CARD_APPROVAL_CB = None
+    feishu_mod.ON_CARD_APPROVAL_CBS.clear()
     print(f"    ✅ GatewayLoop: _register_approval_callback 飞书卡片回调")
 
 @test("GatewayLoop: _register_approval_callback 审批推送")
@@ -2409,7 +2409,7 @@ def test_gl_approval_push():
     import core.approval as approval_mod
     approval_mod.ON_APPROVAL_REQUEST_CB = None
     import core.channel.feishu_ws as feishu_mod
-    feishu_mod.ON_CARD_APPROVAL_CB = None
+    feishu_mod.ON_CARD_APPROVAL_CBS.clear()
     # 先 mock 排除 test_all.py 的 mock 影响
     mock_channel = MagicMock()
     cm = MagicMock()

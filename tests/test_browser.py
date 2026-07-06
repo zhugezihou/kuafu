@@ -216,7 +216,7 @@ class TestManageScreenshots:
                 if call_count[0] == 1:
                     raise PermissionError("permission denied")
                 return original_unlink(self, *a, **kw)
-            with patch.object(Path, "unlink", _failing_unlink):
+            with patch("pathlib.Path.unlink", _failing_unlink):
                 _manage_screenshots()
             # Should have broken out of the loop after first failure
             remaining = len(list(Path(tmpdir).glob("*.png")))

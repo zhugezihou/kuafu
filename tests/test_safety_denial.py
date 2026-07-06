@@ -600,7 +600,7 @@ class TestLoad:
         """_load returns {} on OSError."""
         from core.safety import DenialTracker, DenialConfig
         cfg = DenialConfig(state_file="unreadable.json")
-        with patch.object(Path, "exists", return_value=True):
+        with patch("pathlib.Path.exists", return_value=True):
             with patch("builtins.open", side_effect=OSError("Permission denied")):
                 dt = DenialTracker(root_dir=tmp_path, config=cfg)
                 assert dt._data == {}

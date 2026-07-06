@@ -309,24 +309,36 @@ class TestGatewayLoop:
         assert "oc_fallback" in str(feishu_ch.send_approval_card.call_args)
 
     def test_on_card_approval_approve(self):
-        """The card approval callback registered via feishu_mod.ON_CARD_APPROVAL_CB."""
+        """The card approval callback registered via feishu_mod.ON_CARD_APPROVAL_CBS."""
         from core.channel.gateway_loop import GatewayLoop
         import core.channel.feishu_ws as feishu_mod
+        captured = []
+        feishu_mod.register_card_approval_cb(lambda aid, act: captured.append((aid, act)))
         with patch('core.approval.ApprovalManager') as MockAM:
             MockAM.approve.return_value = True
-            feishu_mod.ON_CARD_APPROVAL_CB("req_005", "approve")
+            for _cb in list(feishu_mod.ON_CARD_APPROVAL_CBS):
+                _cb("req_005", "approve")
             MockAM.approve.assert_called_with("req_005")
+        feishu_mod.ON_CARD_APPROVAL_CBS.clear()
 
     def test_on_card_approval_reject(self):
         import core.channel.feishu_ws as feishu_mod
+        captured = []
+        feishu_mod.register_card_approval_cb(lambda aid, act: captured.append((aid, act)))
         with patch('core.approval.ApprovalManager') as MockAM:
             MockAM.reject.return_value = True
-            feishu_mod.ON_CARD_APPROVAL_CB("req_006", "reject")
+            for _cb in list(feishu_mod.ON_CARD_APPROVAL_CBS):
+                _cb("req_006", "reject")
             MockAM.reject.assert_called_with("req_006")
+        feishu_mod.ON_CARD_APPROVAL_CBS.clear()
 
     def test_on_card_approval_approve_fail(self):
         import core.channel.feishu_ws as feishu_mod
+        captured = []
+        feishu_mod.register_card_approval_cb(lambda aid, act: captured.append((aid, act)))
         with patch('core.approval.ApprovalManager') as MockAM:
             MockAM.approve.return_value = False
             # Should not raise
-            feishu_mod.ON_CARD_APPROVAL_CB("req_007", "approve")
+            for _cb in list(feishu_mod.ON_CARD_APPROVAL_CBS):
+                _cb("req_007", "approve")
+        feishu_mod.ON_CARD_APPROVAL_CBS.clear()

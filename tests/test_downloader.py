@@ -1186,8 +1186,12 @@ class TestDownloadFileAndList:
     def test_download_file_invalid_url(self):
         """无效 URL 返回错误。"""
         from core.downloader import download_file
-        result = download_file("not-a-url")
-        assert result.success is False
+        with patch("core.downloader.DownloadEngine.download") as mock_dl:
+            mock_result = MagicMock()
+            mock_result.success = False
+            mock_dl.return_value = mock_result
+            result = download_file("not-a-url")
+            assert result.success is False
 
     def test_download_file_timeout_param(self):
         """timeout 参数传递（mock 引擎验证参数传入）。"""

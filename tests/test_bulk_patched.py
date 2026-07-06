@@ -17798,7 +17798,7 @@ class TestSkillManager:
         mock_resp.read.return_value = b"---\nname: TestSkill\n---\ncontent here"
         mock_request.urlopen.return_value.__enter__.return_value = mock_resp
         from core.skill_manager import SkillManager, MARKET_DIR
-        with patch.object(Path, "mkdir"), patch.object(Path, "write_text"):
+        with patch("pathlib.Path.mkdir"), patch("pathlib.Path.write_text"):
             sm = SkillManager()
             result = sm.install("https://example.com/test.yaml")
             assert result["success"] is True
