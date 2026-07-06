@@ -1,30 +1,31 @@
-# FIX.md — 修复清单
+# E1: 飞书审批持久化重构
 
-## 状态：第三批（架构级）全部完成 ✅
+## 现状
 
-## T1: HTTP Server 单线程→ThreadedHTTPServer 🔴
-- `HTTPServer` → `ThreadedHTTPServer(ThreadingMixIn, HTTPServer)`
-- `allow_reuse_address=True`, `daemon_threads=True`
-- 改前: 一个 `POST /api/task` 阻塞30s, 所有API排队
-- 改后: 每个请求独立线程, 长任务不影响审批/health/cron管理
+审批数据有两份存储：
+1. `core/approval.py` → `_save()` 写 `memory/approvals/{id}.json` ✅ 持久化
+2. `feishu_ws.py` → `_card_approval_state: dict[str, threading.Event]` ❌ 纯内存
 
-## T2: ApprovalManager._decision_events 加锁 🔴
-- 加 `_decision_lock: ClassVar[threading.Lock]`
-- `_get_event()` 中 `if req_id not in dict` + `dict[req_id]=ev` 整个包在锁内
-- `approve()` 和 `reject()` 中 `pop` 操作也加锁
-- 改前: 经典 check-then-act 竞态, 并发审批可能丢失 event → 超时300s
-- 改后: 所有 `_decision_events` 操作串行化, 无竞态
+**核心缺陷：** WS 重连后，已发审批卡片的 Event 对象全部丢失。新 WS 连接收不到用户在断连期间点击的卡片回调。
 
-## T3: 移除 ON_APPROVAL_REQUEST_CB 死代码 🟢
-- 移除 `_lazy_init` 中的 import + if 检查 (7行)
-- 顺便修复了注释缩进不对齐的排版bug
-- 改前: 永不命中的死代码, 但优先级高于GatewayLoop注入
-- 改后: 无死代码, 不污染回调链
+## 修复方案
 
-## 验证结果（第三批）
-- 语法检查: ✅ 3 文件通过
-- 全量 import: ✅ 通过
-- 功能验证: ✅ T1/2/3 各 2-3 项验证通过
-- 并发安全验证: ✅ 4线程同时get_event 400次无竞态
-- 测试回归: ✅ 4通过, 1跳过(网络下载,原有)
+**不改审批系统架构，只做 WS 重连恢复审批监听。**
 
+WS 重连时：
+1. 扫描 `memory/approvals/` 中 `status="pending"` 的记录
+2. 为每一条重新创建 `threading.Event` 并注册到 `_card_approval_state`
+3. 重新注册 `ON_CARD_APPROVAL_CBS` 回调
+
+## 影响面分析
+
+### 文件
+- `core/channel/feishu_ws.py` — `_reconnect()` 或重连后回调处
+- `core/approval.py` — 可能需要暴露一个 `scan_pending_events()` 工具方法
+
+### 跨对象传递链
+- 不涉及跨对象链（纯 FeishuWebSocketChannel 内部）
+- 引用 `ApprovalManager` 和 `ON_CARD_APPROVAL_CBS` 是类级/模块级，安全
+
+### 测试
+- `tests/` 中不涉及 WS 审批持久化的测试
