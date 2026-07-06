@@ -111,6 +111,9 @@ class KuafuAgent:
         self._prioritizer_thread: Optional[threading.Thread] = None
         self._init_prioritizer()
 
+        # P3: 本地模型驱动的自我审查（可选，依赖本地 llama-server）
+        self._init_self_review()
+
     def _setup(self):
         """首次启动设置。"""
         for d in ["strategy", "skills", "memory", "logs", "tests"]:
@@ -164,6 +167,56 @@ class KuafuAgent:
             self._prioritizer_thread = None
             import logging
             logging.warning(f"P2 Prioritizer 启动失败: {e}")
+
+    # ---- P3: 自我审查初始化 ----
+
+    def _init_self_review(self):
+        """初始化本地模型驱动的自我审查（可选）。
+
+        依赖本地 llama-server（localhost:8080），不可用时静默跳过。
+        """
+        try:
+            from core.self_review import SelfReviewer
+
+            # 推送回调：发现 medium/high 问题时通过夸父的通道推送
+            def _notify(text: str):
+                try:
+                    # 通过 CronScheduler 的 bot 推送（已在 _auto_start_cron 中注入）
+                    import core.cron_scheduler
+                    scheduler = core.cron_scheduler._global_scheduler
+                    if scheduler:
+                        feishu_bot = getattr(scheduler, '_feishu_bot', None)
+                        wechat_bot = getattr(scheduler, '_wechat_bot', None)
+                        chat_id = os.environ.get("KUAFU_CURRENT_CHAT_ID", "")
+                        if feishu_bot:
+                            if hasattr(feishu_bot, 'send_text'):
+                                feishu_bot.send_text(text, chat_id=chat_id or None)
+                            elif hasattr(feishu_bot, 'send'):
+                                feishu_bot.send(text, chat_id=chat_id or None)
+                            print("[SelfReview] ✅ 已推送到飞书", flush=True)
+                        if wechat_bot:
+                            if hasattr(wechat_bot, 'send_text'):
+                                wechat_bot.send_text(text, chat_id=chat_id or None)
+                            elif hasattr(wechat_bot, 'send'):
+                                wechat_bot.send(text, chat_id=chat_id or None)
+                            print("[SelfReview] ✅ 已推送到微信", flush=True)
+                        if not feishu_bot and not wechat_bot:
+                            print(f"[SelfReview] 🔔 无可用通道:\n{text}\n", flush=True)
+                    else:
+                        print(f"[SelfReview] 🔔 CronScheduler 未就绪:\n{text}\n", flush=True)
+                except Exception as e:
+                    print(f"[SelfReview] 🔔 推送异常({e}):\n{text}\n", flush=True)
+
+            self._self_reviewer = SelfReviewer(
+                memory_api=self.memory,
+                interval=43200,  # 12 小时一轮
+                notify_callback=_notify,
+            )
+            self._self_reviewer.start()
+        except Exception as e:
+            self._self_reviewer = None
+            import logging
+            logging.debug(f"P3 SelfReviewer 初始化跳过: {e}")
 
     @property
     def identity(self) -> str:
@@ -588,6 +641,13 @@ class KuafuAgent:
         if _HAS_PRIORITIZER and hasattr(self, '_prioritizer_thread'):
             status["prioritizer"] = {
                 "alive": self._prioritizer_thread is not None and self._prioritizer_thread.is_alive(),
+            }
+        # P3 自我审查状态
+        from core.self_review import SelfReviewer
+        if hasattr(self, '_self_reviewer') and self._self_reviewer is not None:
+            status["self_review"] = {
+                "alive": self._self_reviewer.is_running,
+                "findings": len(getattr(self._self_reviewer, '_previous_findings', [])),
             }
         return status
 

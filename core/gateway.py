@@ -190,6 +190,16 @@ class GatewayHandler(BaseHTTPRequestHandler):
             status["evolution"] = {
                 "total": evo.get("total_evolutions", 0),
             }
+        # P3 自我审查状态
+        try:
+            from core.self_review import SelfReviewer
+            if hasattr(agent, '_self_reviewer') and agent._self_reviewer is not None:
+                status['self_review'] = {
+                    'alive': agent._self_reviewer.is_running,
+                    'findings': len(getattr(agent._self_reviewer, '_previous_findings', [])),
+                }
+        except Exception:
+            pass
         self._send_json(200, status)
 
     def _handle_task(self):
