@@ -423,27 +423,29 @@ class IdleAgent:
             f"- 今日已执行行动: {self._state['actions_taken_today']}/{DAILY_ACTION_LIMIT}",
             f"- 近期记忆主题: {[m.get('key','')[:30] for m in perception.recent_memories[:3]]}",
             "",
-            "## 可选行动类别",
-            "- analyze: 分析进化统计/错误模式/技能质量",
-            "- write_skill: 创建或优化技能 yaml",
-            "- organize_memory: 合并重复记忆/标记过期/压缩",
-            "- explore_code: 扫描代码库中的技术债务/模式改进",
-            "- external_api: 调用外部 API 搜索/研究相关领域",
-            "- report: 生成自主活动报告",
+            "## Available Action Categories",
+            "- analyze: Analyze evolution stats / error patterns / skill quality",
+            "- write_skill: Create or improve skill yaml",
+            "- organize_memory: Merge duplicates / mark stale / compress",
+            "- explore_code: Scan codebase for tech debt / improvements",
+            "- external_api: Search / research via external APIs",
+            "- report: Generate autonomous activity report and push",
             "",
-            "## 输出格式（JSON 数组）",
-            """[
-              {
-                "priority": 1-10,
-                "category": "analyze",
-                "description": "具体做什么",
-                "expected_impact": "高/中/低",
-                "risk": "low/medium/high",
-                "reasoning": "为什么选这个"
-              }
-            ]""",
+            "## Output Format (JSON array only, NO thinking, NO markdown)",
+            '```',
+            '[',
+            '  {',
+            '    "priority": 8,',
+            '    "category": "analyze",',
+            '    "description": "Analyze recurring tool failures in error logs",',
+            '    "expected_impact": "high",',
+            '    "risk": "low",',
+            '    "reasoning": "Tool failures degrade user experience"',
+            '  }',
+            ']',
+            '```',
             "",
-            "只输出 JSON，不要其他内容。",
+            "Output ONLY the JSON array. No thinking process. No explanations. No markdown.",
         ]
         return "\n".join(sections)
 
@@ -508,7 +510,8 @@ class IdleAgent:
                 data = [data]
             return self._build_actions(data)
         except json.JSONDecodeError:
-            logger.warning(f"[IdleAgent] 决策解析失败: {response[:200]}")
+            # 日志输出完整 response 以便调试
+            logger.warning(f"[IdleAgent] 决策解析失败，完整响应 ({len(response)} chars):\n{response[:500]}")
             return []
 
     @staticmethod
