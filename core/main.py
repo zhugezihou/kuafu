@@ -114,6 +114,10 @@ class KuafuAgent:
         # P3: 本地模型驱动的自我审查（可选，依赖本地 llama-server）
         self._init_self_review()
 
+        # P4: 空闲自主代理（可选，依赖本地模型）
+        self._idle_agent = None
+        self._init_idle_agent()
+
     def _setup(self):
         """首次启动设置。"""
         for d in ["strategy", "skills", "memory", "logs", "tests"]:
@@ -217,6 +221,102 @@ class KuafuAgent:
             self._self_reviewer = None
             import logging
             logging.debug(f"P3 SelfReviewer 初始化跳过: {e}")
+
+    # ---- P4: 空闲自主代理初始化 ----
+
+    def _init_idle_agent(self):
+        """初始化空闲自主代理（可选）。
+
+        P4 IdleAgent 在夸父空闲时自主感知环境、决策、执行提升行动。
+        依赖本地 llama-server，不可用时静默跳过。
+        与 P2 Prioritizer（只记录决策）不同，P4 直接执行行动。
+        """
+        try:
+            from core.idle_agent import IdleAgent
+
+            # 通知回调：高价值发现推送到通道
+            def _notify(text: str):
+                try:
+                    import core.cron_scheduler
+                    scheduler = core.cron_scheduler._global_scheduler
+                    if scheduler:
+                        feishu_bot = getattr(scheduler, '_feishu_bot', None)
+                        wechat_bot = getattr(scheduler, '_wechat_bot', None)
+                        chat_id = os.environ.get("KUAFU_CURRENT_CHAT_ID", "")
+                        if feishu_bot:
+                            if hasattr(feishu_bot, 'send_text'):
+                                feishu_bot.send_text(text, chat_id=chat_id or None)
+                            elif hasattr(feishu_bot, 'send'):
+                                feishu_bot.send(text, chat_id=chat_id or None)
+                            print("[IdleAgent] ✅ 已推送到飞书", flush=True)
+                        if wechat_bot:
+                            if hasattr(wechat_bot, 'send_text'):
+                                wechat_bot.send_text(text, chat_id=chat_id or None)
+                            elif hasattr(wechat_bot, 'send'):
+                                wechat_bot.send(text, chat_id=chat_id or None)
+                            print("[IdleAgent] ✅ 已推送到微信", flush=True)
+                        if not feishu_bot and not wechat_bot:
+                            print(f"[IdleAgent] 🔔 无可用通道:\n{text}\n", flush=True)
+                    else:
+                        print(f"[IdleAgent] 🔔 CronScheduler 未就绪:\n{text}\n", flush=True)
+                except Exception as e:
+                    print(f"[IdleAgent] 🔔 推送异常({e}):\n{text}\n", flush=True)
+
+            self._idle_agent = IdleAgent(
+                project_root=ROOT_DIR,
+                evolution_tracker=self.evolution,
+                memory_api=self.memory,
+                llm_chat_fn=self._idle_llm_chat,
+                notify_callback=_notify,
+                interval=1800,  # 30 分钟
+            )
+            self._idle_agent.start()
+        except Exception as e:
+            self._idle_agent = None
+            import logging
+            logging.debug(f"P4 IdleAgent 初始化跳过: {e}")
+
+    def _idle_llm_chat(self, prompt: str) -> Optional[str]:
+        """给 IdleAgent 用的 LLM 调用包装。
+
+        优先用本地 llama-server，降级到主 LLM。
+        """
+        # 先试本地模型
+        import urllib.request
+        import urllib.error
+        import json as _json
+        try:
+            payload = _json.dumps({
+                "model": "",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 1024,
+                "temperature": 0.3,
+                "stream": False,
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                "http://localhost:8080/v1/chat/completions",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                result = _json.loads(resp.read().decode("utf-8"))
+                msg = result.get("choices", [{}])[0].get("message", {})
+                content = msg.get("content", "").strip()
+                if not content:
+                    content = msg.get("reasoning_content", "").strip()
+                return content if content else None
+        except (urllib.error.URLError, OSError, _json.JSONDecodeError):
+            pass
+
+        # 降级到主 LLM
+        try:
+            resp = self.llm.chat([{"role": "user", "content": prompt}])
+            if resp and hasattr(resp, 'content'):
+                return resp.content
+            return str(resp) if resp else None
+        except Exception:
+            return None
 
     @property
     def identity(self) -> str:
@@ -596,6 +696,10 @@ class KuafuAgent:
                 "alive": self._self_reviewer.is_running,
                 "findings": len(getattr(self._self_reviewer, '_previous_findings', [])),
             }
+        # P4 空闲自主代理状态
+        if hasattr(self, '_idle_agent') and self._idle_agent is not None:
+            idle_status = self._idle_agent.get_status()
+            status["idle_agent"] = idle_status
         return status
 
     def __repr__(self) -> str:

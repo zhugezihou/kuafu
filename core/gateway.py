@@ -200,6 +200,12 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 }
         except Exception:
             pass
+        # P4 空闲自主代理状态
+        try:
+            if hasattr(agent, '_idle_agent') and agent._idle_agent is not None:
+                status['idle_agent'] = agent._idle_agent.get_status()
+        except Exception:
+            pass
         self._send_json(200, status)
 
     def _handle_task(self):
