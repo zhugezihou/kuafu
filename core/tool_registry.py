@@ -725,7 +725,7 @@ class ToolRegistry:
             return {"success": False, "output": "命令不能为空"}
 
         # ── 跨平台命令翻译（Desktop/Windows 模式） ──
-        from core.platform import Platform
+        from core.cross_platform import Platform
         if Platform.is_windows() or Platform.is_desktop():
             translated = Platform.translate_command(command)
             if translated != command:

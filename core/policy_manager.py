@@ -116,7 +116,7 @@ class PolicyDecision:
 # 安全命令快检（原 agent_loop 中的 _safe 白名单）
 # 委托到 Platform 获取跨平台列表
 
-from core.platform import Platform
+from core.cross_platform import Platform
 _SAFE_COMMANDS = Platform.safe_commands()
 
 

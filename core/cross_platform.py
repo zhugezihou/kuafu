@@ -6,7 +6,7 @@ core/platform.py — 跨平台抽象层
 不直接判断 sys.platform 或 os.name。
 
 用法：
-    from core.platform import Platform
+    from core.cross_platform import Platform
     if Platform.is_windows():
         cmd = "dir"
     else:
