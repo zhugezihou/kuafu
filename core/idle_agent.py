@@ -448,16 +448,38 @@ class IdleAgent:
         return "\n".join(sections)
 
     def _parse_decision(self, response: str) -> list[IdleAction]:
-        """解析 LLM 返回的决策 JSON。"""
-        # 提取 JSON
-        try:
-            start = response.index("[")
-            end = response.rindex("]") + 1
-            data = json.loads(response[start:end])
-        except (ValueError, json.JSONDecodeError):
-            logger.warning(f"[IdleAgent] 决策解析失败: {response[:200]}")
+        """解析 LLM 返回的决策 JSON。
+
+        兼容 LLM 在 JSON 前后输出思考过程、markdown 代码块等。
+        """
+        if not response:
             return []
-        
+
+        text = response.strip()
+
+        # 移除 markdown 代码块标记
+        text = text.replace("```json", "").replace("```", "").strip()
+
+        # 从第一个 [ 截取到最后一个 ]
+        try:
+            start = text.index("[")
+            end = text.rindex("]") + 1
+            data = json.loads(text[start:end])
+        except (ValueError, json.JSONDecodeError):
+            # 尝试从 { 开始解析（如果 LLM 返回的是对象而非数组）
+            try:
+                start = text.index("{")
+                end = text.rindex("}") + 1
+                obj = json.loads(text[start:end])
+                data = obj.get("actions", [obj])
+            except (ValueError, json.JSONDecodeError):
+                logger.warning(f"[IdleAgent] 决策解析失败: {response[:200]}")
+                return []
+
+        # 容错：如果 data 是 dict 包装成 list
+        if isinstance(data, dict):
+            data = [data]
+
         actions = []
         for item in data[:3]:  # 最多 3 个
             try:
