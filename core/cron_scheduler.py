@@ -110,6 +110,12 @@ def format_next_run(interval: float, schedule_type: str) -> str:
             return f"每 {int(interval / 60)} 分钟"
         else:
             return f"每 {interval / 3600:.1f} 小时"
+    if schedule_type == "cron":
+        # cron 类型：interval 是距下次运行的秒数，格式化为具体时间
+        from datetime import datetime as _dt
+        next_time = _dt.now().timestamp() + interval
+        next_dt = _dt.fromtimestamp(next_time)
+        return f"下次 {next_dt.strftime('%H:%M')}"
     return f"每 {int(interval)} 秒"
 
 
@@ -290,6 +296,36 @@ class CronScheduler:
                         task.last_result = ts.get("last_result", "")
                         if ts.get("chat_id"):
                             task.chat_id = ts.get("chat_id", "")
+
+                # 如果 _tasks 为空但 task_states 有数据，说明 schedule.yaml 没有持久化任务
+                # 此时从 state 恢复完整的 CronTask
+                if not self._tasks and task_states:
+                    for name, ts in task_states.items():
+                        if ts.get("schedule"):
+                            # 将自然语言 schedule（如"每天8点"）转为 cron 表达式
+                            schedule = ts["schedule"]
+                            import re as _re
+                            m = _re.match(r"^每天\s*(\d+)(:(\d+))?$", schedule)
+                            if m:
+                                hour = m.group(1)
+                                minute = m.group(3) or "0"
+                                schedule = f"{minute} {hour} * * *"
+                            task = CronTask(
+                                name=name,
+                                schedule=schedule,  # 使用转换后的 cron 表达式
+                                task_text=ts.get("task_text", ""),
+                                enabled=True,
+                                output_mode=ts.get("output_mode", "file"),
+                                source_channel=ts.get("source_channel", ""),
+                                chat_id=ts.get("chat_id", ""),
+                                run_count=ts.get("run_count", 0),
+                                last_run=ts.get("last_run", ""),
+                                last_result=ts.get("last_result", ""),
+                            )
+                            self._tasks.append(task)
+                    if self._tasks:
+                        print(f"[CronScheduler] 从 state 恢复了 {len(self._tasks)} 个任务")
+
                 print(f"[CronScheduler] 已恢复 {len(task_states)} 个任务状态")
         except Exception as e:
             print(f"[CronScheduler] 状态恢复失败: {e}")
@@ -305,6 +341,10 @@ class CronScheduler:
                     "last_run": task.last_run or "",
                     "last_result": task.last_result[:200],
                     "chat_id": task.chat_id,
+                    "schedule": task.schedule_raw,
+                    "task_text": task.task_text,
+                    "source_channel": task.source_channel,
+                    "output_mode": task.output_mode,
                 }
             self._state_path.write_text(
                 json.dumps({"tasks": states, "updated_at": datetime.now().isoformat()}),

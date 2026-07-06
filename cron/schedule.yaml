@@ -4,22 +4,9 @@
 # schedule 支持: "30m" / "2h" / "0 8 * * *" (每日8点) / ISO时间
 
 tasks:
-  - name: "每日早晨问好"
-    schedule: "0 8 * * *"
-    task: "早安问候"
-    enabled: true
-    output_mode: feishu
-    source_channel: feishu
+  # ── 所有静态任务已取消 ────────────────────────────
+  # 所有 cron 任务改为用户通过飞书/微信对话动态创建，
+  # 创建时自动记录 source_channel 的 chat_id 作为推送目标。
+  # 参见创建 cron 的 API: POST /api/cron/create
+  # 和 agent_loop 中的 create_cron_tool。
 
-  - name: "每日金融理财课"
-    schedule: "0 20 * * *"
-    task: "调用金融专家，教我学习一个理财知识点。内容涵盖：价值投资、资产配置、基金定投、复利效应、风险管理、财报分析、税务规划等，每天一个主题，循序渐进。用通俗易懂的方式讲解，并给出可操作的建议。"
-    enabled: true
-    output_mode: feishu
-    source_channel: feishu
-
-  - name: "每日抖音自动发布"
-    schedule: "0 10 * * *"
-    task: "运行抖音自动发布：检查 douyin/templates/ 中是否有未发布的视频，如果有则发布最旧的一个。使用命令: python douyin/cli.py today"
-    enabled: true
-    output_mode: file
