@@ -341,33 +341,6 @@ class KuafuAgent:
             tags=["task", task_type],
         )
 
-        # 问候/寒暄检测 — 不进 agent 循环
-        greeting_reply = self._detect_greeting(task)
-        if greeting_reply:
-            return {
-                "success": True,
-                "result": greeting_reply,
-                "summary": greeting_reply,
-                "turns": 0,
-                "errors": [],
-                "duration": 0.0,
-                "task_type": "greeting",
-            }
-
-        # 模型切换/查询检测 — 不进 agent 循环
-        model_switch_reply = self._detect_model_switch(task)
-        if model_switch_reply:
-            self._task_count -= 1  # 这不是真正的任务
-            return {
-                "success": True,
-                "result": model_switch_reply,
-                "summary": model_switch_reply,
-                "turns": 0,
-                "errors": [],
-                "duration": 0.0,
-                "task_type": "model_switch",
-            }
-
         # 创建 AgentLoop 执行
         _on_step = on_step or (lambda msg: print(f"  {msg}", flush=True))
         loop = AgentLoop(
@@ -459,32 +432,6 @@ class KuafuAgent:
 
         # 清理输入中的退格符等控制字符
         input_text = self._clean_input(input_text)
-
-        # 问候检测
-        greeting_reply = self._detect_greeting(input_text)
-        if greeting_reply:
-            return {
-                "success": True,
-                "result": greeting_reply,
-                "summary": greeting_reply,
-                "turns": 0,
-                "errors": [],
-                "duration": 0.0,
-                "task_type": "greeting",
-            }
-
-        # 模型切换/查询检测
-        model_switch_reply = self._detect_model_switch(input_text)
-        if model_switch_reply:
-            return {
-                "success": True,
-                "result": model_switch_reply,
-                "summary": model_switch_reply,
-                "turns": 0,
-                "errors": [],
-                "duration": 0.0,
-                "task_type": "model_switch",
-            }
 
         # 是否为后续轮次
         is_followup = self._conversation is not None
@@ -650,94 +597,6 @@ class KuafuAgent:
                 "findings": len(getattr(self._self_reviewer, '_previous_findings', [])),
             }
         return status
-
-    @staticmethod
-    def _detect_greeting(text: str) -> str:
-
-        # 纯问候/自我介绍/闲聊 — 不进 agent 循环
-        greeting_patterns = [
-            # 单纯问候你好
-            r"^(你好|您好|hi|hello|hey|hi~|嗨|早|早上好|下午好|晚上好)[!！。.，,]*$",
-            r"^你[叫是]谁$",
-            r"^(你是谁|你叫什么|你叫什么名字)[?？]*$",
-            r"^(你好吗|你怎么样|还好吗|怎么样)[?？]*$",
-            r"^(夸父|你好夸父|夸父你好)[!！。.，,]*$",
-            r"^(在吗|在不在|在不)[?？]*$",
-            r"^(再见|bye|拜拜|88)[!！。.，,]*$",
-            r"^(谢谢|多谢|感谢)[!！。.，,]*$",
-        ]
-        for pattern in greeting_patterns:
-            if re.match(pattern, text, re.IGNORECASE):
-                return "你好！我是夸父，一个自我进化的 AI agent。有问题尽管说，我来帮你搞定 💪"
-
-        return ""
-
-    def _detect_model_switch(self, text: str) -> Optional[str]:
-        """检测模型切换意图。
-
-        格式：
-        - "切换模型 local" / "切到 deepseek" / "用 claude"
-        - "模型列表" / "查看可用模型"
-        - "当前模型" / "查看模型"
-
-        Returns:
-            如果检测到切换命令，返回切换目标字符串；如果是查询，返回已格式化的信息字符串；否则返回 None。
-        """
-        text = text.strip()
-
-        # 查询：查看可用模型
-        if re.match(r"^(查看|显示|列出|有哪些|看看|list)\s*(可用\s*)?模型[t]*(模板)?", text, re.IGNORECASE):
-            return self._format_model_list()
-        if re.match(r"^(模型列表|可用模型|模型模板|模型大全|model list|models)$", text, re.IGNORECASE):
-            return self._format_model_list()
-
-        # 查询：当前模型
-        if re.match(r"^(当前模型|查看模型|模型状态|你.*(什么|当前|用).*模型|你.*模型.*什么|model\s*$)", text, re.IGNORECASE):
-            cfg = self.model_manager.as_dict()
-            active = f"**当前模型：** `{self.llm.model}`\n"
-            active += f"**后端：** {self.llm.backend}\n"
-            active += f"**API URL：** {self.llm.base_url}\n"
-            active += f"**max_tokens：** {self.llm.max_tokens}\n"
-            active += f"**temperature：** {self.llm.temperature}\n"
-            active += f"**profile：** `{cfg.get('profile', '—')}`"
-            return active
-
-        # 切换命令
-        m = re.match(r"^切换\s*(模型|后端|到)\s*(.+)$", text, re.IGNORECASE)
-        if m:
-            target = m.group(2).strip()
-            return self.switch_model(target)
-
-        m = re.match(r"^切(到|换)\s*(.+)$", text, re.IGNORECASE)
-        if m:
-            target = m.group(2).strip()
-            return self.switch_model(target)
-
-        m = re.match(r"^用\s*(.+)$", text, re.IGNORECASE)
-        if m:
-            target = m.group(1).strip()
-            if target in ALIASES:
-                return self.switch_model(target)
-            for alias in ALIASES:
-                if target.startswith(alias):
-                    return self.switch_model(alias)
-        return None
-
-    def _format_model_list(self) -> str:
-        """格式化可用模型列表。"""
-        templates = self.model_manager.list_templates()
-        aliases = self.model_manager.list_aliases()
-        lines = ["**可用模型模板：**"]
-        for t in templates:
-            marker = " ✅" if t["active"] else ""
-            lines.append(f"  `{t['id']}` — {t['name']}{marker}")
-        lines.append("")
-        lines.append("**简写别名：**")
-        for alias, target in sorted(aliases.items()):
-            lines.append(f"  `{alias}` → `{target}`")
-        lines.append("")
-        lines.append("**使用：** `切换模型 <别名/模板ID>`")
-        return "\n".join(lines)
 
     def __repr__(self) -> str:
         return f"<KuafuAgent v{self.version} | {self._task_count} tasks | LLM: {self.llm.model}>"

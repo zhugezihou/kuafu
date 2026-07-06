@@ -715,14 +715,13 @@ class AgentLoop:
         # ── cron_create ──
         cron_create_schema = {
             "type": "object",
-            "description": "创建一个定时 cron 任务。schedule 支持自然语言如'2分钟后'、'30分钟一次'、'明天8点'、'每天8点'，工具会自动解析。任务会定时自动执行，结果通过 output_mode 推送。",
+            "description": "创建一个定时 cron 任务。schedule 支持自然语言如'2分钟后'、'30分钟一次'、'明天8点'、'每天8点'，工具会自动解析。任务会定时自动执行，结果自动推送到当前对话通道。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "name": {"type": "string", "description": "任务名称，简短描述即可，如'提醒喝水'"},
                     "schedule": {"type": "string", "description": "调度时间。支持自然语言：'2分钟后'（一次性）、'30分钟一次'（重复间隔）、'明天8点'、'每天8点'、'0 8 * * *'（cron表达式）"},
                     "task": {"type": "string", "description": "任务内容：要 cron 定时执行的具体指令。例如'提醒我喝水'会在执行时直接输出提醒文本"},
-                    "output_mode": {"type": "string", "description": "输出方式：'feishu'（飞书）、'wechat'（微信）、'file'（本地文件）、'all'（全部）。不填则自动根据当前对话通道设置"},
                 },
                 "required": ["name", "schedule", "task"],
             },

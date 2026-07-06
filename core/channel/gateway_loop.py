@@ -347,7 +347,7 @@ class GatewayLoop:
 
             result = self.agent.run(
                 msg.text,
-                on_step=self._noop,
+                on_step=None,
                 on_phase=on_phase,
                 resume_from=resume_from,
             )

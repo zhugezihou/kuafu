@@ -189,8 +189,12 @@ class LocalHelper:
             )
             with urllib.request.urlopen(req, timeout=INFERENCE_TIMEOUT) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
-                content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
-                return content.strip() if content else None
+                msg = result.get("choices", [{}])[0].get("message", {})
+                content = msg.get("content", "").strip()
+                # 部分模型把内容放在 reasoning_content（如 Qwen3.5-9B-DeepSeek-V4-Flash）
+                if not content:
+                    content = msg.get("reasoning_content", "").strip()
+                return content if content else None
         except (urllib.error.URLError, OSError, json.JSONDecodeError,
                 KeyError, IndexError) as e:
             logger.debug(f"[LocalHelper] 推理调用失败: {e}")
