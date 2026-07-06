@@ -450,38 +450,90 @@ class IdleAgent:
     def _parse_decision(self, response: str) -> list[IdleAction]:
         """解析 LLM 返回的决策 JSON。
 
-        兼容 LLM 在 JSON 前后输出思考过程、markdown 代码块等。
+        兼容 LLM 在 JSON 前后输出思考过程、markdown 代码块、Python 格式 dict 等。
         """
         if not response:
             return []
 
         text = response.strip()
 
-        # 移除 markdown 代码块标记
+        # 1. 移除 markdown 代码块标记
         text = text.replace("```json", "").replace("```", "").strip()
 
-        # 从第一个 [ 截取到最后一个 ]
+        # 2. 提取 JSON 块：从第一个 [ 到最后一个 ]
         try:
             start = text.index("[")
             end = text.rindex("]") + 1
-            data = json.loads(text[start:end])
-        except (ValueError, json.JSONDecodeError):
-            # 尝试从 { 开始解析（如果 LLM 返回的是对象而非数组）
+            raw = text[start:end]
+        except ValueError:
+            # 没有数组，尝试对象
             try:
                 start = text.index("{")
                 end = text.rindex("}") + 1
-                obj = json.loads(text[start:end])
+                raw = text[start:end]
+                # 尝试解析为 JSON 对象
+                try:
+                    obj = json.loads(raw)
+                    data = obj.get("actions", [obj])
+                    if isinstance(data, dict):
+                        data = [data]
+                    return self._build_actions(data)
+                except json.JSONDecodeError:
+                    pass
+                # 转 Python 格式再试
+                raw = self._py2json(raw)
+                obj = json.loads(raw)
                 data = obj.get("actions", [obj])
+                if isinstance(data, dict):
+                    data = [data]
+                return self._build_actions(data)
             except (ValueError, json.JSONDecodeError):
                 logger.warning(f"[IdleAgent] 决策解析失败: {response[:200]}")
                 return []
 
-        # 容错：如果 data 是 dict 包装成 list
-        if isinstance(data, dict):
-            data = [data]
+        # 3. 先试标准 JSON 解析
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                data = [data]
+            return self._build_actions(data)
+        except json.JSONDecodeError:
+            pass
 
+        # 4. 转 Python 格式再试（单引号→双引号等）
+        try:
+            converted = self._py2json(raw)
+            data = json.loads(converted)
+            if isinstance(data, dict):
+                data = [data]
+            return self._build_actions(data)
+        except json.JSONDecodeError:
+            logger.warning(f"[IdleAgent] 决策解析失败: {response[:200]}")
+            return []
+
+    @staticmethod
+    def _py2json(text: str) -> str:
+        """将 Python 格式的 dict/list 转为标准 JSON。
+
+        处理：单引号→双引号，True/False→true/false，None→null，
+        key 无引号→加引号，末尾逗号。
+        """
+        result = text
+        # True/False/None 转换
+        result = result.replace("True", "true").replace("False", "false").replace("None", "null")
+        # 单引号→双引号（只处理 dict key 和 string value）
+        result = result.replace("'", '"')
+        # 末尾逗号（数组/对象最后一个元素后的逗号）
+        import re
+        result = re.sub(r',\s*([}\]])', r'\1', result)
+        # key 无引号补引号（如 {priority: 1} → {"priority": 1}）
+        result = re.sub(r'(?<!")(\b[a-zA-Z_][a-zA-Z0-9_]*\b)(?=\s*:)', r'"\1"', result)
+        return result
+
+    def _build_actions(self, data: list) -> list[IdleAction]:
+        """从解析后的数据构建 IdleAction 列表。"""
         actions = []
-        for item in data[:3]:  # 最多 3 个
+        for item in data[:3]:
             try:
                 actions.append(IdleAction(
                     category=ActionCategory(item.get("category", "analyze")),
@@ -494,7 +546,6 @@ class IdleAgent:
             except Exception as e:
                 logger.debug(f"[IdleAgent] 决策项解析跳过: {e}")
                 continue
-        
         return actions
 
     # ── 阶段三：执行 ──────────────────────────────────────
