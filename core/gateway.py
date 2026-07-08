@@ -644,6 +644,20 @@ class GatewayServer:
         # 通知 Platform 层进入 Desktop 模式
         from core.platform import Platform
         Platform.set_desktop_mode(True)
+
+    def _daily_llm_chat(self, prompt: str) -> Optional[str]:
+        """给日报学习用的 LLM 调用包装。
+        
+        从 agent 的 LLM 获取推理结果。
+        """
+        try:
+            resp = self.agent.llm.chat([{"role": "user", "content": prompt}])
+            if resp and hasattr(resp, 'content'):
+                return resp.content
+            return str(resp) if resp else None
+        except Exception as e:
+            print(f"[DailyLearner] LLM 调用失败: {e}")
+            return None
         # Windows 上强制 UTF-8 编码，避免 emoji 等字符导致 GBK 编码错误
         os.environ.setdefault("PYTHONIOENCODING", "utf-8")
         os.environ["PYTHONUTF8"] = "1"
@@ -733,7 +747,7 @@ class GatewayServer:
     def _auto_start_cron(self):
         """自动加载 cron/schedule.yaml 并启动调度器。"""
         try:
-            from core.cron_scheduler import CronScheduler
+            from core.cron_scheduler import CronScheduler, CronTask
             scheduler = getattr(self.agent, '_cron_scheduler', None)
             if scheduler:
                 # 已有调度器，确保它在运行
@@ -748,8 +762,35 @@ class GatewayServer:
                 return
 
             # 创建调度器，加载 schedule.yaml 中的任务
+
+            def _on_task_run(task):
+                """任务执行分发器：支持自定义任务和通用的 agent.run。"""
+                try:
+                    if task.name == "夸父日报生成":
+                        from core.daily_learner import generate_daily_report
+                        return generate_daily_report(
+                            root_dir=ROOT_DIR,
+                            evolution_stats_fn=self.agent.evolution.get_evolution_stats if hasattr(self.agent, 'evolution') else None,
+                            session_store=getattr(self.agent, 'session_store', None),
+                            skills_dir=ROOT_DIR / "skills",
+                        )
+                    elif task.name == "夸父日报学习":
+                        from core.daily_learner import learn_from_daily
+                        return learn_from_daily(
+                            root_dir=ROOT_DIR,
+                            llm_chat_fn=self._daily_llm_chat,
+                            skills_dir=ROOT_DIR / "skills",
+                        )
+                    else:
+                        result = self.agent.run(task.task_text, skip_approval=True)
+                        if isinstance(result, dict):
+                            return result.get("result", str(result))
+                        return str(result)
+                except Exception as e:
+                    return f"任务执行失败: {e}"
+
             scheduler = CronScheduler(
-                on_task_run=lambda task: self.agent.run(task.task_text, skip_approval=True)["result"],
+                on_task_run=_on_task_run,
             )
             self.agent._cron_scheduler = scheduler
             # 同步到模块级全局变量，供 AgentLoop 的 cron_list/cron_remove 读取
@@ -760,6 +801,10 @@ class GatewayServer:
                 scheduler.set_feishu_bot(self._feishu_bot)
             if hasattr(self, '_wechat_bot') and self._wechat_bot:
                 scheduler.set_wechat_bot(self._wechat_bot)
+
+            # 添加自主学习日报相关任务
+            self._add_daily_learn_tasks(scheduler)
+
             if scheduler.get_tasks():
                 scheduler.start()
                 print(f"[Gateway] Cron 调度器已启动，{len(scheduler.get_tasks())} 个任务")
@@ -770,6 +815,31 @@ class GatewayServer:
                 print("[Gateway] Cron 调度器已启动（空状态，等待 API 添加任务）")
         except Exception as e:
             print(f"[Gateway] Cron 调度器启动失败: {e}")
+
+    def _add_daily_learn_tasks(self, scheduler):
+        """添加夸父自主日报生成和学习任务。"""
+        try:
+            from core.cron_scheduler import CronTask
+
+            scheduler.add_task(CronTask(
+                name="夸父日报生成",
+                schedule="0 23 * * *",
+                task_text="生成夸父日报",
+                enabled=True,
+                output_mode="file",
+                chat_id="",
+            ))
+            scheduler.add_task(CronTask(
+                name="夸父日报学习",
+                schedule="0 7 * * *",
+                task_text="从日报学习技能",
+                enabled=True,
+                output_mode="file",
+                chat_id="",
+            ))
+            print("[Gateway] 📅 已注册: 夸父日报生成 (每日 23:00), 夸父日报学习 (每日 07:00)")
+        except Exception as e:
+            print(f"[Gateway] 日报任务注册失败: {e}")
 
     def _start_workflow_editor(self):
         """后台启动工作流编辑器 Web 服务。"""
