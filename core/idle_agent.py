@@ -263,6 +263,9 @@ class IdleAgent:
                 else:
                     self._state["consecutive_failures"] = 0
         
+        # 3.5 推送本轮执行总结到通道
+        self._notify_tick_summary(actions)
+        
         # 4. 记录
         self._record_cycle(perception, actions)
         self._save_state()
@@ -365,13 +368,23 @@ class IdleAgent:
     def _decide(self, perception: PerceptionData) -> list[IdleAction]:
         """基于感知数据决策要执行什么行动。
         
-        如果本地模型可用，调用 LLM 做决策。
-        如果不可用，退化为基于规则的简单决策。
+        如果本地模型可用且最近解析失败次数未超限，调用 LLM 做决策。
+        如果不可用或解析失败超限，退化为基于规则的简单决策。
         """
-        if self._llm_chat is not None:
+        # 检查是否应该绕过 LLM 决策
+        skip_llm = False
+        with self._lock:
+            if self._state.get("llm_parse_failures", 0) >= 3:
+                skip_llm = True
+                logger.info("[IdleAgent] LLM 决策连续失败3次以上，降级为规则决策")
+        
+        if self._llm_chat is not None and not skip_llm:
             return self._decide_with_llm(perception)
         
-        # LLM 不可用时的降级策略：基于规则
+        return self._build_rule_actions(perception)
+    
+    def _build_rule_actions(self, perception: PerceptionData) -> list[IdleAction]:
+        """基于规则的降级决策策略。"""
         actions = []
         
         # 有连续失败的任务 → 分析修复
@@ -445,9 +458,11 @@ class IdleAgent:
             "]",
             "```",
             "",
-            "=== 重要：无论有没有值得做的事，都必须输出 JSON 数组 ===",
-            "如果当前没有值得做的事，输出空数组：[]",
-            "只输出 JSON 数组。不要思考过程，不要解释，不要 markdown。",
+            "=== 重要 ===",
+            "1. 无论有没有值得做的事，都必须输出 JSON 数组。如果当前没有值得做的事，输出空数组：[]",
+            "2. 只输出一行 JSON 输出。不要思考过程，不要解释，不要分析，不要有序列表。",
+            "3. 不要写 '## 分析'、'1. **'、'Thinking Process' 等任何非 JSON 内容的开头",
+            "4. 直接以 [ 开头，以 ] 结束",
         ]
         return "\n".join(sections)
 
@@ -455,11 +470,20 @@ class IdleAgent:
         """解析 LLM 返回的决策 JSON。
 
         兼容 LLM 在 JSON 前后输出思考过程、markdown 代码块、Python 格式 dict 等。
+        解析失败时累加计数器，触发 _decide 层降级。
         """
         if not response:
+            self._inc_parse_failure()
             return []
 
         text = response.strip()
+
+        # 0. 尝试剥离 Thinking Process 前缀（常见于本地模型的思维链输出）
+        #    匹配 "Thinking Process:" 或 "1. **Analyze**" 等开头
+        cleaned = self._strip_thinking(text)
+        if cleaned != text:
+            logger.debug(f"[IdleAgent] 剥离思考过程: {len(text)}→{len(cleaned)} chars")
+            text = cleaned
 
         # 1. 移除 markdown 代码块标记
         text = text.replace("```json", "").replace("```", "").strip()
@@ -493,6 +517,7 @@ class IdleAgent:
                 return self._build_actions(data)
             except (ValueError, json.JSONDecodeError):
                 logger.warning(f"[IdleAgent] 决策解析失败: {response[:200]}")
+                self._inc_parse_failure()
                 return []
 
         # 3. 先试标准 JSON 解析
@@ -500,6 +525,7 @@ class IdleAgent:
             data = json.loads(raw)
             if isinstance(data, dict):
                 data = [data]
+            self._clear_parse_failures()
             return self._build_actions(data)
         except json.JSONDecodeError:
             pass
@@ -510,13 +536,51 @@ class IdleAgent:
             data = json.loads(converted)
             if isinstance(data, dict):
                 data = [data]
+            self._clear_parse_failures()
             return self._build_actions(data)
         except json.JSONDecodeError:
             # 日志输出完整 response 以便调试
             logger.warning(f"[IdleAgent] 决策解析失败，完整响应 ({len(response)} chars):\n{response[:500]}")
 
-        # 5. 全兜底：LLM 完全没输出 JSON 时，基于感知数据用规则生成行动
+        # 5. 全兜底：LLM 完全没输出 JSON 时，用规则生成行动
+        self._inc_parse_failure()
         return self._fallback_actions()
+
+    def _strip_thinking(self, text: str) -> str:
+        """剥离 LLM 输出中的思考前缀，提取实际内容。
+
+        处理常见模式：
+        - "Thinking Process:\\n1. **Analyze**..." 
+        - "1. **Analyze the Request:**\\n..."
+        - 大段有序列表后跟着 JSON
+        """
+        lines = text.split("\n")
+        
+        # 查找第一个以 [ 或 { 或 ``` 開头的行，截取其后所有内容
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith("[") or stripped.startswith("{") or stripped.startswith("```"):
+                return "\n".join(lines[i:])
+        
+        # 如果 JSON 在 markdown 代码块内（``` 之后），找 ``` 行
+        for i, line in enumerate(lines):
+            if line.strip().startswith("```"):
+                return "\n".join(lines[i:])
+        
+        # 找不到 JSON 标记，返回原文
+        return text
+
+    def _inc_parse_failure(self):
+        """递增 LLM 解析失败计数，达到阈值后触发降级。"""
+        with self._lock:
+            self._state["llm_parse_failures"] = self._state.get("llm_parse_failures", 0) + 1
+            count = self._state["llm_parse_failures"]
+        logger.warning(f"[IdleAgent] LLM 决策解析失败累计 {count} 次")
+
+    def _clear_parse_failures(self):
+        """解析成功时清零失败计数。"""
+        with self._lock:
+            self._state["llm_parse_failures"] = 0
 
     def _fallback_actions(self) -> list[IdleAction]:
         """LLM 决策失败时的降级方案：基于当前感知数据用规则生成行动。"""
@@ -651,6 +715,27 @@ class IdleAgent:
             action.result = str(e)
             action.success = False
             logger.warning(f"[IdleAgent] ❌ 执行失败: {e}")
+
+    def _notify_tick_summary(self, actions: list[IdleAction]):
+        """将本轮执行的行动总结推送到通道。"""
+        if not self._notify:
+            return
+        
+        lines = ["🤖 夸父自主行动简报"]
+        for i, a in enumerate(actions[:MAX_CONCURRENT_ACTIONS]):
+            status = "✅" if a.success else "❌"
+            impact = a.expected_impact if a.success else "失败"
+            lines.append(f"{i+1}. {status} [{a.category.value}] {a.description} (影响: {impact})")
+        
+        with self._lock:
+            lines.append(f"今日累计: {self._state['actions_taken_today']} 次 | 循环: {self._state['loop_count']} 轮")
+        
+        text = "\n".join(lines)
+        
+        try:
+            self._notify(text)
+        except Exception as e:
+            logger.warning(f"[IdleAgent] 推送总结失败: {e}")
 
     # ── 本地推理工具 ──────────────────────────────────
 
