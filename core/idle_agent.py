@@ -458,11 +458,12 @@ class IdleAgent:
             "]",
             "```",
             "",
-            "=== 重要 ===",
-            "1. 无论有没有值得做的事，都必须输出 JSON 数组。如果当前没有值得做的事，输出空数组：[]",
-            "2. 只输出一行 JSON 输出。不要思考过程，不要解释，不要分析，不要有序列表。",
-            "3. 不要写 '## 分析'、'1. **'、'Thinking Process' 等任何非 JSON 内容的开头",
-            "4. 直接以 [ 开头，以 ] 结束",
+            "=== 非常重要的输出规则 ===",
+            "1. 先输出 JSON 数组，再思考。JSON 必须在回复的第一行。",
+            "2. 无论有没有值得做的事，都必须先输出 JSON 数组。如果当前没有值得做的事，输出空数组：[]",
+            "3. 只输出一行 JSON。不要思考过程，不要解释，不要分析，不要有序列表。",
+            "4. 直接以 [ 开头，以 ] 结束。第一个字符必须是 [。",
+            "5. 不要写 '## 分析'、'1. **'、'Thinking Process' 等任何非 JSON 内容。",
         ]
         return "\n".join(sections)
 
@@ -550,9 +551,11 @@ class IdleAgent:
         """剥离 LLM 输出中的思考前缀，提取实际内容。
 
         处理常见模式：
-        - "Thinking Process:\\n1. **Analyze**..." 
-        - "1. **Analyze the Request:**\\n..."
+        - "Thinking Process:\n1. **Analyze**..." 
+        - "1. **Analyze the Request:**\n..."
         - 大段有序列表后跟着 JSON
+        
+        如果整个响应都是思考过程没有 JSON，返回空字符串让 fallback 降级。
         """
         lines = text.split("\n")
         
@@ -567,8 +570,10 @@ class IdleAgent:
             if line.strip().startswith("```"):
                 return "\n".join(lines[i:])
         
-        # 找不到 JSON 标记，返回原文
-        return text
+        # 找不到任何 JSON 标记 — LLM 只输出了思考过程没输出结果
+        # 返回空字符串，让 _parse_decision 走 fallback
+        logger.debug(f"[IdleAgent] 剥离思考过程: 无JSON输出({len(text)} chars)，走降级")
+        return ""
 
     def _inc_parse_failure(self):
         """递增 LLM 解析失败计数，达到阈值后触发降级。"""
