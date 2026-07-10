@@ -281,6 +281,7 @@ class KuafuAgent:
 
         优先用本地 llama-server，降级到主 LLM。
         """
+        import logging
         # 先试本地模型
         import urllib.request
         import urllib.error
@@ -304,7 +305,24 @@ class KuafuAgent:
                 msg = result.get("choices", [{}])[0].get("message", {})
                 content = msg.get("content", "").strip()
                 if not content:
-                    content = msg.get("reasoning_content", "").strip()
+                    # 思考模型：content 可能为空，reasoning_content 包含思考+JSON
+                    rc = msg.get("reasoning_content", "").strip()
+                    if rc:
+                        # 检查 reasoning_content 中是否包含 JSON
+                        start = rc.find("[")
+                        if start >= 0:
+                            end = rc.rfind("]") + 1
+                            if end > start:
+                                content = rc[start:end]
+                                logging.debug(f"[IdleAgent] 从 reasoning_content 提取 JSON({len(content)} chars)")
+                            else:
+                                logging.debug("[IdleAgent] reasoning_content 不含完整 JSON，走降级")
+                                return None
+                        else:
+                            logging.debug("[IdleAgent] reasoning_content 无 JSON 输出，走降级")
+                            return None
+                    else:
+                        return None
                 return content if content else None
         except (urllib.error.URLError, OSError, _json.JSONDecodeError):
             pass
