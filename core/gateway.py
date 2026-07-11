@@ -766,15 +766,7 @@ class GatewayServer:
             def _on_task_run(task):
                 """任务执行分发器：支持自定义任务和通用的 agent.run。"""
                 try:
-                    if task.name == "夸父日报生成":
-                        from core.daily_learner import generate_daily_report
-                        return generate_daily_report(
-                            root_dir=ROOT_DIR,
-                            evolution_stats_fn=self.agent.evolution.get_evolution_stats if hasattr(self.agent, 'evolution') else None,
-                            session_store=getattr(self.agent, 'session_store', None),
-                            skills_dir=ROOT_DIR / "skills",
-                        )
-                    elif task.name == "夸父日报学习":
+                    if task.name == "夸父日报学习":
                         from core.daily_learner import learn_from_daily
                         return learn_from_daily(
                             root_dir=ROOT_DIR,
@@ -817,18 +809,10 @@ class GatewayServer:
             print(f"[Gateway] Cron 调度器启动失败: {e}")
 
     def _add_daily_learn_tasks(self, scheduler):
-        """添加夸父自主日报生成和学习任务。"""
+        """添加夸父自主学习任务。"""
         try:
             from core.cron_scheduler import CronTask
 
-            scheduler.add_task(CronTask(
-                name="夸父日报生成",
-                schedule="0 23 * * *",
-                task_text="生成夸父日报",
-                enabled=True,
-                output_mode="file",
-                chat_id="",
-            ))
             scheduler.add_task(CronTask(
                 name="夸父日报学习",
                 schedule="0 7 * * *",
@@ -837,9 +821,9 @@ class GatewayServer:
                 output_mode="file",
                 chat_id="",
             ))
-            print("[Gateway] 📅 已注册: 夸父日报生成 (每日 23:00), 夸父日报学习 (每日 07:00)")
+            print("[Gateway] 📅 已注册: 夸父日报学习 (每日 07:00)")
         except Exception as e:
-            print(f"[Gateway] 日报任务注册失败: {e}")
+            print(f"[Gateway] 日报学习注册失败: {e}")
 
     def _start_workflow_editor(self):
         """后台启动工作流编辑器 Web 服务。"""
